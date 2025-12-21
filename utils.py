@@ -357,3 +357,45 @@ def reconstruct_wsi(
 
     print("\nReconstruction complete!")
     return results
+
+
+
+# utils.py
+
+import random
+import torch
+
+
+class ImagePool:
+    """
+    History of generated images to stabilize D (as in original CycleGAN).
+    """
+
+    def __init__(self, pool_size=50):
+        self.pool_size = pool_size
+        self.num_imgs = 0
+        self.images = []
+
+    def query(self, images):
+        """
+        images: tensor [B, C, H, W]
+        """
+        if self.pool_size == 0:
+            return images
+
+        return_images = []
+        for image in images:
+            image = image.detach().unsqueeze(0)
+            if self.num_imgs < self.pool_size:
+                self.num_imgs += 1
+                self.images.append(image)
+                return_images.append(image)
+            else:
+                if random.random() > 0.5:
+                    idx = random.randint(0, self.pool_size - 1)
+                    tmp = self.images[idx].clone()
+                    self.images[idx] = image
+                    return_images.append(tmp)
+                else:
+                    return_images.append(image)
+        return torch.cat(return_images, 0)
