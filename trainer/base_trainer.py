@@ -151,7 +151,7 @@ class BaseTrainer:
 
         grid = torch.cat(imgs, dim=0)
         path = os.path.join(self.sample_dir, f"step_{self.global_step}.png")
-        save_image(grid, path, nrow=4)
+        save_image(grid, path, nrow=3)
 
     def save_checkpoint(self, name: str):
         path = os.path.join(self.save_dir, name)

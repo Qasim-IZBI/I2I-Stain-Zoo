@@ -56,7 +56,7 @@ def main():
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
     with torch.no_grad():
-        for i, x in enumerate(loader):
+        for i, (x,path) in enumerate(loader):
             x = x.to(device)
 
             if args.model == "cyclegan":

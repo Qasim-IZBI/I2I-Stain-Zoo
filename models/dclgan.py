@@ -8,8 +8,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models import GANLoss, NLayerDiscriminator, ImagePool
-from models import Encoder, Decoder, ResnetBottleneck
+from base_models import GANLoss, NLayerDiscriminator, ImagePool
+from base_models import Encoder, Decoder, ResnetBottleneck
 
 
 # ============================================================

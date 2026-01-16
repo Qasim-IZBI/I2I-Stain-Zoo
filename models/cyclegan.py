@@ -7,8 +7,8 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from models import GANLoss, NLayerDiscriminator, ImagePool
-from models import Encoder, Decoder, ResnetBottleneck
+from base_models import GANLoss, NLayerDiscriminator, ImagePool
+from base_models import Encoder, Decoder, ResnetBottleneck
 
 
 @dataclass
@@ -20,6 +20,8 @@ class CycleGANConfig:
     ndf: int = 64
     n_blocks: int = 9
     n_layers_D: int = 3
+    n_down: int = 2
+    n_up: int = 2
 
     # losses
     gan_mode: str = "lsgan"         # "lsgan" or "vanilla"

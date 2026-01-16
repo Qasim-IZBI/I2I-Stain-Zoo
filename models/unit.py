@@ -7,8 +7,8 @@ from typing import Dict, Tuple
 import torch
 import torch.nn as nn
 
-from models import GANLoss, NLayerDiscriminator
-from models import Encoder, Decoder, ResnetBottleneck
+from base_models import GANLoss, NLayerDiscriminator
+from base_models import Encoder, Decoder, ResnetBottleneck
 
 
 # ============================================================

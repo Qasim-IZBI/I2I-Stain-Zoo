@@ -5,6 +5,8 @@ from torch.utils.data import DataLoader
 
 from trainer.base_trainer import BaseTrainer
 from datasets.unpaired_dataset import UnpairedDataset
+from datasets.transforms import default_train_transform
+
 
 # Models
 from models.cyclegan import CycleGAN, CycleGANConfig
@@ -57,25 +59,26 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--amp", action="store_true")
+    parser.add_argument("--output", type=str, required=True)
 
     # ---- MUNIT specific ----
     parser.add_argument("--style_dim", type=int, default=8)
 
-    args = parser.parse_args()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # ---- DCLGAN specific ----
     parser.add_argument("--lambda_dcl", type=float, default=1.0)
     parser.add_argument("--n_patches", type=int, default=256)
     parser.add_argument("--proj_dim", type=int, default=256)
 
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     # ---- dataset ----
-    dataset = UnpairedDataset(
-        root_A=args.dataA,
-        root_B=args.dataB,
-        transform=None,  # plug your transforms here
-    )
+    transform = default_train_transform(image_size=256)
+
+    dataset = UnpairedDataset(root_A=args.dataA, root_B=args.dataB, transform=transform)
+
 
     loader = DataLoader(
         dataset,
@@ -97,6 +100,8 @@ def main():
         betas=(0.5, 0.999),
         use_amp=args.amp,
         sample_every=500,
+        save_dir=args.output + '/checkpoints',
+        sample_dir=args.output + '/samples'
     )
 
     trainer.train(num_epochs=args.epochs)
