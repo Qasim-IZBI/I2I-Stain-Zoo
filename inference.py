@@ -1,93 +1,98 @@
-# inference.py
-import os
-import glob
+# infer.py
 import argparse
-from tqdm import tqdm
-from PIL import Image
-
 import torch
-from torchvision import transforms
+from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
-from models import ResnetGenerator  # from your previous code
+from datasets.single_domain_dataset import SingleDomainDataset
+
+from models.cyclegan import CycleGAN, CycleGANConfig
+from models.unit import UNIT, UNITConfig
+from models.munit import MUNIT, MUNITConfig
+from models.dclgan import DCLGAN, DCLGANConfig
 
 
-def list_images(folder):
-    exts = ("*.png", "*.jpg", "*.jpeg", "*.tif", "*.tiff", "*.bmp")
-    paths = []
-    for e in exts:
-        paths.extend(glob.glob(os.path.join(folder, e)))
-    return sorted(paths)
+def load_model(args, device):
+    if args.model == "cyclegan":
+        model = CycleGAN(CycleGANConfig())
 
+    elif args.model == "unit":
+        model = UNIT(UNITConfig())
 
-def load_image(path, tfm):
-    img = Image.open(path).convert("RGB")
-    return tfm(img)
+    elif args.model == "munit":
+        model = MUNIT(MUNITConfig(style_dim=args.style_dim))
 
+    elif args.model == "dclgan":
+        model = DCLGAN(DCLGANConfig())
 
-@torch.no_grad()
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--input_dir", required=True, help="folder of images to translate")
-    ap.add_argument("--output_dir", required=True, help="where to save translated images")
-    ap.add_argument("--checkpoint", required=True, help="path to epoch_*.pt")
-    ap.add_argument("--direction", choices=["A2B", "B2A"], default="A2B")
-    ap.add_argument("--gpu", type=int, default=0)
-    ap.add_argument("--crop_size", type=int, default=256, help="must match training crop_size")
-    ap.add_argument("--resize_to", type=int, default=None, help="optional: resize shortest side to this")
-    ap.add_argument("--keep_size", action="store_true", help="skip center-crop; keep original size (slower)")
-    args = ap.parse_args()
-
-    device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    # Normalization must match training: [-1, 1]
-    base = []
-    if args.resize_to is not None:
-        base.append(transforms.Resize((args.resize_to, args.resize_to), Image.BICUBIC))
-
-    if args.keep_size:
-        # keep original size (no crop) – good for WSI-ish tiles if already correct size
-        base += [
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ]
     else:
-        base += [
-            transforms.Resize((args.crop_size, args.crop_size), Image.BICUBIC),
-            transforms.CenterCrop((args.crop_size, args.crop_size)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ]
-    tfm = transforms.Compose(base)
+        raise ValueError(args.model)
 
-    # Build generators and load checkpoint
-    netG_A2B = ResnetGenerator(3, 3, n_blocks=9).to(device).eval()
-    netG_B2A = ResnetGenerator(3, 3, n_blocks=9).to(device).eval()
+    ckpt = torch.load(args.ckpt, map_location=device)
+    model.load_state_dict(ckpt["model"])
+    model.to(device).eval()
+    return model
 
-    ckpt = torch.load(args.checkpoint, map_location=device)
-    netG_A2B.load_state_dict(ckpt["netG_A2B"])
-    netG_B2A.load_state_dict(ckpt["netG_B2A"])
 
-    netG = netG_A2B if args.direction == "A2B" else netG_B2A
+def main():
+    parser = argparse.ArgumentParser("Unified I2I Inference")
 
-    paths = list_images(args.input_dir)
-    if not paths:
-        raise RuntimeError(f"No images found in {args.input_dir}")
+    parser.add_argument("--model", choices=["cyclegan", "unit", "munit"], required=True)
+    parser.add_argument("--direction", choices=["A2B", "B2A"], required=True)
+    parser.add_argument("--data", type=str, required=True)
+    parser.add_argument("--ckpt", type=str, required=True)
+    parser.add_argument("--outdir", type=str, default="results")
 
-    def denorm(x):  # [-1,1] -> [0,1]
-        return (x + 1.0) / 2.0
+    # MUNIT
+    parser.add_argument("--style_dim", type=int, default=8)
+    parser.add_argument("--num_samples", type=int, default=5)
 
-    for p in tqdm(paths):
-        x = load_image(p, tfm).unsqueeze(0).to(device)
-        y = netG(x)
-        y_vis = denorm(y).clamp(0, 1)
+    args = parser.parse_args()
 
-        out_name = os.path.splitext(os.path.basename(p))[0] + f"_{args.direction}.png"
-        out_path = os.path.join(args.output_dir, out_name)
-        save_image(y_vis, out_path)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_model(args, device)
 
-    print(f"Done. Saved {len(paths)} images to {args.output_dir}")
+    dataset = SingleDomainDataset(args.data, transform=None)
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
+
+    with torch.no_grad():
+        for i, x in enumerate(loader):
+            x = x.to(device)
+
+            if args.model == "cyclegan":
+                if args.direction == "A2B":
+                    y = model.forward_A2B(x)
+                else:
+                    y = model.forward_B2A(x)
+                save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+
+            elif args.model == "unit":
+                if args.direction == "A2B":
+                    y, _ = model.forward_A2B(x)
+                else:
+                    y, _ = model.forward_B2A(x)
+                save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+
+            elif args.model == "munit":
+                if args.direction == "A2B":
+                    c, _ = model.encode_A(x)
+                    for k in range(args.num_samples):
+                        s = torch.randn(1, args.style_dim, device=device)
+                        y = model.decode_B(c, s)
+                        save_image((y + 1) / 2, f"{args.outdir}/{i}_{k}.png")
+                else:
+                    c, _ = model.encode_B(x)
+                    for k in range(args.num_samples):
+                        s = torch.randn(1, args.style_dim, device=device)
+                        y = model.decode_A(c, s)
+                        save_image((y + 1) / 2, f"{args.outdir}/{i}_{k}.png")
+            elif args.model == "dclgan":
+                if args.direction == "A2B":
+                    y, _ = model.G_A2B(x)
+                else:
+                    y, _ = model.G_B2A(x)
+                save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+
 
 
 if __name__ == "__main__":

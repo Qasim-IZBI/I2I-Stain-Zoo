@@ -1,221 +1,158 @@
-# models.py
+# cyclegan.py
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
-import functools
-import random
+
+from models import GANLoss, NLayerDiscriminator, ImagePool
+from models import Encoder, Decoder, ResnetBottleneck
 
 
-###############################################################################
-# Helpers
-###############################################################################
+@dataclass
+class CycleGANConfig:
+    # architecture
+    input_nc: int = 3
+    output_nc: int = 3
+    ngf: int = 64
+    ndf: int = 64
+    n_blocks: int = 9
+    n_layers_D: int = 3
 
-def init_weights(net, init_type="normal", init_gain=0.02):
-    """Initialize network weights."""
-    def init_func(m):
-        classname = m.__class__.__name__
-        if hasattr(m, "weight") and (
-            classname.find("Conv") != -1 or classname.find("Linear") != -1
-        ):
-            if init_type == "normal":
-                nn.init.normal_(m.weight.data, 0.0, init_gain)
-            elif init_type == "xavier":
-                nn.init.xavier_normal_(m.weight.data, gain=init_gain)
-            elif init_type == "kaiming":
-                nn.init.kaiming_normal_(m.weight.data, a=0, mode="fan_in")
-            else:
-                raise NotImplementedError(f"init method {init_type} not implemented")
-            if hasattr(m, "bias") and m.bias is not None:
-                nn.init.constant_(m.bias.data, 0.0)
-        elif classname.find("BatchNorm2d") != -1:
-            nn.init.normal_(m.weight.data, 1.0, init_gain)
-            nn.init.constant_(m.bias.data, 0.0)
-    net.apply(init_func)
+    # losses
+    gan_mode: str = "lsgan"         # "lsgan" or "vanilla"
+    lambda_cycle: float = 10.0
+    lambda_identity: float = 0.5    # typical CycleGAN uses 0.5; set 0 to disable
+
+    # misc
+    pool_size: int = 50
 
 
-def init_net(net, device):
-    net.to(device)
-    init_weights(net)
-    return net
-
-
-###############################################################################
-# ResNet generator
-###############################################################################
-
-class ResnetBlock(nn.Module):
-    def __init__(self, dim, padding_type="reflect", norm_layer=nn.InstanceNorm2d, use_dropout=False):
-        super().__init__()
-        p = 0
-        if padding_type == "reflect":
-            self.pad = nn.ReflectionPad2d(1)
-        elif padding_type == "replicate":
-            self.pad = nn.ReplicationPad2d(1)
-        elif padding_type == "zero":
-            self.pad = nn.Identity()
-            p = 1
-        else:
-            raise NotImplementedError(f"padding [{padding_type}] is not implemented")
-
-        conv_block = []
-        conv_block += [
-            self.pad,
-            nn.Conv2d(dim, dim, kernel_size=3, padding=p, bias=True),
-            norm_layer(dim),
-            nn.ReLU(True),
-        ]
-        if use_dropout:
-            conv_block += [nn.Dropout(0.5)]
-        conv_block += [
-            self.pad,
-            nn.Conv2d(dim, dim, kernel_size=3, padding=p, bias=True),
-            norm_layer(dim),
-        ]
-
-        self.conv_block = nn.Sequential(*conv_block)
-
-    def forward(self, x):
-        out = x + self.conv_block(x)
-        return out
-
-
-class ResnetGenerator(nn.Module):
+class CycleGAN(nn.Module):
     """
-    Classic CycleGAN generator:
-    c7s1-64, d128, d256, 9x ResBlocks, u128, u64, c7s1-3
+    CycleGAN using split generator components:
+      G_A2B = Enc_A -> Bn_A -> Dec_B
+      G_B2A = Enc_B -> Bn_B -> Dec_A
+
+    BaseTrainer interface:
+      - generator_parameters()
+      - discriminator_parameters()
+      - compute_generator_loss(batch) -> (loss, logs, visuals)
+      - compute_discriminator_loss(batch, visuals) -> (loss, logs)
     """
-
-    def __init__(self, input_nc, output_nc, ngf=64, n_blocks=9, norm_layer=nn.InstanceNorm2d):
-        assert n_blocks >= 0
+    def __init__(self, cfg: CycleGANConfig):
         super().__init__()
+        self.cfg = cfg
 
-        model = [
-            nn.ReflectionPad2d(3),
-            nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=True),
-            norm_layer(ngf),
-            nn.ReLU(True),
-        ]
+        # ----- Generators -----
+        self.Enc_A = Encoder(cfg.input_nc, ngf=cfg.ngf, n_down=cfg.n_down)
+        self.Enc_B = Encoder(cfg.input_nc, ngf=cfg.ngf, n_down=cfg.n_down)
+        Cc = self.Enc_A.out_channels
 
-        # Downsampling
-        n_downsampling = 2
-        mult = 1
-        for i in range(n_downsampling):
-            model += [
-                nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=True),
-                norm_layer(ngf * mult * 2),
-                nn.ReLU(True),
-            ]
-            mult *= 2
+        self.Bn_A = ResnetBottleneck(Cc, n_blocks=cfg.n_blocks)
+        self.Bn_B = ResnetBottleneck(Cc, n_blocks=cfg.n_blocks)
 
-        # Resnet blocks
-        for i in range(n_blocks):
-            model += [ResnetBlock(ngf * mult, padding_type="reflect", norm_layer=norm_layer)]
+        self.Dec_A = Decoder(Cc, cfg.output_nc, ngf=cfg.ngf, n_up=cfg.n_up)
+        self.Dec_B = Decoder(Cc, cfg.output_nc, ngf=cfg.ngf, n_up=cfg.n_up)
 
-        # Upsampling
-        for i in range(n_downsampling):
-            model += [
-                nn.ConvTranspose2d(
-                    ngf * mult,
-                    int(ngf * mult / 2),
-                    kernel_size=3,
-                    stride=2,
-                    padding=1,
-                    output_padding=1,
-                    bias=True,
-                ),
-                norm_layer(int(ngf * mult / 2)),
-                nn.ReLU(True),
-            ]
-            mult //= 2
+        # ----- Discriminators -----
+        self.D_A = NLayerDiscriminator(cfg.input_nc, ndf=cfg.ndf, n_layers=cfg.n_layers_D)
+        self.D_B = NLayerDiscriminator(cfg.input_nc, ndf=cfg.ndf, n_layers=cfg.n_layers_D)
 
-        model += [
-            nn.ReflectionPad2d(3),
-            nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0),
-            nn.Tanh(),
-        ]
+        # ----- Buffers -----
+        self.pool_A = ImagePool(cfg.pool_size)
+        self.pool_B = ImagePool(cfg.pool_size)
 
-        self.model = nn.Sequential(*model)
+        # ----- Losses -----
+        self.gan = GANLoss(cfg.gan_mode)
+        self.l1 = nn.L1Loss()
 
-    def forward(self, x):
-        return self.model(x)
+    # ---------------- BaseTrainer interface ----------------
 
+    def generator_parameters(self):
+        params = []
+        params += list(self.Enc_A.parameters()) + list(self.Bn_A.parameters()) + list(self.Dec_B.parameters())
+        params += list(self.Enc_B.parameters()) + list(self.Bn_B.parameters()) + list(self.Dec_A.parameters())
+        return params
 
-###############################################################################
-# PatchGAN discriminator
-###############################################################################
+    def discriminator_parameters(self):
+        return list(self.D_A.parameters()) + list(self.D_B.parameters())
 
-class NLayerDiscriminator(nn.Module):
-    """70x70 PatchGAN"""
+    # ---------------- Forward helpers ----------------
 
-    def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.InstanceNorm2d):
-        super().__init__()
-        kw = 4
-        padw = 1
-        sequence = [
-            nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw),
-            nn.LeakyReLU(0.2, True),
-        ]
+    def forward_A2B(self, xA: torch.Tensor) -> torch.Tensor:
+        z = self.Enc_A(xA)
+        z = self.Bn_A(z)
+        return self.Dec_B(z)
 
-        nf_mult = 1
-        for n in range(1, n_layers):
-            nf_mult_prev = nf_mult
-            nf_mult = min(2 ** n, 8)
-            sequence += [
-                nn.Conv2d(
-                    ndf * nf_mult_prev,
-                    ndf * nf_mult,
-                    kernel_size=kw,
-                    stride=2,
-                    padding=padw,
-                    bias=True,
-                ),
-                norm_layer(ndf * nf_mult),
-                nn.LeakyReLU(0.2, True),
-            ]
+    def forward_B2A(self, xB: torch.Tensor) -> torch.Tensor:
+        z = self.Enc_B(xB)
+        z = self.Bn_B(z)
+        return self.Dec_A(z)
 
-        nf_mult_prev = nf_mult
-        nf_mult = min(2 ** n_layers, 8)
-        sequence += [
-            nn.Conv2d(
-                ndf * nf_mult_prev,
-                ndf * nf_mult,
-                kernel_size=kw,
-                stride=1,
-                padding=padw,
-                bias=True,
-            ),
-            norm_layer(ndf * nf_mult),
-            nn.LeakyReLU(0.2, True),
-        ]
+    # ---------------- Losses ----------------
 
-        sequence += [
-            nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)
-        ]  # no sigmoid, use MSELoss
+    def compute_generator_loss(self, batch: Dict[str, torch.Tensor]):
+        real_A = batch["A"]
+        real_B = batch["B"]
 
-        self.model = nn.Sequential(*sequence)
+        # Translate
+        fake_B = self.forward_A2B(real_A)
+        fake_A = self.forward_B2A(real_B)
 
-    def forward(self, x):
-        return self.model(x)
+        # Cycle
+        rec_A = self.forward_B2A(fake_B)
+        rec_B = self.forward_A2B(fake_A)
 
+        # Identity (optional)
+        loss_idt = torch.tensor(0.0, device=real_A.device)
+        if self.cfg.lambda_identity > 0:
+            idt_A = self.forward_B2A(real_A)
+            idt_B = self.forward_A2B(real_B)
+            loss_idt = 0.5 * (self.l1(idt_A, real_A) + self.l1(idt_B, real_B))
 
-###############################################################################
-# GAN loss (LSGAN)
-###############################################################################
+        # GAN
+        loss_gan = self.gan(self.D_B(fake_B), True) + self.gan(self.D_A(fake_A), True)
 
-class GANLoss(nn.Module):
-    """LSGAN: MSE between prediction and target label"""
+        # Cycle
+        loss_cycle = self.l1(rec_A, real_A) + self.l1(rec_B, real_B)
 
-    def __init__(self):
-        super().__init__()
-        self.loss = nn.MSELoss()
+        loss_G = loss_gan + self.cfg.lambda_cycle * loss_cycle + self.cfg.lambda_identity * loss_idt
 
-    def get_target_tensor(self, prediction, target_is_real):
-        if target_is_real:
-            target_val = 1.0
-        else:
-            target_val = 0.0
-        return torch.full_like(prediction, target_val)
+        logs = {
+            "loss_G": float(loss_G.detach().cpu()),
+            "loss_gan": float(loss_gan.detach().cpu()),
+            "loss_cycle": float(loss_cycle.detach().cpu()),
+            "loss_idt": float(loss_idt.detach().cpu()),
+        }
 
-    def forward(self, prediction, target_is_real):
-        target_tensor = self.get_target_tensor(prediction, target_is_real)
-        return self.loss(prediction, target_tensor)
+        visuals = {
+            "real_A": real_A,
+            "fake_B": fake_B,
+            "rec_A": rec_A,
+            "real_B": real_B,
+            "fake_A": fake_A,
+            "rec_B": rec_B,
+        }
+        return loss_G, logs, visuals
+
+    def compute_discriminator_loss(self, batch: Dict[str, torch.Tensor], visuals: Dict[str, torch.Tensor]):
+        real_A = batch["A"]
+        real_B = batch["B"]
+
+        fake_A = self.pool_A.query(visuals["fake_A"].detach())
+        fake_B = self.pool_B.query(visuals["fake_B"].detach())
+
+        loss_D_A = 0.5 * (self.gan(self.D_A(real_A), True) + self.gan(self.D_A(fake_A), False))
+        loss_D_B = 0.5 * (self.gan(self.D_B(real_B), True) + self.gan(self.D_B(fake_B), False))
+        loss_D = loss_D_A + loss_D_B
+
+        logs = {
+            "loss_D": float(loss_D.detach().cpu()),
+            "loss_D_A": float(loss_D_A.detach().cpu()),
+            "loss_D_B": float(loss_D_B.detach().cpu()),
+        }
+        return loss_D, logs
+
