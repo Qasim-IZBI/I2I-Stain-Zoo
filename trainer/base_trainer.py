@@ -30,7 +30,7 @@ class BaseTrainer:
         grad_accum_steps: int = 1,
         save_dir: str = "checkpoints",
         sample_dir: str = "samples",
-        sample_every: int = 500,
+        sample_every: int = 5000,
     ):
         self.model = model.to(device)
         self.dataloader = dataloader

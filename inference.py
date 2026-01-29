@@ -1,10 +1,12 @@
 # infer.py
+import os
 import argparse
 import torch
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
 from datasets.single_domain_dataset import SingleDomainDataset
+from datasets.transforms import default_train_transform
 
 from models.cyclegan import CycleGAN, CycleGANConfig
 from models.unit import UNIT, UNITConfig
@@ -37,7 +39,7 @@ def load_model(args, device):
 def main():
     parser = argparse.ArgumentParser("Unified I2I Inference")
 
-    parser.add_argument("--model", choices=["cyclegan", "unit", "munit"], required=True)
+    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan"], required=True)
     parser.add_argument("--direction", choices=["A2B", "B2A"], required=True)
     parser.add_argument("--data", type=str, required=True)
     parser.add_argument("--ckpt", type=str, required=True)
@@ -45,15 +47,18 @@ def main():
 
     # MUNIT
     parser.add_argument("--style_dim", type=int, default=8)
-    parser.add_argument("--num_samples", type=int, default=5)
+    parser.add_argument("--num_samples", type=int, default=1)
 
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(args, device)
 
-    dataset = SingleDomainDataset(args.data, transform=None)
+    transform = default_train_transform(image_size=256)
+
+    dataset = SingleDomainDataset(args.data, transform=transform)
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    os.makedirs(args.outdir, exist_ok=True)
 
     with torch.no_grad():
         for i, (x,path) in enumerate(loader):
