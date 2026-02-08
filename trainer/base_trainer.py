@@ -47,17 +47,14 @@ class BaseTrainer:
         self.sample_dir = sample_dir
 
         # --- optimizers ---
-        self.opt_G = optim.Adam(
-            self.model.generator_parameters(),
-            lr=lr,
-            betas=betas,
-        )
+        g_params = list(self.model.generator_parameters())
+        d_params = list(self.model.discriminator_parameters()) if hasattr(self.model, "discriminator_parameters") else []
+
+        self.opt_G = torch.optim.Adam(g_params, lr=lr, betas=betas)
 
         self.opt_D = None
-        if hasattr(self.model, "discriminator_parameters"):
-            params_D = self.model.discriminator_parameters()
-            if params_D:
-                self.opt_D = optim.Adam(params_D, lr=lr, betas=betas)
+        if len(d_params) > 0:
+            self.opt_D = torch.optim.Adam(d_params, lr=lr, betas=betas)
 
         # --- AMP ---
         self.scaler = torch.cuda.amp.GradScaler(enabled=use_amp)

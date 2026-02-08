@@ -12,6 +12,7 @@ from models.cyclegan import CycleGAN, CycleGANConfig
 from models.unit import UNIT, UNITConfig
 from models.munit import MUNIT, MUNITConfig
 from models.dclgan import DCLGAN, DCLGANConfig
+from models.miudiff import MIUDiff, MIUDiffConfig
 
 
 def load_model(args, device):
@@ -27,6 +28,16 @@ def load_model(args, device):
     elif args.model == "dclgan":
         model = DCLGAN(DCLGANConfig())
 
+    elif args.model == "miudiff":
+        model = MIUDiff(MIUDiffConfig(
+            stage="finetune",
+            sample_steps=args.miu_steps,
+            guidance_scale=args.miu_guidance,
+            miu_pcl=args.miu_pcl,
+            pcl_refine_steps=args.pcl_refine_steps,
+            pcl_refine_lr=args.pcl_refine_lr,
+        ))
+        
     else:
         raise ValueError(args.model)
 
@@ -48,6 +59,13 @@ def main():
     # MUNIT
     parser.add_argument("--style_dim", type=int, default=8)
     parser.add_argument("--num_samples", type=int, default=1)
+
+    # MIU-Diff
+    parser.add_argument("--miu_steps", type=int, default=200)
+    parser.add_argument("--miu_guidance", type=float, default=1.0)
+    parser.add_argument("--miu_pcl", action="store_true")
+    parser.add_argument("--pcl_refine_steps", type=int, default=0)
+    parser.add_argument("--pcl_refine_lr", type=float, default=0.05)
 
     args = parser.parse_args()
 
@@ -91,12 +109,19 @@ def main():
                         s = torch.randn(1, args.style_dim, device=device)
                         y = model.decode_A(c, s)
                         save_image((y + 1) / 2, f"{args.outdir}/{i}_{k}.png")
+            
             elif args.model == "dclgan":
                 if args.direction == "A2B":
                     y, _ = model.G_A2B(x)
                 else:
                     y, _ = model.G_B2A(x)
                 save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+
+            elif args.model == "miudiff":
+                # only meaningful direction is A2B (H&E -> IHC)
+                y = model.sample_A2B(x)
+                save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+
 
 
 

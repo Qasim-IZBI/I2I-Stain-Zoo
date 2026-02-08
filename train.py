@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 
 from trainer.base_trainer import BaseTrainer
 from datasets.unpaired_dataset import UnpairedDataset
+from datasets.target_only_dataset import TargetOnlyDataset
 from datasets.transforms import default_train_transform
 
 
@@ -13,6 +14,7 @@ from models.cyclegan import CycleGAN, CycleGANConfig
 from models.unit import UNIT, UNITConfig
 from models.munit import MUNIT, MUNITConfig
 from models.dclgan import DCLGAN, DCLGANConfig
+from models.miudiff import MIUDiff, MIUDiffConfig
 
 
 def build_model(args):
@@ -36,6 +38,19 @@ def build_model(args):
         )
         model = DCLGAN(cfg)
 
+    elif args.model == "miudiff":
+        cfg = MIUDiffConfig(
+            stage=args.miu_stage,
+            sample_steps=args.miu_steps,
+            guidance_scale=args.miu_guidance,
+            miu_pcl=args.miu_pcl,
+            lambda_pcl=args.lambda_pcl,
+            pcl_n_patches=args.pcl_n_patches,
+            pcl_proj_dim=args.pcl_proj_dim,
+            pcl_temp=args.pcl_temp,
+        )
+        model = MIUDiff(cfg)
+
     else:
         raise ValueError(f"Unknown model: {args.model}")
 
@@ -47,7 +62,7 @@ def main():
     parser = argparse.ArgumentParser("Unified I2I Training")
 
     # ---- model ----
-    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan"], required=True)
+    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff"], required=True)
 
     # ---- data ----
     parser.add_argument("--dataA", type=str, required=True)
@@ -70,6 +85,18 @@ def main():
     parser.add_argument("--n_patches", type=int, default=256)
     parser.add_argument("--proj_dim", type=int, default=256)
 
+
+    # ---- MIU-Diff PCL  specific ----
+    parser.add_argument("--miu_stage", choices=["pretrain", "finetune"], default="pretrain")
+    parser.add_argument("--miu_steps", type=int, default=300)
+    parser.add_argument("--miu_guidance", type=float, default=1.0)
+    parser.add_argument("--miu_pcl", action="store_true")
+    parser.add_argument("--lambda_pcl", type=float, default=0.1)
+    parser.add_argument("--pcl_n_patches", type=int, default=256)
+    parser.add_argument("--pcl_proj_dim", type=int, default=128)
+    parser.add_argument("--pcl_temp", type=float, default=0.07)
+
+
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -77,7 +104,11 @@ def main():
     # ---- dataset ----
     transform = default_train_transform(image_size=256)
 
-    dataset = UnpairedDataset(root_A=args.dataA, root_B=args.dataB, transform=transform)
+    if args.model == "miudiff" and args.miu_stage == "pretrain":
+        dataset = TargetOnlyDataset(root_B=args.dataB, transform=transform)
+    else:
+        dataset = UnpairedDataset(root_A=args.dataA, root_B=args.dataB, transform=transform)
+
 
 
     loader = DataLoader(
