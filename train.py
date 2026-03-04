@@ -14,7 +14,7 @@ from models.cyclegan import CycleGAN, CycleGANConfig
 from models.unit import UNIT, UNITConfig
 from models.munit import MUNIT, MUNITConfig
 from models.dclgan import DCLGAN, DCLGANConfig
-from models.miudiff import MIUDiff, MIUDiffConfig
+from models.miudiff import MIUDiff, MIUDiffConfig, init_miudiff_from_stage1
 
 
 def build_model(args):
@@ -48,8 +48,12 @@ def build_model(args):
             pcl_n_patches=args.pcl_n_patches,
             pcl_proj_dim=args.pcl_proj_dim,
             pcl_temp=args.pcl_temp,
+            lambda_mi=args.lambda_mi,
         )
         model = MIUDiff(cfg)
+        if args.model == "miudiff" and args.miu_stage == "finetune" and args.miu_init_ckpt:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            init_miudiff_from_stage1(model, args.miu_init_ckpt, device)
 
     else:
         raise ValueError(f"Unknown model: {args.model}")
@@ -75,6 +79,7 @@ def main():
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--output", type=str, required=True)
+    parser.add_argument("--save_epochs", type=int, default=5)
 
     # ---- MUNIT specific ----
     parser.add_argument("--style_dim", type=int, default=8)
@@ -91,10 +96,13 @@ def main():
     parser.add_argument("--miu_steps", type=int, default=300)
     parser.add_argument("--miu_guidance", type=float, default=1.0)
     parser.add_argument("--miu_pcl", action="store_true")
+    parser.add_argument("--lambda_mi", type=float, default=1.0)
     parser.add_argument("--lambda_pcl", type=float, default=0.1)
     parser.add_argument("--pcl_n_patches", type=int, default=256)
     parser.add_argument("--pcl_proj_dim", type=int, default=128)
     parser.add_argument("--pcl_temp", type=float, default=0.07)
+    parser.add_argument("--miu_init_ckpt", type=str, default=None,
+                    help="Checkpoint from MIU-Diff stage-1 to initialize stage-2")
 
 
     args = parser.parse_args()
@@ -132,7 +140,8 @@ def main():
         use_amp=args.amp,
         sample_every=500,
         save_dir=args.output + '/checkpoints',
-        sample_dir=args.output + '/samples'
+        sample_dir=args.output + '/samples',
+        save_epochs=args.save_epochs
     )
 
     trainer.train(num_epochs=args.epochs)

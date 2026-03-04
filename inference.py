@@ -50,7 +50,7 @@ def load_model(args, device):
 def main():
     parser = argparse.ArgumentParser("Unified I2I Inference")
 
-    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan"], required=True)
+    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff"], required=True)
     parser.add_argument("--direction", choices=["A2B", "B2A"], required=True)
     parser.add_argument("--data", type=str, required=True)
     parser.add_argument("--ckpt", type=str, required=True)
@@ -61,7 +61,7 @@ def main():
     parser.add_argument("--num_samples", type=int, default=1)
 
     # MIU-Diff
-    parser.add_argument("--miu_steps", type=int, default=200)
+    parser.add_argument("--miu_steps", type=int, default=300)
     parser.add_argument("--miu_guidance", type=float, default=1.0)
     parser.add_argument("--miu_pcl", action="store_true")
     parser.add_argument("--pcl_refine_steps", type=int, default=0)

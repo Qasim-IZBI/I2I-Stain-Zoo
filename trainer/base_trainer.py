@@ -31,6 +31,7 @@ class BaseTrainer:
         save_dir: str = "checkpoints",
         sample_dir: str = "samples",
         sample_every: int = 5000,
+        save_epochs: int = 5,
     ):
         self.model = model.to(device)
         self.dataloader = dataloader
@@ -45,6 +46,7 @@ class BaseTrainer:
 
         self.save_dir = save_dir
         self.sample_dir = sample_dir
+        self.save_epochs = save_epochs
 
         # --- optimizers ---
         g_params = list(self.model.generator_parameters())
@@ -70,7 +72,8 @@ class BaseTrainer:
         for epoch in range(1, num_epochs + 1):
             self.epoch = epoch
             self._train_epoch()
-            self.save_checkpoint(f"epoch_{epoch}.pt")
+            if epoch % self.save_epochs  == 0:
+                self.save_checkpoint(f"epoch_{epoch}.pt")
 
     def _train_epoch(self):
         self.model.train()
@@ -83,15 +86,62 @@ class BaseTrainer:
             # -------------------------
             # Generator step
             # -------------------------
+
             with torch.cuda.amp.autocast(enabled=self.use_amp):
                 loss_G, logs_G, visuals = self.model.compute_generator_loss(batch)
+
+            # Skip bad steps early (prevents poisoning the optimizer state)
+            if not torch.isfinite(loss_G):
+                print(f"[WARN] Non-finite loss_G at step {self.global_step}, skipping step.")
+                self.opt_G.zero_grad(set_to_none=True)
+                continue
 
             self.scaler.scale(loss_G / self.grad_accum_steps).backward()
 
             if self.global_step % self.grad_accum_steps == 0:
+                # unscale first so we can check true grads
+                self.scaler.unscale_(self.opt_G)
+
+                # If any grad is non-finite, skip the optimizer step (prevents poisoning)
+                found_inf = False
+                for p in self.model.generator_parameters():
+                    if p.grad is not None and not torch.isfinite(p.grad).all():
+                        found_inf = True
+                        break
+
+                if found_inf:
+                    print(f"[WARN] Non-finite gradients at step {self.global_step}, skipping optimizer step.")
+                    self.opt_G.zero_grad(set_to_none=True)
+                    self.scaler.update()  # still update scaler to reduce scale
+                    continue
+
+                torch.nn.utils.clip_grad_norm_(self.model.generator_parameters(), 1.0)
+
                 self.scaler.step(self.opt_G)
                 self.scaler.update()
                 self.opt_G.zero_grad(set_to_none=True)
+
+            # if self.global_step % self.grad_accum_steps == 0:
+            #     # IMPORTANT: unscale before clipping
+            #     self.scaler.unscale_(self.opt_G)
+            #     torch.nn.utils.clip_grad_norm_(self.model.generator_parameters(), 1.0)
+
+            #     self.scaler.step(self.opt_G)
+            #     self.scaler.update()
+            #     self.opt_G.zero_grad(set_to_none=True)
+
+            # # -------------------------
+            # # Generator step
+            # # -------------------------
+            # with torch.cuda.amp.autocast(enabled=self.use_amp):
+            #     loss_G, logs_G, visuals = self.model.compute_generator_loss(batch)
+
+            # self.scaler.scale(loss_G / self.grad_accum_steps).backward()
+
+            # if self.global_step % self.grad_accum_steps == 0:
+            #     self.scaler.step(self.opt_G)
+            #     self.scaler.update()
+            #     self.opt_G.zero_grad(set_to_none=True)
 
             # -------------------------
             # Discriminator step
