@@ -58,16 +58,16 @@ def init_miudiff_from_stage1(model, ckpt_path: str, device):
     # Special handling for eps_cond.in_conv.weight if it has extra channels
     # eps_uncond.in_conv.weight: [Cout, 3, 3, 3]
     # eps_cond.in_conv.weight:   [Cout, 4, 3, 3] (if cond_channels=1)
-    w_un = sd.get("eps_uncond.in_conv.weight", None)
-    if w_un is not None and "eps_cond.in_conv.weight" in model_sd:
-        w_c = model_sd["eps_cond.in_conv.weight"]
+    w_un = sd.get("eps_uncond.input_conv.weight", None)
+    if w_un is not None and "eps_cond.input_conv.weight" in model_sd:
+        w_c = model_sd["eps_cond.input_conv.weight"]
         if w_c.shape[0] == w_un.shape[0] and w_c.shape[2:] == w_un.shape[2:] and w_un.shape[1] == 3:
             # copy RGB weights
             w_c[:, :3, :, :] = w_un
             # initialize extra cond channel to mean of RGB filters
             if w_c.shape[1] > 3:
                 w_c[:, 3:, :, :] = w_un.mean(dim=1, keepdim=True).repeat(1, w_c.shape[1] - 3, 1, 1)
-            model_sd["eps_cond.in_conv.weight"] = w_c
+            model_sd["eps_cond.input_conv.weight"] = w_c
 
     model.load_state_dict(model_sd, strict=False)
 
@@ -261,7 +261,7 @@ class AttentionBlock(nn.Module):
         v = v.view(B, self.num_heads, head_dim, H * W)
 
         scale = 1.0 / math.sqrt(head_dim)
-        attn = torch.einsum("bhcn,bhcm->bhnm", q * scale, k * scale)  # [B,heads,HW,HW]
+        attn = torch.einsum("bhcn,bhcm->bhnm", q, k) * scale  # [B,heads,HW,HW]
         attn = torch.softmax(attn, dim=-1)
         out = torch.einsum("bhnm,bhcm->bhcn", attn, v)               # [B,heads,head_dim,HW]
         out = out.reshape(B, C, H * W)                               # [B,C,HW]
@@ -911,8 +911,10 @@ class MIUDiff(nn.Module):
                         create_graph=False,
                         allow_unused=False,
                     )[0]
-                # apply guidance to eps
+                # apply guidance to eps and recompute x0_pred for consistency
                 eps = (eps + self.cfg.guidance_scale * grad).detach()
+                x0_pred = (y - torch.sqrt(1.0 - a_bar_t) * eps) / torch.sqrt(a_bar_t + 1e-8)
+                x0_pred = x0_pred.clamp(-1, 1)
 
             # ---- DDIM update: y_{t_next} ----
             with torch.no_grad():
