@@ -51,9 +51,18 @@ def build_model(args):
             lambda_mi=args.lambda_mi,
         )
         model = MIUDiff(cfg)
-        if args.model == "miudiff" and args.miu_stage == "finetune" and args.miu_init_ckpt:
+        if args.miu_stage == "finetune" and args.miu_init_ckpt:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            init_miudiff_from_stage1(model, args.miu_init_ckpt, device)
+            if args.miu_pcl:
+                # Stage 2→3: load checkpoint directly (eps_cond already trained).
+                # init_miudiff_from_stage1 would overwrite trained eps_cond with eps_uncond.
+                ckpt = torch.load(args.miu_init_ckpt, map_location=device)
+                sd = ckpt["model"] if "model" in ckpt else ckpt
+                missing, unexpected = model.load_state_dict(sd, strict=False)
+                print(f"Loaded stage-2 checkpoint: {len(missing)} missing, {len(unexpected)} unexpected keys")
+            else:
+                # Stage 1→2: copy eps_uncond weights into eps_cond
+                init_miudiff_from_stage1(model, args.miu_init_ckpt, device)
 
     else:
         raise ValueError(f"Unknown model: {args.model}")

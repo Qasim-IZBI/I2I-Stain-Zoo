@@ -620,6 +620,9 @@ class MIUDiffConfig:
     pcl_refine_steps: int = 0   # 0 disables
     pcl_refine_lr: float = 0.05
 
+    # MI estimator learning rate (trained with its own optimizer)
+    mi_lr: float = 1e-4
+
 
 # =========================
 # MIU-Diff model
@@ -637,6 +640,10 @@ class MIUDiff(nn.Module):
         self.eps_cond   = DDPMUNet(UNetConfig(in_channels=3 + cfg.cond_channels))
         self.mi = MIEstimator(patch=cfg.mi_patch)
 
+        # MI estimator gets its own optimizer to prevent its large/volatile
+        # gradients from starving the eps network via shared gradient clipping.
+        self._mi_opt = torch.optim.Adam(self.mi.parameters(), lr=cfg.mi_lr)
+
         # PCL modules (optional)
         if cfg.miu_pcl:
             # Compare structure features of x (grad) vs structure features of generated y (grad)
@@ -650,7 +657,9 @@ class MIUDiff(nn.Module):
 
     # ---- BaseTrainer interface ----
     def generator_parameters(self):
-        params = list(self.eps_uncond.parameters()) + list(self.eps_cond.parameters()) + list(self.mi.parameters())
+        # MI estimator is excluded — it is trained with its own optimizer
+        # inside compute_generator_loss to avoid gradient clipping interference.
+        params = list(self.eps_uncond.parameters()) + list(self.eps_cond.parameters())
         if self.cfg.miu_pcl:
             params += list(self.feat_x.parameters()) + list(self.feat_y.parameters()) + list(self.proj.parameters())
         return params
@@ -765,21 +774,23 @@ class MIUDiff(nn.Module):
             eps_pred = self.eps_uncond(y_t, t_frac)
             loss_eps = F.mse_loss(eps_pred, eps)
 
-            # with torch.cuda.amp.autocast(enabled=False):
-            #     g_y = sobel_grad(to_gray(y0.float()))
-            #     loss_mi = -self.mi_lower_bound(g_y, y0.float())
-
+            # Train MI estimator with its own optimizer (separate from eps network)
+            self._mi_opt.zero_grad()
             with torch.cuda.amp.autocast(enabled=False):
                 y0_f = y0.float().clamp(-1, 1)
-                g_y = sobel_grad(to_gray(y0_f)).clamp(0, 5)  # keep gradient magnitude sane
+                g_y = sobel_grad(to_gray(y0_f)).clamp(0, 5)
                 mi_lb = self.mi_lower_bound(g_y, y0_f)
-                loss_mi = -mi_lb  # maximize MI bound
+                loss_mi = -mi_lb
 
-            # If MI blows up, skip MI for that batch (do NOT poison training)
-            if not torch.isfinite(loss_mi):
+            if torch.isfinite(loss_mi):
+                loss_mi.backward()
+                torch.nn.utils.clip_grad_norm_(self.mi.parameters(), 1.0)
+                self._mi_opt.step()
+            else:
                 loss_mi = loss_eps.new_tensor(0.0)
 
-            loss = loss_eps + self.cfg.lambda_mi * loss_mi
+            # Only eps loss goes through the BaseTrainer's optimizer
+            loss = loss_eps
 
             logs = {
                 "loss_G": float(loss.detach().cpu()),
@@ -804,19 +815,23 @@ class MIUDiff(nn.Module):
         eps_pred = self.eps_cond(torch.cat([y_t, x_struct], dim=1), t_frac)
         loss_eps = F.mse_loss(eps_pred, eps)
 
-        # g_y = sobel_grad(to_gray(y0))
-        # loss_mi = -self.mi_lower_bound(g_y, y0)
-
+        # Train MI estimator with its own optimizer (separate from eps network)
+        self._mi_opt.zero_grad()
         with torch.cuda.amp.autocast(enabled=False):
             y0_f = y0.float().clamp(-1, 1)
             g_y = sobel_grad(to_gray(y0_f)).clamp(0, 5)
             mi_lb = self.mi_lower_bound(g_y, y0_f)
             loss_mi = -mi_lb
 
-        if not torch.isfinite(loss_mi):
+        if torch.isfinite(loss_mi):
+            loss_mi.backward()
+            torch.nn.utils.clip_grad_norm_(self.mi.parameters(), 1.0)
+            self._mi_opt.step()
+        else:
             loss_mi = loss_eps.new_tensor(0.0)
 
-        loss = loss_eps + self.cfg.lambda_mi * loss_mi
+        # Only eps loss (+ optional PCL) goes through the BaseTrainer's optimizer
+        loss = loss_eps
 
         # Optional: Patch-wise contrastive loss only for late timesteps (t <= t0_prime)
         loss_pcl = torch.tensor(0.0, device=device)
@@ -830,13 +845,6 @@ class MIUDiff(nn.Module):
 
                 loss_pcl = self.pcl_loss(x_struct[late_mask], x0_pred[late_mask])
                 loss = loss + self.cfg.lambda_pcl * loss_pcl
-
-        if not torch.isfinite(loss_eps):
-            print("[NaN] loss_eps")
-        if not torch.isfinite(loss_mi):
-            print("[NaN] loss_mi")
-        if not torch.isfinite(loss):
-            print("[NaN] loss total")
 
         logs = {
             "loss_G": float(loss.detach().cpu()),
