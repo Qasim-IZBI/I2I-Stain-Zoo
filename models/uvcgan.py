@@ -162,16 +162,23 @@ class UNetDecoder(nn.Module):
             enc_channels.append(ch)
         # enc_channels: [64, 128, 256, 512, 512] for ngf=64, n_down=4
 
-        self.ups = nn.ModuleList()
+        self.upsample = nn.ModuleList()
+        self.merge = nn.ModuleList()
         # We go from bottleneck backwards through skips
         # Bottleneck channels = enc_channels[-1]
         in_ch = enc_channels[-1]
         for i in range(n_down):
             skip_ch = enc_channels[-(i + 2)]  # matching skip
             out_ch = skip_ch
-            self.ups.append(nn.Sequential(
-                # Input: in_ch + skip_ch (after concat), but ConvTranspose first upsamples
-                nn.ConvTranspose2d(in_ch + skip_ch, out_ch, 3, stride=2, padding=1, output_padding=1, bias=True),
+            # Step 1: upsample h
+            self.upsample.append(nn.Sequential(
+                nn.ConvTranspose2d(in_ch, in_ch, 3, stride=2, padding=1, output_padding=1, bias=True),
+                nn.InstanceNorm2d(in_ch),
+                nn.ReLU(True),
+            ))
+            # Step 2: conv to merge concatenated (upsampled h + skip)
+            self.merge.append(nn.Sequential(
+                nn.Conv2d(in_ch + skip_ch, out_ch, 3, padding=1, bias=True),
                 nn.InstanceNorm2d(out_ch),
                 nn.ReLU(True),
             ))
@@ -186,10 +193,11 @@ class UNetDecoder(nn.Module):
 
     def forward(self, x: torch.Tensor, skips: List[torch.Tensor]) -> torch.Tensor:
         h = x
-        for i, up in enumerate(self.ups):
-            skip = skips[-(i + 1)]  # reverse order
-            h = torch.cat([h, skip], dim=1)
-            h = up(h)
+        for i in range(len(self.upsample)):
+            h = self.upsample[i](h)              # upsample to match skip spatial size
+            skip = skips[-(i + 1)]                # reverse order
+            h = torch.cat([h, skip], dim=1)       # concat along channels
+            h = self.merge[i](h)                  # conv to merge
         return self.head(h)
 
 
