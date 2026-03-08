@@ -15,6 +15,7 @@ from models.unit import UNIT, UNITConfig
 from models.munit import MUNIT, MUNITConfig
 from models.dclgan import DCLGAN, DCLGANConfig
 from models.miudiff import MIUDiff, MIUDiffConfig, init_miudiff_from_stage1
+from models.uvcgan import UVCGAN, UVCGANConfig
 
 
 def build_model(args):
@@ -64,6 +65,19 @@ def build_model(args):
                 # Stage 1→2: copy eps_uncond weights into eps_cond
                 init_miudiff_from_stage1(model, args.miu_init_ckpt, device)
 
+    elif args.model == "uvcgan":
+        cfg = UVCGANConfig(
+            pretrain=(args.uvcgan_stage == "pretrain"),
+            vit_n_blocks=args.uvcgan_vit_blocks,
+        )
+        model = UVCGAN(cfg)
+        if args.uvcgan_stage == "finetune" and args.uvcgan_init_ckpt:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            ckpt = torch.load(args.uvcgan_init_ckpt, map_location=device)
+            sd = ckpt["model"] if "model" in ckpt else ckpt
+            model.load_state_dict(sd, strict=True)
+            print(f"Loaded UVCGAN pretrain checkpoint from {args.uvcgan_init_ckpt}")
+
     else:
         raise ValueError(f"Unknown model: {args.model}")
 
@@ -75,7 +89,7 @@ def main():
     parser = argparse.ArgumentParser("Unified I2I Training")
 
     # ---- model ----
-    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff"], required=True)
+    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff", "uvcgan"], required=True)
 
     # ---- data ----
     parser.add_argument("--dataA", type=str, required=True)
@@ -112,6 +126,12 @@ def main():
     parser.add_argument("--pcl_temp", type=float, default=0.07)
     parser.add_argument("--miu_init_ckpt", type=str, default=None,
                     help="Checkpoint from MIU-Diff stage-1 to initialize stage-2")
+
+    # ---- UVCGAN specific ----
+    parser.add_argument("--uvcgan_stage", choices=["pretrain", "finetune"], default="finetune")
+    parser.add_argument("--uvcgan_init_ckpt", type=str, default=None,
+                    help="Checkpoint from UVCGAN pretrain stage")
+    parser.add_argument("--uvcgan_vit_blocks", type=int, default=12)
 
 
     args = parser.parse_args()

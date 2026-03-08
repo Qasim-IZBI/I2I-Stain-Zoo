@@ -13,6 +13,7 @@ from models.unit import UNIT, UNITConfig
 from models.munit import MUNIT, MUNITConfig
 from models.dclgan import DCLGAN, DCLGANConfig
 from models.miudiff import MIUDiff, MIUDiffConfig
+from models.uvcgan import UVCGAN, UVCGANConfig
 
 
 def load_model(args, device):
@@ -37,7 +38,10 @@ def load_model(args, device):
             pcl_refine_steps=args.pcl_refine_steps,
             pcl_refine_lr=args.pcl_refine_lr,
         ))
-        
+
+    elif args.model == "uvcgan":
+        model = UVCGAN(UVCGANConfig())
+
     else:
         raise ValueError(args.model)
 
@@ -50,7 +54,7 @@ def load_model(args, device):
 def main():
     parser = argparse.ArgumentParser("Unified I2I Inference")
 
-    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff"], required=True)
+    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff", "uvcgan"], required=True)
     parser.add_argument("--direction", choices=["A2B", "B2A"], required=True)
     parser.add_argument("--data", type=str, required=True)
     parser.add_argument("--ckpt", type=str, required=True)
@@ -120,6 +124,13 @@ def main():
             elif args.model == "miudiff":
                 # only meaningful direction is A2B (H&E -> IHC)
                 y = model.sample_A2B(x)
+                save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+
+            elif args.model == "uvcgan":
+                if args.direction == "A2B":
+                    y = model.forward_A2B(x)
+                else:
+                    y = model.forward_B2A(x)
                 save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
 
 
