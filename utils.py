@@ -20,6 +20,7 @@ def _process_single_image(
     stride,
     tissue_threshold,
     image_type,
+    resize_to=None,
 ):
     """
     Process a single RGB (and optional mask) image:
@@ -73,13 +74,19 @@ def _process_single_image(
 
             tile_name_base = f"{file_name}_tile_{tile_id:07d}"
             img_tile_path = output_images_dir / f"{tile_name_base}.tif"
-            Image.fromarray(rgb_tile).save(img_tile_path)
+            rgb_pil = Image.fromarray(rgb_tile)
+            if resize_to is not None:
+                rgb_pil = rgb_pil.resize((resize_to, resize_to), Image.LANCZOS)
+            rgb_pil.save(img_tile_path)
 
             mask_tile_path = None
             if has_mask:
                 mask_tile = mask_img[y:y + tile_size, x:x + tile_size]
                 mask_tile_path = output_masks_dir / f"{tile_name_base}.tif"
-                Image.fromarray(mask_tile).save(mask_tile_path)
+                mask_pil = Image.fromarray(mask_tile)
+                if resize_to is not None:
+                    mask_pil = mask_pil.resize((resize_to, resize_to), Image.NEAREST)
+                mask_pil.save(mask_tile_path)
 
             metadata_rows.append(
                 {
@@ -91,6 +98,7 @@ def _process_single_image(
                     "x": x,
                     "y": y,
                     "tile_size": tile_size,
+                    "saved_size": resize_to if resize_to is not None else tile_size,
                     "tissue_fraction": tissue_fraction
                     if tissue_fraction is not None
                     else "",
@@ -108,6 +116,7 @@ def create_tiles(
     output_folder_dir,
     mask_folder_path=None,
     tile_size=256,
+    resize_to=None,
     overlap=0,
     tissue_threshold=0.5,
     image_type="trainA",
@@ -129,7 +138,11 @@ def create_tiles(
         Root folder containing image_type subfolder with mask .tif files.
         If provided, paired mask tiles will be saved.
     tile_size : int, default 256
-        Size of square tiles.
+        Size of square tiles extracted from the WSI.
+    resize_to : int, optional
+        If provided, resize each extracted tile to this size before saving.
+        E.g., tile_size=512 with resize_to=256 extracts 512x512 tiles and
+        saves them as 256x256. RGB tiles use LANCZOS, masks use NEAREST.
     overlap : float, default 0
         Fractional overlap between tiles (0 to <1). E.g., 0.5 gives 50% overlap.
     tissue_threshold : float, default 0.5
@@ -198,6 +211,7 @@ def create_tiles(
                 stride,
                 tissue_threshold,
                 image_type,
+                resize_to,
             ): file_name
             for file_name in file_names
         }
@@ -223,6 +237,7 @@ def create_tiles(
             "x",
             "y",
             "tile_size",
+            "saved_size",
             "tissue_fraction",
             "image_type",
         ]
@@ -307,21 +322,29 @@ def reconstruct_wsi(
         for _, row in tqdm(group.iterrows(), total=len(group), desc="Placing tiles"):
             x, y = int(row["x"]), int(row["y"])
             tile_size = int(row["tile_size"])
+            saved_size = int(row["saved_size"]) if "saved_size" in row and pd.notna(row.get("saved_size")) else tile_size
+            needs_resize = saved_size != tile_size
 
             # Load RGB tile
             if mode in {"rgb", "rgb_and_mask"}:
-                rgb_tile = np.array(Image.open(row["image_path"]))
+                rgb_pil = Image.open(row["image_path"])
+                if needs_resize:
+                    rgb_pil = rgb_pil.resize((tile_size, tile_size), Image.LANCZOS)
+                rgb_tile = np.array(rgb_pil)
                 rgb_canvas[y:y+tile_size, x:x+tile_size] += rgb_tile
                 rgb_weight[y:y+tile_size, x:x+tile_size] += 1
 
             # Load mask tile if available
             if (
-                mode in {"mask", "rgb_and_mask"} 
-                and has_masks 
+                mode in {"mask", "rgb_and_mask"}
+                and has_masks
                 and isinstance(row["mask_path"], str)
                 and row["mask_path"] != ""
             ):
-                mask_tile = np.array(Image.open(row["mask_path"]))
+                mask_pil = Image.open(row["mask_path"])
+                if needs_resize:
+                    mask_pil = mask_pil.resize((tile_size, tile_size), Image.NEAREST)
+                mask_tile = np.array(mask_pil)
                 mask_canvas[y:y+tile_size, x:x+tile_size] += mask_tile
                 mask_weight[y:y+tile_size, x:x+tile_size] += 1
 
