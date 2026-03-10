@@ -6,6 +6,7 @@ Metrics:
   - fid: Distribution-level Fréchet distance (unpaired, Inception or DINO features)
   - ssim: Structural Similarity Index (paired, matched by filename)
   - patch_ssim: Patch-based SSIM — extract random patches and compute SSIM per patch (paired)
+  - lpips: Learned Perceptual Image Patch Similarity using VGG16 features (paired, lower=better)
 
 Feature backends (FID only):
   - inception: torchvision InceptionV3 pool3 (2048-d), classic FID
@@ -349,13 +350,95 @@ def compute_patch_ssim(
 
 
 # ============================================================
+# LPIPS computation (paired)
+# ============================================================
+
+class _VGGFeatures(nn.Module):
+    """VGG16 feature extractor at conv layers 1_2, 2_2, 3_3, 4_3, 5_3."""
+
+    def __init__(self):
+        super().__init__()
+        from torchvision.models import vgg16, VGG16_Weights
+        vgg = vgg16(weights=VGG16_Weights.DEFAULT).features
+        # Slice indices for relu1_2, relu2_2, relu3_3, relu4_3, relu5_3
+        self.slice1 = nn.Sequential(*list(vgg[:4]))    # relu1_2
+        self.slice2 = nn.Sequential(*list(vgg[4:9]))   # relu2_2
+        self.slice3 = nn.Sequential(*list(vgg[9:16]))  # relu3_3
+        self.slice4 = nn.Sequential(*list(vgg[16:23])) # relu4_3
+        self.slice5 = nn.Sequential(*list(vgg[23:30])) # relu5_3
+        for p in self.parameters():
+            p.requires_grad = False
+
+    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
+        h1 = self.slice1(x)
+        h2 = self.slice2(h1)
+        h3 = self.slice3(h2)
+        h4 = self.slice4(h3)
+        h5 = self.slice5(h4)
+        return [h1, h2, h3, h4, h5]
+
+
+def _normalize_tensor(x: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
+    norm = torch.sqrt(torch.sum(x ** 2, dim=1, keepdim=True) + eps)
+    return x / norm
+
+
+def compute_lpips(
+    path_real: str,
+    path_fake: str,
+    device: torch.device,
+    image_size: int = 256,
+) -> Tuple[float, List[float]]:
+    """
+    Compute LPIPS (Learned Perceptual Image Patch Similarity) between paired images
+    using VGG16 features. Lower = more similar.
+    Returns (mean_lpips, list of per-image lpips values).
+    """
+    pairs = list_paired_images(path_real, path_fake)
+    vgg = _VGGFeatures().to(device).eval()
+
+    # ImageNet normalization (LPIPS expects [0,1] input, normalized to ImageNet stats)
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+
+    tfm = transforms.Compose([
+        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.ToTensor(),  # [0, 1]
+    ])
+
+    scores = []
+    with torch.no_grad():
+        for real_path, fake_path in pairs:
+            img_r = tfm(Image.open(real_path).convert("RGB")).unsqueeze(0).to(device)
+            img_f = tfm(Image.open(fake_path).convert("RGB")).unsqueeze(0).to(device)
+
+            # Normalize to ImageNet stats
+            img_r = (img_r - mean) / std
+            img_f = (img_f - mean) / std
+
+            feats_r = vgg(img_r)
+            feats_f = vgg(img_f)
+
+            # Cosine distance per layer, spatially averaged, then summed across layers
+            dist = 0.0
+            for fr, ff in zip(feats_r, feats_f):
+                fr = _normalize_tensor(fr)
+                ff = _normalize_tensor(ff)
+                dist += torch.mean((fr - ff) ** 2, dim=[1, 2, 3]).item()
+
+            scores.append(dist)
+
+    return float(np.mean(scores)), scores
+
+
+# ============================================================
 # CLI
 # ============================================================
 
 def main():
     ap = argparse.ArgumentParser("Evaluation metrics for image-to-image translation")
-    ap.add_argument("--metric", choices=["fid", "ssim", "patch_ssim"], default="fid",
-                    help="Metric to compute: fid (unpaired), ssim (paired), patch_ssim (paired)")
+    ap.add_argument("--metric", choices=["fid", "ssim", "patch_ssim", "lpips"], default="fid",
+                    help="Metric to compute: fid (unpaired), ssim/patch_ssim/lpips (paired)")
     ap.add_argument("--path_real", required=True, type=str, help="Folder with real target-domain images")
     ap.add_argument("--path_fake", required=True, type=str, help="Folder with generated images")
     ap.add_argument("--backend", choices=["inception", "dino"], default="inception",
@@ -415,6 +498,14 @@ def main():
         )
         print(f"Patch-SSIM (real={args.path_real} vs fake={args.path_fake}): {mean_pssim:.4f}")
         print(f"N_pairs={len(per_image)}, patch_size={args.patch_size}, patches_per_image={args.patches_per_image}")
+
+    elif args.metric == "lpips":
+        device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
+        mean_lpips, per_image = compute_lpips(
+            args.path_real, args.path_fake, device, image_size=args.ssim_image_size,
+        )
+        print(f"LPIPS (real={args.path_real} vs fake={args.path_fake}): {mean_lpips:.4f}")
+        print(f"N_pairs={len(per_image)}, image_size={args.ssim_image_size}")
 
 
 if __name__ == "__main__":
