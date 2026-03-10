@@ -1,19 +1,28 @@
 # evaluation.py
 """
-Compute distribution-level distance between TWO UNPAIRED image sets using FID-style Fréchet distance.
+Compute evaluation metrics between two image sets.
 
-Feature backends:
+Metrics:
+  - fid: Distribution-level Fréchet distance (unpaired, Inception or DINO features)
+  - ssim: Structural Similarity Index (paired, matched by filename)
+  - patch_ssim: Patch-based SSIM — extract random patches and compute SSIM per patch (paired)
+
+Feature backends (FID only):
   - inception: torchvision InceptionV3 pool3 (2048-d), classic FID
   - dino: DINOv2 ViT features (typically 768/1024-d depending on model)
 
 Example (classic FID):
-  python evaluation.py --path_real data/CD13 --path_fake results/he_to_cd13 --backend inception --device cuda
+  python evaluation.py --metric fid --path_real data/CD13 --path_fake results/he_to_cd13 --backend inception --device cuda
 
-Example (DINO features + Fréchet distance):
-  python evaluation.py --path_real data/CD13 --path_fake results/he_to_cd13 --backend dino --dino_model dinov2_vits14 --device cuda
+Example (SSIM):
+  python evaluation.py --metric ssim --path_real data/CD13 --path_fake results/he_to_cd13
+
+Example (Patch SSIM):
+  python evaluation.py --metric patch_ssim --path_real data/CD13 --path_fake results/he_to_cd13 --patch_size 64 --patches_per_image 16
 
 Notes:
 - For DINO backend we still compute the same Fréchet distance formula; it's "FID-like" but not the canonical Inception FID.
+- SSIM and patch_ssim require paired images matched by filename.
 - Images are treated as RGB.
 """
 
@@ -197,14 +206,160 @@ def frechet_distance(mu1: np.ndarray, s1: np.ndarray, mu2: np.ndarray, s2: np.nd
 
 
 # ============================================================
+# SSIM computation (paired)
+# ============================================================
+
+def _gaussian_kernel_1d(size: int, sigma: float) -> torch.Tensor:
+    coords = torch.arange(size, dtype=torch.float32) - size // 2
+    g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+    return g / g.sum()
+
+
+def _gaussian_kernel_2d(size: int = 11, sigma: float = 1.5, channels: int = 3) -> torch.Tensor:
+    k1d = _gaussian_kernel_1d(size, sigma)
+    k2d = k1d.unsqueeze(1) @ k1d.unsqueeze(0)  # [size, size]
+    k2d = k2d.expand(channels, 1, size, size).contiguous()
+    return k2d
+
+
+def compute_ssim_map(
+    img1: torch.Tensor,
+    img2: torch.Tensor,
+    window_size: int = 11,
+    C1: float = (0.01 * 255) ** 2,
+    C2: float = (0.03 * 255) ** 2,
+) -> torch.Tensor:
+    """
+    Compute per-pixel SSIM map between two [B, C, H, W] tensors in [0, 255] range.
+    Returns SSIM map of shape [B, 1, H', W'].
+    """
+    channels = img1.shape[1]
+    kernel = _gaussian_kernel_2d(window_size, 1.5, channels).to(img1.device, img1.dtype)
+    pad = window_size // 2
+
+    mu1 = nn.functional.conv2d(img1, kernel, padding=pad, groups=channels)
+    mu2 = nn.functional.conv2d(img2, kernel, padding=pad, groups=channels)
+
+    mu1_sq = mu1 * mu1
+    mu2_sq = mu2 * mu2
+    mu12 = mu1 * mu2
+
+    sigma1_sq = nn.functional.conv2d(img1 * img1, kernel, padding=pad, groups=channels) - mu1_sq
+    sigma2_sq = nn.functional.conv2d(img2 * img2, kernel, padding=pad, groups=channels) - mu2_sq
+    sigma12 = nn.functional.conv2d(img1 * img2, kernel, padding=pad, groups=channels) - mu12
+
+    num = (2 * mu12 + C1) * (2 * sigma12 + C2)
+    den = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
+
+    ssim_map = num / den  # [B, C, H, W]
+    return ssim_map.mean(dim=1, keepdim=True)  # average over channels -> [B, 1, H, W]
+
+
+def list_paired_images(path_real: str, path_fake: str) -> List[Tuple[str, str]]:
+    """Match images by filename between two folders."""
+    real_map = {}
+    for p in list_images(path_real):
+        real_map[os.path.basename(p)] = p
+    fake_map = {}
+    for p in list_images(path_fake):
+        fake_map[os.path.basename(p)] = p
+
+    common = sorted(set(real_map) & set(fake_map))
+    if len(common) == 0:
+        raise FileNotFoundError(
+            f"No matching filenames between {path_real} and {path_fake}. "
+            "SSIM requires paired images with the same filenames."
+        )
+    return [(real_map[k], fake_map[k]) for k in common]
+
+
+def compute_ssim(
+    path_real: str,
+    path_fake: str,
+    image_size: int = 256,
+) -> Tuple[float, List[float]]:
+    """
+    Compute vanilla SSIM between paired images (matched by filename).
+    Returns (mean_ssim, list of per-image ssim values).
+    """
+    pairs = list_paired_images(path_real, path_fake)
+    tfm = transforms.Compose([
+        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.ToTensor(),  # [0, 1]
+    ])
+
+    scores = []
+    for real_path, fake_path in pairs:
+        img_r = tfm(Image.open(real_path).convert("RGB")).unsqueeze(0) * 255.0
+        img_f = tfm(Image.open(fake_path).convert("RGB")).unsqueeze(0) * 255.0
+        ssim_map = compute_ssim_map(img_r, img_f)
+        scores.append(float(ssim_map.mean()))
+
+    return float(np.mean(scores)), scores
+
+
+def compute_patch_ssim(
+    path_real: str,
+    path_fake: str,
+    image_size: int = 256,
+    patch_size: int = 64,
+    patches_per_image: int = 16,
+    seed: int = 42,
+) -> Tuple[float, List[float]]:
+    """
+    Compute patch-based SSIM: extract random patches from paired images,
+    compute SSIM per patch, and average.
+    Returns (mean_patch_ssim, list of per-image mean patch ssim values).
+    """
+    rng = np.random.RandomState(seed)
+    pairs = list_paired_images(path_real, path_fake)
+    tfm = transforms.Compose([
+        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.ToTensor(),
+    ])
+
+    per_image_scores = []
+    for real_path, fake_path in pairs:
+        img_r = tfm(Image.open(real_path).convert("RGB")) * 255.0  # [C, H, W]
+        img_f = tfm(Image.open(fake_path).convert("RGB")) * 255.0
+
+        H, W = img_r.shape[1], img_r.shape[2]
+        max_y = H - patch_size
+        max_x = W - patch_size
+        if max_y < 0 or max_x < 0:
+            raise ValueError(
+                f"patch_size={patch_size} exceeds image dimensions {H}x{W}. "
+                "Use a smaller patch_size or larger image_size."
+            )
+
+        patch_scores = []
+        tops = rng.randint(0, max_y + 1, size=patches_per_image)
+        lefts = rng.randint(0, max_x + 1, size=patches_per_image)
+        for t, l in zip(tops, lefts):
+            pr = img_r[:, t:t + patch_size, l:l + patch_size].unsqueeze(0)
+            pf = img_f[:, t:t + patch_size, l:l + patch_size].unsqueeze(0)
+            # Use window_size that fits the patch (must be odd, <= patch_size)
+            win = min(11, patch_size if patch_size % 2 == 1 else patch_size - 1)
+            ssim_map = compute_ssim_map(pr, pf, window_size=win)
+            patch_scores.append(float(ssim_map.mean()))
+
+        per_image_scores.append(float(np.mean(patch_scores)))
+
+    return float(np.mean(per_image_scores)), per_image_scores
+
+
+# ============================================================
 # CLI
 # ============================================================
 
 def main():
-    ap = argparse.ArgumentParser("FID-style distance for unpaired image sets (Inception or DINO features)")
+    ap = argparse.ArgumentParser("Evaluation metrics for image-to-image translation")
+    ap.add_argument("--metric", choices=["fid", "ssim", "patch_ssim"], default="fid",
+                    help="Metric to compute: fid (unpaired), ssim (paired), patch_ssim (paired)")
     ap.add_argument("--path_real", required=True, type=str, help="Folder with real target-domain images")
     ap.add_argument("--path_fake", required=True, type=str, help="Folder with generated images")
-    ap.add_argument("--backend", choices=["inception", "dino"], default="inception")
+    ap.add_argument("--backend", choices=["inception", "dino"], default="inception",
+                    help="Feature backend for FID")
 
     ap.add_argument("--batch_size", default=32, type=int)
     ap.add_argument("--num_workers", default=4, type=int)
@@ -214,28 +369,52 @@ def main():
     ap.add_argument("--dino_model", default="dinov2_vits14", type=str)
     ap.add_argument("--dino_image_size", default=224, type=int)
 
+    # SSIM / patch SSIM options
+    ap.add_argument("--ssim_image_size", default=256, type=int,
+                    help="Resize images to this size before computing SSIM")
+    ap.add_argument("--patch_size", default=64, type=int,
+                    help="Patch size for patch_ssim")
+    ap.add_argument("--patches_per_image", default=16, type=int,
+                    help="Number of random patches per image for patch_ssim")
+
     args = ap.parse_args()
 
-    device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
+    if args.metric == "fid":
+        device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
 
-    if args.backend == "inception":
-        extractor = InceptionFeatureExtractor().to(device).eval()
-        tfm = inception_transform()
-    else:
-        extractor = DINOv2FeatureExtractor(model_name=args.dino_model).to(device).eval()
-        tfm = dino_transform(image_size=args.dino_image_size)
+        if args.backend == "inception":
+            extractor = InceptionFeatureExtractor().to(device).eval()
+            tfm = inception_transform()
+        else:
+            extractor = DINOv2FeatureExtractor(model_name=args.dino_model).to(device).eval()
+            tfm = dino_transform(image_size=args.dino_image_size)
 
-    acts_real = compute_activations(args.path_real, extractor, device, tfm, args.batch_size, args.num_workers)
-    acts_fake = compute_activations(args.path_fake, extractor, device, tfm, args.batch_size, args.num_workers)
+        acts_real = compute_activations(args.path_real, extractor, device, tfm, args.batch_size, args.num_workers)
+        acts_fake = compute_activations(args.path_fake, extractor, device, tfm, args.batch_size, args.num_workers)
 
-    mu_r, sig_r = compute_stats(acts_real)
-    mu_f, sig_f = compute_stats(acts_fake)
+        mu_r, sig_r = compute_stats(acts_real)
+        mu_f, sig_f = compute_stats(acts_fake)
 
-    fid_like = frechet_distance(mu_r, sig_r, mu_f, sig_f)
+        fid_like = frechet_distance(mu_r, sig_r, mu_f, sig_f)
 
-    label = "FID" if args.backend == "inception" else "Fréchet(DINO)"
-    print(f"{label} (real={args.path_real} vs fake={args.path_fake}): {fid_like:.4f}")
-    print(f"N_real={acts_real.shape[0]}, N_fake={acts_fake.shape[0]}, feat_dim={acts_real.shape[1]}")
+        label = "FID" if args.backend == "inception" else "Fréchet(DINO)"
+        print(f"{label} (real={args.path_real} vs fake={args.path_fake}): {fid_like:.4f}")
+        print(f"N_real={acts_real.shape[0]}, N_fake={acts_fake.shape[0]}, feat_dim={acts_real.shape[1]}")
+
+    elif args.metric == "ssim":
+        mean_ssim, per_image = compute_ssim(args.path_real, args.path_fake, image_size=args.ssim_image_size)
+        print(f"SSIM (real={args.path_real} vs fake={args.path_fake}): {mean_ssim:.4f}")
+        print(f"N_pairs={len(per_image)}, image_size={args.ssim_image_size}")
+
+    elif args.metric == "patch_ssim":
+        mean_pssim, per_image = compute_patch_ssim(
+            args.path_real, args.path_fake,
+            image_size=args.ssim_image_size,
+            patch_size=args.patch_size,
+            patches_per_image=args.patches_per_image,
+        )
+        print(f"Patch-SSIM (real={args.path_real} vs fake={args.path_fake}): {mean_pssim:.4f}")
+        print(f"N_pairs={len(per_image)}, patch_size={args.patch_size}, patches_per_image={args.patches_per_image}")
 
 
 if __name__ == "__main__":
