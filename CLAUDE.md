@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-I2I-Stain-Zoo is an image-to-image translation research codebase for virtual staining of histopathology images (H&E ↔ IHC). It implements 5 models with a unified training/inference interface: CycleGAN, UNIT, MUNIT, DCLGAN, and MIUDiff (diffusion-based).
+I2I-Stain-Zoo is an image-to-image translation research codebase for virtual staining of histopathology images (H&E ↔ IHC). It implements 6 models with a unified training/inference interface: CycleGAN, UNIT, MUNIT, DCLGAN, UVCGAN, and MIUDiff (diffusion-based).
 
 ## Commands
 
@@ -17,6 +17,10 @@ python train.py --model cyclegan --dataA path/to/trainA --dataB path/to/trainB -
 python train.py --model miudiff --dataA ... --dataB ... --epochs 5 --amp --miu_stage pretrain --output ./stage1/
 python train.py --model miudiff --dataA ... --dataB ... --epochs 5 --amp --miu_stage finetune --output ./stage1/
 python train.py --model miudiff --miu_stage finetune --miu_pcl --lambda_pcl 0.1 --dataA ... --dataB ... --epochs 5 --amp --output ./stage3/
+
+# UVCGAN (2-stage): optional pretrain → finetune
+python train.py --model uvcgan --uvcgan_stage pretrain --dataA ... --dataB ... --epochs 50 --amp --output ./uvcgan_pt/
+python train.py --model uvcgan --uvcgan_stage finetune --uvcgan_init_ckpt ./uvcgan_pt/checkpoints/epoch_50.pt --dataA ... --dataB ... --epochs 100 --amp --output ./uvcgan/
 ```
 
 ### Inference
@@ -27,8 +31,27 @@ python inference.py --model cyclegan --direction A2B --data path/to/images --ckp
 
 ### Evaluation
 ```bash
-python evaluation.py --path_real real_images/ --path_fake generated_images/ --backend inception --device cuda
+# FID (unpaired, distribution-level)
+python evaluation.py --metric fid --path_real real_images/ --path_fake generated_images/ --backend inception --device cuda
 # Backends: inception (InceptionV3 pool3 2048-d) or dino (DINOv2 768/1024-d)
+
+# SSIM (paired, matched by filename)
+python evaluation.py --metric ssim --path_real real_images/ --path_fake generated_images/
+
+# Patch-based SSIM (paired)
+python evaluation.py --metric patch_ssim --path_real real_images/ --path_fake generated_images/ --patch_size 64 --patches_per_image 16
+
+# LPIPS (paired, VGG16 perceptual distance, lower=better)
+python evaluation.py --metric lpips --path_real real_images/ --path_fake generated_images/ --device cuda
+```
+
+### Tiling
+```bash
+# Basic tiling
+python tile.py --rgb path/to/wsi --output path/to/tiles --image_type trainA --tile_size 256
+
+# Extract 512x512 tiles, resize to 256x256, with tissue masks
+python tile.py --rgb path/to/wsi --output path/to/tiles --mask path/to/masks --tile_size 512 --resize_to 256 --image_type trainA --overlap 0.25
 ```
 
 ## Architecture
@@ -57,6 +80,7 @@ Reusable building blocks across all GAN models:
 | UNIT | Shared bottleneck + KL divergence on variational latent |
 | MUNIT | Content/style decomposition with AdaIN; style sampling at inference |
 | DCLGAN | Patch-level contrastive feature matching |
+| UVCGAN | UNet-ViT hybrid with cycle-consistency; optional masked image pretrain |
 | MIUDiff | Conditional DDPM with MI guidance, 3-stage training, optional PCL refinement |
 
 ### Data Pipeline
