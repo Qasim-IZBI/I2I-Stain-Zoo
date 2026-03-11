@@ -30,7 +30,6 @@ class BaseTrainer:
         grad_accum_steps: int = 1,
         save_dir: str = "checkpoints",
         sample_dir: str = "samples",
-        sample_every: int = 5000,
         save_epochs: int = 5,
     ):
         self.model = model.to(device)
@@ -39,7 +38,6 @@ class BaseTrainer:
 
         self.use_amp = use_amp
         self.grad_accum_steps = grad_accum_steps
-        self.sample_every = sample_every
 
         os.makedirs(save_dir, exist_ok=True)
         os.makedirs(sample_dir, exist_ok=True)

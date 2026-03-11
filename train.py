@@ -167,7 +167,6 @@ def main():
         lr=args.lr,
         betas=(0.5, 0.999),
         use_amp=args.amp,
-        sample_every=500,
         save_dir=args.output + '/checkpoints',
         sample_dir=args.output + '/samples',
         save_epochs=args.save_epochs
