@@ -10,6 +10,7 @@ import torch.nn.functional as F
 
 from base_models import GANLoss, NLayerDiscriminator, ImagePool
 from base_models import Encoder, Decoder, ResnetBottleneck
+from base_models import info_nce, PatchSampler
 
 
 # ============================================================
@@ -53,6 +54,7 @@ class DCLGANConfig:
 class PatchSampleF(nn.Module):
     """
     Samples patch features from a list of feature maps and projects them into proj_dim.
+    Uses PatchSampler for sampling and per-layer MLPs for projection.
     Returns:
       - projected features: list of [B*K, proj_dim]
       - patch ids: list of [B, K] linear indices (so you can sample the same patches from another map)
@@ -68,12 +70,6 @@ class PatchSampleF(nn.Module):
             ) for d in in_dims
         ])
 
-    @staticmethod
-    def _flatten_hw(feat: torch.Tensor) -> torch.Tensor:
-        # [B,C,H,W] -> [B, H*W, C]
-        B, C, H, W = feat.shape
-        return feat.permute(0, 2, 3, 1).reshape(B, H * W, C)
-
     def forward(
         self,
         feats: List[torch.Tensor],
@@ -84,26 +80,8 @@ class PatchSampleF(nn.Module):
         out_ids: List[torch.Tensor] = []
 
         for i, f in enumerate(feats):
-            B, C, H, W = f.shape
-            flat = self._flatten_hw(f)  # [B, HW, C]
-            HW = flat.shape[1]
-
-            if patch_ids is None:
-                # sample K locations per image
-                K = min(num_patches, HW)
-                ids = torch.randint(0, HW, (B, K), device=f.device)
-            else:
-                ids = patch_ids[i]
-
-            # gather: [B,K,C]
-            gathered = torch.gather(
-                flat,
-                dim=1,
-                index=ids.unsqueeze(-1).expand(-1, -1, C),
-            )
-
-            # [B*K, C]
-            gathered = gathered.reshape(-1, C)
+            ids_i = patch_ids[i] if patch_ids is not None else None
+            gathered, ids = PatchSampler.sample(f, num_patches, patch_ids=ids_i)
 
             # project
             proj = self.mlps[i](gathered)  # [B*K, proj_dim]
@@ -113,17 +91,6 @@ class PatchSampleF(nn.Module):
             out_ids.append(ids)
 
         return out_feats, out_ids
-
-
-def info_nce(q: torch.Tensor, k: torch.Tensor, temperature: float) -> torch.Tensor:
-    """
-    q,k: [N, D] with one-to-one positives by index.
-    """
-    q = F.normalize(q, dim=1)
-    k = F.normalize(k, dim=1)
-    logits = q @ k.t() / temperature
-    labels = torch.arange(q.size(0), device=q.device)
-    return F.cross_entropy(logits, labels)
 
 
 # ============================================================

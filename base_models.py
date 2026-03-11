@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import random
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 # ============================================================
@@ -506,3 +507,52 @@ class NLayerDiscriminator(nn.Module):
 def denorm01(x: torch.Tensor) -> torch.Tensor:
     """[-1,1] -> [0,1]"""
     return (x + 1.0) / 2.0
+
+
+# ============================================================
+# Patch sampling & contrastive utilities
+# ============================================================
+
+def info_nce(q: torch.Tensor, k: torch.Tensor, temperature: float = 0.07) -> torch.Tensor:
+    """InfoNCE loss with one-to-one positives by index."""
+    q = F.normalize(q, dim=1)
+    k = F.normalize(k, dim=1)
+    logits = q @ k.t() / temperature
+    labels = torch.arange(q.size(0), device=q.device)
+    return F.cross_entropy(logits, labels)
+
+
+class PatchSampler:
+    """Sample random spatial patches from [B,C,H,W] feature maps."""
+
+    @staticmethod
+    def sample(feat: torch.Tensor, n_patches: int, patch_ids: torch.Tensor | None = None):
+        """
+        Returns:
+          vecs: [B*K, C] gathered vectors
+          ids:  [B, K] linear indices into H*W
+        """
+        B, C, H, W = feat.shape
+        flat = feat.permute(0, 2, 3, 1).reshape(B, H * W, C)
+        K = min(n_patches, H * W)
+        if patch_ids is None:
+            ids = torch.randint(0, H * W, (B, K), device=feat.device)
+        else:
+            ids = patch_ids
+        gathered = torch.gather(flat, 1, ids.unsqueeze(-1).expand(-1, -1, C))
+        return gathered.reshape(-1, C), ids
+
+
+class PatchProjector(nn.Module):
+    """MLP projection head with L2 normalization."""
+
+    def __init__(self, in_dim: int, proj_dim: int = 128):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, proj_dim),
+            nn.ReLU(True),
+            nn.Linear(proj_dim, proj_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.normalize(self.mlp(x), dim=1)

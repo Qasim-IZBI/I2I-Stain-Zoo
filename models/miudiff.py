@@ -9,6 +9,8 @@ import torch.nn.functional as F
 
 import math
 
+from base_models import info_nce, PatchSampler, PatchProjector
+
 
 # =========================
 # Utilities
@@ -535,45 +537,8 @@ class SmallFeatNet(nn.Module):
     def forward(self, x):  # [B,in,H,W] -> [B,C,H,W]
         return self.net(x)
 
-class PatchProjector(nn.Module):
-    def __init__(self, in_dim: int, proj_dim: int = 128):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(in_dim, proj_dim),
-            nn.ReLU(True),
-            nn.Linear(proj_dim, proj_dim),
-        )
 
-    def forward(self, x):
-        x = self.mlp(x)
-        return F.normalize(x, dim=1)
 
-def sample_hw_patches(feat: torch.Tensor, n_patches: int, patch_ids: Optional[torch.Tensor] = None):
-    """
-    feat: [B,C,H,W]
-    returns:
-      vecs: [B*n, C]
-      ids : [B, n] indices into HW
-    """
-    B, C, H, W = feat.shape
-    flat = feat.permute(0,2,3,1).reshape(B, H*W, C)  # [B,HW,C]
-    HW = H * W
-    K = min(n_patches, HW)
-
-    if patch_ids is None:
-        ids = torch.randint(0, HW, (B, K), device=feat.device)
-    else:
-        ids = patch_ids
-
-    gathered = torch.gather(flat, 1, ids.unsqueeze(-1).expand(-1, -1, C))  # [B,K,C]
-    return gathered.reshape(-1, C), ids
-
-def info_nce(q: torch.Tensor, k: torch.Tensor, temperature: float = 0.07) -> torch.Tensor:
-    q = F.normalize(q, dim=1)
-    k = F.normalize(k, dim=1)
-    logits = q @ k.t() / temperature
-    labels = torch.arange(q.size(0), device=q.device)
-    return F.cross_entropy(logits, labels)
 
 
 # =========================
@@ -749,8 +714,8 @@ class MIUDiff(nn.Module):
         fx = self.feat_x(gx) # [B,C,H,W]
         fy = self.feat_y(gy) # [B,C,H,W]
 
-        q, ids = sample_hw_patches(fx, self.cfg.pcl_n_patches, patch_ids=None)
-        k, _   = sample_hw_patches(fy, self.cfg.pcl_n_patches, patch_ids=ids)
+        q, ids = PatchSampler.sample(fx, self.cfg.pcl_n_patches, patch_ids=None)
+        k, _   = PatchSampler.sample(fy, self.cfg.pcl_n_patches, patch_ids=ids)
 
         q = self.proj(q)
         k = self.proj(k)
