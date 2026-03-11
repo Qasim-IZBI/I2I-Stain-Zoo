@@ -77,8 +77,10 @@ class BaseTrainer:
 
     def _train_epoch(self):
         self.model.train()
+        total_steps = len(self.dataloader)
+        half_step = total_steps // 2
 
-        for batch in self.dataloader:
+        for step_in_epoch, batch in enumerate(self.dataloader, 1):
             self.global_step += 1
 
             batch = self._to_device(batch)
@@ -160,9 +162,9 @@ class BaseTrainer:
                 logs_D = {}
 
             # -------------------------
-            # Logging / sampling
+            # Logging / sampling (twice per epoch: at half and end)
             # -------------------------
-            if self.global_step % self.sample_every == 0:
+            if step_in_epoch == half_step or step_in_epoch == total_steps:
                 self.save_samples(visuals)
 
             self.log({**logs_G, **logs_D})
