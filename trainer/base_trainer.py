@@ -1,11 +1,12 @@
 # trainer/base_trainer.py
 from __future__ import annotations
 
+import csv
 import os
 import torch
 from torch import nn, optim
 from torchvision.utils import save_image
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 
 class BaseTrainer:
@@ -61,6 +62,11 @@ class BaseTrainer:
 
         self.global_step = 0
         self.epoch = 0
+
+        # --- loss logging ---
+        self.log_path = os.path.join(os.path.dirname(save_dir), "loss_log.csv")
+        self._log_header_written = os.path.exists(self.log_path)
+        self._epoch_losses: List[Dict[str, float]] = []
 
     # ============================================================
     # Core training loop
@@ -160,12 +166,17 @@ class BaseTrainer:
                 logs_D = {}
 
             # -------------------------
+            # Accumulate losses
+            # -------------------------
+            self._epoch_losses.append({**logs_G, **logs_D})
+
+            # -------------------------
             # Logging / sampling (twice per epoch: at half and end)
             # -------------------------
             if step_in_epoch == half_step or step_in_epoch == total_steps:
                 self.save_samples(visuals)
-
-            self.log({**logs_G, **logs_D})
+                avg_losses = self._flush_losses()
+                self.log(avg_losses, save=True)
 
     # ============================================================
     # Utilities
@@ -223,11 +234,31 @@ class BaseTrainer:
         self.global_step = ckpt.get("global_step", 0)
         print(f"[Checkpoint] Loaded: {path}")
 
-    def log(self, logs: Dict[str, float]):
-        """
-        Minimal logging; override or extend (TensorBoard / WandB).
-        """
-        if self.global_step % 50 == 0:
-            msg = f"[E{self.epoch:03d} | S{self.global_step:06d}] "
-            msg += " ".join([f"{k}:{v:.4f}" for k, v in logs.items()])
-            print(msg)
+    def _flush_losses(self) -> Dict[str, float]:
+        """Average accumulated losses and reset the buffer."""
+        if not self._epoch_losses:
+            return {}
+        keys = self._epoch_losses[0].keys()
+        avg = {}
+        for k in keys:
+            vals = [d[k] for d in self._epoch_losses if k in d]
+            avg[k] = sum(vals) / len(vals) if vals else 0.0
+        self._epoch_losses = []
+        return avg
+
+    def log(self, logs: Dict[str, float], save: bool = False):
+        """Print and optionally save losses to CSV."""
+        msg = f"[E{self.epoch:03d} | S{self.global_step:06d}] "
+        msg += " ".join([f"{k}:{v:.4f}" for k, v in logs.items()])
+        print(msg)
+
+        if save and logs:
+            row = {"epoch": self.epoch, "global_step": self.global_step, **logs}
+            fieldnames = list(row.keys())
+            write_header = not self._log_header_written
+            with open(self.log_path, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                if write_header:
+                    writer.writeheader()
+                    self._log_header_written = True
+                writer.writerow(row)
