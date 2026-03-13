@@ -63,6 +63,8 @@ def main():
     # MUNIT
     parser.add_argument("--style_dim", type=int, default=8)
     parser.add_argument("--num_samples", type=int, default=1)
+    parser.add_argument("--style_image", type=str, default=None,
+                        help="Reference image to extract style from (MUNIT only)")
 
     # MIU-Diff
     parser.add_argument("--miu_steps", type=int, default=300)
@@ -103,16 +105,32 @@ def main():
             elif args.model == "munit":
                 if args.direction == "A2B":
                     c, _ = model.encode_A(x)
-                    for k in range(args.num_samples):
-                        s = torch.randn(1, args.style_dim, device=device)
+                    if args.style_image:
+                        from PIL import Image
+                        ref = transform(Image.open(args.style_image).convert("RGB"))
+                        ref = ref.unsqueeze(0).to(device)
+                        _, s = model.encode_B(ref)
                         y = model.decode_B(c, s)
-                        save_image((y + 1) / 2, f"{args.outdir}/{i}_{k}.png")
+                        save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+                    else:
+                        for k in range(args.num_samples):
+                            s = torch.randn(1, args.style_dim, device=device)
+                            y = model.decode_B(c, s)
+                            save_image((y + 1) / 2, f"{args.outdir}/{i}_{k}.png")
                 else:
                     c, _ = model.encode_B(x)
-                    for k in range(args.num_samples):
-                        s = torch.randn(1, args.style_dim, device=device)
+                    if args.style_image:
+                        from PIL import Image
+                        ref = transform(Image.open(args.style_image).convert("RGB"))
+                        ref = ref.unsqueeze(0).to(device)
+                        _, s = model.encode_A(ref)
                         y = model.decode_A(c, s)
-                        save_image((y + 1) / 2, f"{args.outdir}/{i}_{k}.png")
+                        save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+                    else:
+                        for k in range(args.num_samples):
+                            s = torch.randn(1, args.style_dim, device=device)
+                            y = model.decode_A(c, s)
+                            save_image((y + 1) / 2, f"{args.outdir}/{i}_{k}.png")
             
             elif args.model == "dclgan":
                 if args.direction == "A2B":
