@@ -26,7 +26,13 @@ python train.py --model uvcgan --uvcgan_stage finetune --uvcgan_init_ckpt ./uvcg
 ### Inference
 ```bash
 python inference.py --model cyclegan --direction A2B --data path/to/images --ckpt model.pt --outdir ./output/
-# MUNIT adds --num_samples; MIUDiff adds --miu_pcl --pcl_refine_steps 3 --miu_steps 200 --miu_guidance 1.0
+# MUNIT adds --num_samples and --style_image; MIUDiff adds --miu_pcl --pcl_refine_steps 3 --miu_steps 200 --miu_guidance 1.0
+
+# MUNIT with random style sampling
+python inference.py --model munit --direction A2B --data imgs/ --ckpt model.pt --num_samples 3
+
+# MUNIT with style extracted from a reference image
+python inference.py --model munit --direction A2B --data imgs/ --ckpt model.pt --style_image ref.png
 ```
 
 ### Evaluation
@@ -53,6 +59,20 @@ python tile.py --rgb path/to/wsi --output path/to/tiles --image_type trainA --ti
 # Extract 512x512 tiles, resize to 256x256, with tissue masks
 python tile.py --rgb path/to/wsi --output path/to/tiles --mask path/to/masks --tile_size 512 --resize_to 256 --image_type trainA --overlap 0.25
 ```
+
+### Uncertainty Maps
+```bash
+# Compute epistemic uncertainty from deep ensemble outputs
+python uncertainty.py --model cyclegan --data /path/to/cyclegan/output --output ./uncertainty_out
+
+# With log compression, overlays, and custom percentile bounds
+python uncertainty.py --model cyclegan --data /path/to/cyclegan/output --output ./uncertainty_out \
+    --log-compress --overlays --lower-percentile 1 --upper-percentile 99
+```
+- Expects ensemble member directories named `model_01/`, `model_02/`, etc. under `--data`
+- Computes per-pixel variance (ddof=1) across ensemble RGB predictions, summed across channels
+- Global percentile-based normalisation ensures comparable maps across images
+- Outputs: `raw_npy/`, `norm_npy/`, `heatmaps/` (magma colormap with colorbar), optional `overlays/`, `summary.json`
 
 ## Architecture
 
@@ -97,4 +117,4 @@ Reusable building blocks across all GAN models:
 - AMP (automatic mixed precision) supported via `--amp` flag
 - Checkpoints saved as `{"model": state_dict}` in `output/checkpoints/`
 - No external diffusion libraries — DDPM/DDIM sampling implemented from scratch in `models/miudiff.py`
-- No requirements.txt — core deps: torch, torchvision, numpy, PIL, tifffile, tqdm, pandas
+- No requirements.txt — core deps: torch, torchvision, numpy, PIL, tifffile, tqdm, pandas, matplotlib
