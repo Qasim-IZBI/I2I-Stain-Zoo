@@ -118,6 +118,7 @@ Reusable building blocks across all GAN models:
 
 - All images normalized to [-1, 1] during training; denormalized to [0, 1] for saving
 - AMP (automatic mixed precision) supported via `--amp` flag
-- Checkpoints saved as `{"model": state_dict}` in `output/checkpoints/`
+- Checkpoints saved as `{"model": state_dict, "config": asdict(cfg), "model_name": str, ...}` in `output/checkpoints/`
+- Config is auto-restored from checkpoint on `--init_ckpt` (train) and `--ckpt` (inference); old checkpoints without `"config"` fall back to CLI args/defaults
 - No external diffusion libraries — DDPM/DDIM sampling implemented from scratch in `models/miudiff.py`
 - No requirements.txt — core deps: torch, torchvision, numpy, PIL, tifffile, tqdm, pandas, matplotlib

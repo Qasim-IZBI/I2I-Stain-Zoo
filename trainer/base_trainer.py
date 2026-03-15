@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import csv
 import os
+from dataclasses import asdict
+
 import torch
 from torch import nn, optim
 from torchvision.utils import save_image
@@ -25,6 +27,7 @@ class BaseTrainer:
         dataloader,
         *,
         device: torch.device,
+        model_name: str = "",
         lr: float = 2e-4,
         betas=(0.5, 0.999),
         use_amp: bool = False,
@@ -36,6 +39,7 @@ class BaseTrainer:
         self.model = model.to(device)
         self.dataloader = dataloader
         self.device = device
+        self.model_name = model_name
 
         self.use_amp = use_amp
         self.grad_accum_steps = grad_accum_steps
@@ -218,6 +222,8 @@ class BaseTrainer:
             "global_step": self.global_step,
             "model": self.model.state_dict(),
             "opt_G": self.opt_G.state_dict(),
+            "config": asdict(self.model.cfg),
+            "model_name": self.model_name,
         }
         if self.opt_D is not None:
             state["opt_D"] = self.opt_D.state_dict()

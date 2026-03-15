@@ -17,36 +17,58 @@ from models.uvcgan import UVCGAN, UVCGANConfig
 
 
 def load_model(args, device):
+    ckpt = torch.load(args.ckpt, map_location=device)
+    saved_cfg = ckpt.get("config")
+
     if args.model == "cyclegan":
-        model = CycleGAN(CycleGANConfig())
+        cfg = CycleGANConfig(**saved_cfg) if saved_cfg else CycleGANConfig()
+        model = CycleGAN(cfg)
 
     elif args.model == "unit":
-        model = UNIT(UNITConfig())
+        cfg = UNITConfig(**saved_cfg) if saved_cfg else UNITConfig()
+        model = UNIT(cfg)
 
     elif args.model == "munit":
-        model = MUNIT(MUNITConfig(style_dim=args.style_dim))
+        cfg = MUNITConfig(**saved_cfg) if saved_cfg else MUNITConfig(style_dim=args.style_dim)
+        model = MUNIT(cfg)
 
     elif args.model == "dclgan":
-        model = DCLGAN(DCLGANConfig())
+        cfg = DCLGANConfig(**saved_cfg) if saved_cfg else DCLGANConfig()
+        model = DCLGAN(cfg)
 
     elif args.model == "miudiff":
-        model = MIUDiff(MIUDiffConfig(
-            stage="finetune",
-            sample_steps=args.miu_steps,
-            guidance_scale=args.miu_guidance,
-            miu_pcl=args.miu_pcl,
-            pcl_refine_steps=args.pcl_refine_steps,
-            pcl_refine_lr=args.pcl_refine_lr,
-        ))
+        if saved_cfg:
+            # Override runtime-only params from CLI args
+            saved_cfg["stage"] = "finetune"
+            saved_cfg["sample_steps"] = args.miu_steps
+            saved_cfg["guidance_scale"] = args.miu_guidance
+            saved_cfg["miu_pcl"] = args.miu_pcl
+            saved_cfg["pcl_refine_steps"] = args.pcl_refine_steps
+            saved_cfg["pcl_refine_lr"] = args.pcl_refine_lr
+            cfg = MIUDiffConfig(**saved_cfg)
+        else:
+            cfg = MIUDiffConfig(
+                stage="finetune",
+                sample_steps=args.miu_steps,
+                guidance_scale=args.miu_guidance,
+                miu_pcl=args.miu_pcl,
+                pcl_refine_steps=args.pcl_refine_steps,
+                pcl_refine_lr=args.pcl_refine_lr,
+            )
+        model = MIUDiff(cfg)
 
     elif args.model == "uvcgan":
-        model = UVCGAN(UVCGANConfig())
+        cfg = UVCGANConfig(**saved_cfg) if saved_cfg else UVCGANConfig()
+        model = UVCGAN(cfg)
 
     else:
         raise ValueError(args.model)
 
-    ckpt = torch.load(args.ckpt, map_location=device)
-    model.load_state_dict(ckpt["model"])
+    if saved_cfg:
+        print(f"Restored {args.model} config from checkpoint")
+
+    sd = ckpt["model"] if "model" in ckpt else ckpt
+    model.load_state_dict(sd)
     model.to(device).eval()
     return model
 
@@ -114,7 +136,7 @@ def main():
                         save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
                     else:
                         for k in range(args.num_samples):
-                            s = torch.randn(1, args.style_dim, device=device)
+                            s = torch.randn(1, model.cfg.style_dim, device=device)
                             y = model.decode_B(c, s)
                             save_image((y + 1) / 2, f"{args.outdir}/{i}_{k}.png")
                 else:
@@ -128,7 +150,7 @@ def main():
                         save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
                     else:
                         for k in range(args.num_samples):
-                            s = torch.randn(1, args.style_dim, device=device)
+                            s = torch.randn(1, model.cfg.style_dim, device=device)
                             y = model.decode_A(c, s)
                             save_image((y + 1) / 2, f"{args.outdir}/{i}_{k}.png")
             
