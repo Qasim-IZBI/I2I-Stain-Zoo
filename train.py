@@ -52,18 +52,19 @@ def build_model(args):
             lambda_mi=args.lambda_mi,
         )
         model = MIUDiff(cfg)
-        if args.miu_stage == "finetune" and args.miu_init_ckpt:
+        init_ckpt = args.miu_init_ckpt or args.init_ckpt
+        if args.miu_stage == "finetune" and init_ckpt:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             if args.miu_pcl:
                 # Stage 2→3: load checkpoint directly (eps_cond already trained).
                 # init_miudiff_from_stage1 would overwrite trained eps_cond with eps_uncond.
-                ckpt = torch.load(args.miu_init_ckpt, map_location=device)
+                ckpt = torch.load(init_ckpt, map_location=device)
                 sd = ckpt["model"] if "model" in ckpt else ckpt
                 missing, unexpected = model.load_state_dict(sd, strict=False)
                 print(f"Loaded stage-2 checkpoint: {len(missing)} missing, {len(unexpected)} unexpected keys")
             else:
                 # Stage 1→2: copy eps_uncond weights into eps_cond
-                init_miudiff_from_stage1(model, args.miu_init_ckpt, device)
+                init_miudiff_from_stage1(model, init_ckpt, device)
 
     elif args.model == "uvcgan":
         cfg = UVCGANConfig(
@@ -71,15 +72,27 @@ def build_model(args):
             vit_n_blocks=args.uvcgan_vit_blocks,
         )
         model = UVCGAN(cfg)
-        if args.uvcgan_stage == "finetune" and args.uvcgan_init_ckpt:
+        uvcgan_ckpt = args.uvcgan_init_ckpt or args.init_ckpt
+        if args.uvcgan_stage == "finetune" and uvcgan_ckpt:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            ckpt = torch.load(args.uvcgan_init_ckpt, map_location=device)
+            ckpt = torch.load(uvcgan_ckpt, map_location=device)
             sd = ckpt["model"] if "model" in ckpt else ckpt
             model.load_state_dict(sd, strict=True)
-            print(f"Loaded UVCGAN pretrain checkpoint from {args.uvcgan_init_ckpt}")
+            print(f"Loaded UVCGAN pretrain checkpoint from {uvcgan_ckpt}")
 
     else:
         raise ValueError(f"Unknown model: {args.model}")
+
+    if args.init_ckpt and args.model in ("cyclegan", "unit", "munit", "dclgan"):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        ckpt = torch.load(args.init_ckpt, map_location=device)
+        sd = ckpt["model"] if "model" in ckpt else ckpt
+        missing, unexpected = model.load_state_dict(sd, strict=False)
+        print(f"Loaded pretrained checkpoint from {args.init_ckpt}")
+        if missing:
+            print(f"  {len(missing)} missing key(s)")
+        if unexpected:
+            print(f"  {len(unexpected)} unexpected key(s)")
 
     return model
 
@@ -103,6 +116,8 @@ def main():
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--save_epochs", type=int, default=5)
+    parser.add_argument("--init_ckpt", type=str, default=None,
+                    help="Pretrained checkpoint to initialise model weights")
 
     # ---- MUNIT specific ----
     parser.add_argument("--style_dim", type=int, default=8)

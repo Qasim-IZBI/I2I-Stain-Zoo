@@ -13,6 +13,9 @@ I2I-Stain-Zoo is an image-to-image translation research codebase for virtual sta
 # GAN models (cyclegan, unit, munit, dclgan)
 python train.py --model cyclegan --dataA path/to/trainA --dataB path/to/trainB --epochs 100 --amp --output ./results/
 
+# Resume/initialise any model from a pretrained checkpoint
+python train.py --model cyclegan --dataA ... --dataB ... --epochs 50 --init_ckpt ./prev_run/checkpoints/epoch_50.pt --output ./new_run/
+
 # MIUDiff (3-stage): pretrain → finetune → finetune+PCL
 python train.py --model miudiff --dataA ... --dataB ... --epochs 5 --amp --miu_stage pretrain --output ./stage1/
 python train.py --model miudiff --dataA ... --dataB ... --epochs 5 --amp --miu_stage finetune --output ./stage1/
