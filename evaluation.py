@@ -30,6 +30,7 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 from typing import List, Tuple
 
@@ -432,6 +433,19 @@ def compute_lpips(
 
 
 # ============================================================
+# CSV output
+# ============================================================
+
+def _save_csv(path: str, fieldnames: List[str], rows: List[dict]):
+    os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"Results saved to {path}")
+
+
+# ============================================================
 # CLI
 # ============================================================
 
@@ -460,6 +474,10 @@ def main():
     ap.add_argument("--patches_per_image", default=16, type=int,
                     help="Number of random patches per image for patch_ssim")
 
+    # Output
+    ap.add_argument("--save_csv", type=str, default=None,
+                    help="Save results to a CSV file (summary + per-image scores when available)")
+
     args = ap.parse_args()
 
     if args.metric == "fid":
@@ -484,10 +502,21 @@ def main():
         print(f"{label} (real={args.path_real} vs fake={args.path_fake}): {fid_like:.4f}")
         print(f"N_real={acts_real.shape[0]}, N_fake={acts_fake.shape[0]}, feat_dim={acts_real.shape[1]}")
 
+        if args.save_csv:
+            _save_csv(args.save_csv, ["metric", "value", "backend", "n_real", "n_fake"],
+                      [{"metric": label, "value": f"{fid_like:.6f}", "backend": args.backend,
+                        "n_real": acts_real.shape[0], "n_fake": acts_fake.shape[0]}])
+
     elif args.metric == "ssim":
         mean_ssim, per_image = compute_ssim(args.path_real, args.path_fake, image_size=args.ssim_image_size)
+        pairs = list_paired_images(args.path_real, args.path_fake)
         print(f"SSIM (real={args.path_real} vs fake={args.path_fake}): {mean_ssim:.4f}")
         print(f"N_pairs={len(per_image)}, image_size={args.ssim_image_size}")
+
+        if args.save_csv:
+            rows = [{"filename": os.path.basename(p[0]), "ssim": f"{s:.6f}"} for p, s in zip(pairs, per_image)]
+            rows.append({"filename": "MEAN", "ssim": f"{mean_ssim:.6f}"})
+            _save_csv(args.save_csv, ["filename", "ssim"], rows)
 
     elif args.metric == "patch_ssim":
         mean_pssim, per_image = compute_patch_ssim(
@@ -496,16 +525,28 @@ def main():
             patch_size=args.patch_size,
             patches_per_image=args.patches_per_image,
         )
+        pairs = list_paired_images(args.path_real, args.path_fake)
         print(f"Patch-SSIM (real={args.path_real} vs fake={args.path_fake}): {mean_pssim:.4f}")
         print(f"N_pairs={len(per_image)}, patch_size={args.patch_size}, patches_per_image={args.patches_per_image}")
+
+        if args.save_csv:
+            rows = [{"filename": os.path.basename(p[0]), "patch_ssim": f"{s:.6f}"} for p, s in zip(pairs, per_image)]
+            rows.append({"filename": "MEAN", "patch_ssim": f"{mean_pssim:.6f}"})
+            _save_csv(args.save_csv, ["filename", "patch_ssim"], rows)
 
     elif args.metric == "lpips":
         device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
         mean_lpips, per_image = compute_lpips(
             args.path_real, args.path_fake, device, image_size=args.ssim_image_size,
         )
+        pairs = list_paired_images(args.path_real, args.path_fake)
         print(f"LPIPS (real={args.path_real} vs fake={args.path_fake}): {mean_lpips:.4f}")
         print(f"N_pairs={len(per_image)}, image_size={args.ssim_image_size}")
+
+        if args.save_csv:
+            rows = [{"filename": os.path.basename(p[0]), "lpips": f"{s:.6f}"} for p, s in zip(pairs, per_image)]
+            rows.append({"filename": "MEAN", "lpips": f"{mean_lpips:.6f}"})
+            _save_csv(args.save_csv, ["filename", "lpips"], rows)
 
 
 if __name__ == "__main__":
