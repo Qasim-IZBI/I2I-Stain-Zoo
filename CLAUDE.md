@@ -52,6 +52,9 @@ python evaluation.py --metric patch_ssim --path_real real_images/ --path_fake ge
 
 # LPIPS (paired, VGG16 perceptual distance, lower=better)
 python evaluation.py --metric lpips --path_real real_images/ --path_fake generated_images/ --device cuda
+
+# Save results to CSV (works with any metric)
+python evaluation.py --metric ssim --path_real real_images/ --path_fake generated_images/ --save_csv results.csv
 ```
 
 ### Tiling
