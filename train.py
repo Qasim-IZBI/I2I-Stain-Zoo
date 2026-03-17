@@ -95,6 +95,7 @@ def build_model(args):
         cfg = UVCGANConfig(
             pretrain=(args.uvcgan_stage == "pretrain"),
             vit_n_blocks=args.uvcgan_vit_blocks,
+            vit_features=args.uvcgan_vit_features,
         )
         model = UVCGAN(cfg)
         uvcgan_ckpt = args.uvcgan_init_ckpt or args.init_ckpt
@@ -179,6 +180,8 @@ def main():
     parser.add_argument("--uvcgan_init_ckpt", type=str, default=None,
                     help="Checkpoint from UVCGAN pretrain stage")
     parser.add_argument("--uvcgan_vit_blocks", type=int, default=12)
+    parser.add_argument("--uvcgan_vit_features", type=int, default=384,
+                    help="ViT hidden dimension for UVCGAN bottleneck")
 
 
     args = parser.parse_args()

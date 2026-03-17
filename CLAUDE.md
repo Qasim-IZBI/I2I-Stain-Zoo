@@ -27,6 +27,9 @@ python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,2,
 # UVCGAN (2-stage): optional pretrain → finetune
 python train.py --model uvcgan --uvcgan_stage pretrain --dataA ... --dataB ... --epochs 50 --amp --output ./uvcgan_pt/
 python train.py --model uvcgan --uvcgan_stage finetune --uvcgan_init_ckpt ./uvcgan_pt/checkpoints/epoch_50.pt --dataA ... --dataB ... --epochs 100 --amp --output ./uvcgan/
+
+# UVCGAN ViT architecture controls (defaults: vit_n_blocks=12, vit_features=384)
+python train.py --model uvcgan --uvcgan_vit_blocks 6 --uvcgan_vit_features 192 --dataA ... --dataB ... --epochs 100 --amp --output ./uvcgan/
 ```
 
 ### Inference
