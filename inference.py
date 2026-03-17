@@ -107,22 +107,23 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
 
     with torch.no_grad():
-        for i, (x,path) in enumerate(loader):
+        for i, (x, path) in enumerate(loader):
             x = x.to(device)
+            stem = os.path.splitext(os.path.basename(path[0]))[0]
 
             if args.model == "cyclegan":
                 if args.direction == "A2B":
                     y = model.forward_A2B(x)
                 else:
                     y = model.forward_B2A(x)
-                save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+                save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "unit":
                 if args.direction == "A2B":
                     y, _ = model.forward_A2B(x)
                 else:
                     y, _ = model.forward_B2A(x)
-                save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+                save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "munit":
                 if args.direction == "A2B":
@@ -133,12 +134,12 @@ def main():
                         ref = ref.unsqueeze(0).to(device)
                         _, s = model.encode_B(ref)
                         y = model.decode_B(c, s)
-                        save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+                        save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
                     else:
                         for k in range(args.num_samples):
                             s = torch.randn(1, model.cfg.style_dim, device=device)
                             y = model.decode_B(c, s)
-                            save_image((y + 1) / 2, f"{args.outdir}/{i}_{k}.png")
+                            save_image((y + 1) / 2, f"{args.outdir}/{stem}_{k}.tif")
                 else:
                     c, _ = model.encode_B(x)
                     if args.style_image:
@@ -147,31 +148,31 @@ def main():
                         ref = ref.unsqueeze(0).to(device)
                         _, s = model.encode_A(ref)
                         y = model.decode_A(c, s)
-                        save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+                        save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
                     else:
                         for k in range(args.num_samples):
                             s = torch.randn(1, model.cfg.style_dim, device=device)
                             y = model.decode_A(c, s)
-                            save_image((y + 1) / 2, f"{args.outdir}/{i}_{k}.png")
-            
+                            save_image((y + 1) / 2, f"{args.outdir}/{stem}_{k}.tif")
+
             elif args.model == "dclgan":
                 if args.direction == "A2B":
                     y, _ = model.G_A2B(x)
                 else:
                     y, _ = model.G_B2A(x)
-                save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+                save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "miudiff":
                 # only meaningful direction is A2B (H&E -> IHC)
                 y = model.sample_A2B(x)
-                save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+                save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "uvcgan":
                 if args.direction == "A2B":
                     y = model.forward_A2B(x)
                 else:
                     y = model.forward_B2A(x)
-                save_image((y + 1) / 2, f"{args.outdir}/{i}.png")
+                save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
 
 
 
