@@ -554,6 +554,7 @@ class MIUDiffConfig:
 
     # networks
     base_channels: int = 64
+    channel_mult: Tuple[int, ...] = (1, 2, 2, 4)  # 4 levels: 64→128→128→256
     tdim: int = 128
 
     # conditioning
@@ -601,8 +602,8 @@ class MIUDiff(nn.Module):
 
         # self.eps_uncond = EpsUNet(in_ch=3, base=cfg.base_channels, tdim=cfg.tdim)
         # self.eps_cond = EpsUNet(in_ch=3 + cfg.cond_channels, base=cfg.base_channels, tdim=cfg.tdim)
-        self.eps_uncond = DDPMUNet(UNetConfig(in_channels=3))
-        self.eps_cond   = DDPMUNet(UNetConfig(in_channels=3 + cfg.cond_channels))
+        self.eps_uncond = DDPMUNet(UNetConfig(in_channels=3, base_channels=cfg.base_channels, channel_mult=cfg.channel_mult))
+        self.eps_cond   = DDPMUNet(UNetConfig(in_channels=3 + cfg.cond_channels, base_channels=cfg.base_channels, channel_mult=cfg.channel_mult))
         self.mi = MIEstimator(patch=cfg.mi_patch)
 
         # MI estimator gets its own optimizer to prevent its large/volatile

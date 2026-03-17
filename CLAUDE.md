@@ -21,6 +21,9 @@ python train.py --model miudiff --dataA ... --dataB ... --epochs 5 --amp --miu_s
 python train.py --model miudiff --dataA ... --dataB ... --epochs 5 --amp --miu_stage finetune --output ./stage1/
 python train.py --model miudiff --miu_stage finetune --miu_pcl --lambda_pcl 0.1 --dataA ... --dataB ... --epochs 5 --amp --output ./stage3/
 
+# MIUDiff UNet architecture controls (defaults: base_channels=64, channel_mult=1,2,2,4)
+python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,2,4 --dataA ... --dataB ... --epochs 5 --amp --miu_stage pretrain --output ./out/
+
 # UVCGAN (2-stage): optional pretrain → finetune
 python train.py --model uvcgan --uvcgan_stage pretrain --dataA ... --dataB ... --epochs 50 --amp --output ./uvcgan_pt/
 python train.py --model uvcgan --uvcgan_stage finetune --uvcgan_init_ckpt ./uvcgan_pt/checkpoints/epoch_50.pt --dataA ... --dataB ... --epochs 100 --amp --output ./uvcgan/

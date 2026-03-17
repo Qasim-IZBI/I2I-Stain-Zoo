@@ -66,6 +66,8 @@ def build_model(args):
             stage=args.miu_stage,
             sample_steps=args.miu_steps,
             guidance_scale=args.miu_guidance,
+            base_channels=args.miu_base_channels,
+            channel_mult=tuple(int(x) for x in args.miu_channel_mult.split(",")),
             miu_pcl=args.miu_pcl,
             lambda_pcl=args.lambda_pcl,
             pcl_n_patches=args.pcl_n_patches,
@@ -155,10 +157,14 @@ def main():
     parser.add_argument("--proj_dim", type=int, default=256)
 
 
-    # ---- MIU-Diff PCL  specific ----
+    # ---- MIU-Diff specific ----
     parser.add_argument("--miu_stage", choices=["pretrain", "finetune"], default="pretrain")
     parser.add_argument("--miu_steps", type=int, default=300)
     parser.add_argument("--miu_guidance", type=float, default=1.0)
+    parser.add_argument("--miu_base_channels", type=int, default=64,
+                    help="Base channel width for MIUDiff UNet")
+    parser.add_argument("--miu_channel_mult", type=str, default="1,2,2,4",
+                    help="Comma-separated channel multipliers for MIUDiff UNet")
     parser.add_argument("--miu_pcl", action="store_true")
     parser.add_argument("--lambda_mi", type=float, default=1.0)
     parser.add_argument("--lambda_pcl", type=float, default=0.1)
