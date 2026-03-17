@@ -12,6 +12,7 @@ from tqdm.auto import tqdm
 
 def _process_single_image(
     file_name,
+    img_idx,
     rgb_folder,
     output_images_dir,
     output_masks_dir,
@@ -72,7 +73,7 @@ def _process_single_image(
             if not save_tile:
                 continue
 
-            tile_name_base = f"{file_name}_tile_{tile_id:07d}"
+            tile_name_base = f"i{img_idx:03d}_tile_{tile_id:07d}"
             img_tile_path = output_images_dir / f"{tile_name_base}.tif"
             rgb_pil = Image.fromarray(rgb_tile)
             if resize_to is not None:
@@ -177,11 +178,11 @@ def create_tiles(
             f"Got stride={stride} for tile_size={tile_size}."
         )
 
-    # Collect list of .tif files
-    file_names = [
+    # Collect list of .tif files (sorted for deterministic index assignment)
+    file_names = sorted(
         f for f in os.listdir(rgb_folder)
         if f.lower().endswith(".tif")
-    ]
+    )
 
     if not file_names:
         print(f"No .tif files found in {rgb_folder}")
@@ -203,6 +204,7 @@ def create_tiles(
             executor.submit(
                 _process_single_image,
                 file_name,
+                img_idx,
                 rgb_folder,
                 output_images_dir,
                 output_masks_dir,
@@ -213,7 +215,7 @@ def create_tiles(
                 image_type,
                 resize_to,
             ): file_name
-            for file_name in file_names
+            for img_idx, file_name in enumerate(file_names, start=1)
         }
 
         for future in tqdm(as_completed(futures), total=len(futures), desc="Tiling"):
@@ -257,7 +259,8 @@ def create_tiles(
 def reconstruct_wsi(
     metadata_csv,
     output_dir,
-    mode="rgb_and_mask",
+    tile_dir=None,
+    mode="rgb",
     blend="average",   # "average" or "overwrite"
 ):
     """
@@ -269,6 +272,10 @@ def reconstruct_wsi(
         Path to the tiles_metadata.csv generated during tiling.
     output_dir : str or Path
         Where reconstructed WSIs will be saved.
+    tile_dir : str or Path, optional
+        Directory containing tile images to reconstruct from. Tiles are
+        matched by ``tile_name`` from the CSV (tries .tif, .png, .jpg).
+        If None, falls back to the ``image_path`` column in the CSV.
     mode : str
         "rgb" -> reconstruct only RGB images
         "mask" -> reconstruct only mask images
@@ -286,6 +293,7 @@ def reconstruct_wsi(
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    tile_dir = Path(tile_dir) if tile_dir else None
 
     df = pd.read_csv(metadata_csv)
 
@@ -301,7 +309,6 @@ def reconstruct_wsi(
 
         print(f"\nReconstructing WSI: {source_file}")
         wsi_name = Path(source_file).stem  # removes .tif extension
-
 
         # Determine output WSI size
         max_x = (group["x"] + group["tile_size"]).max()
@@ -325,9 +332,12 @@ def reconstruct_wsi(
             saved_size = int(row["saved_size"]) if "saved_size" in row and pd.notna(row.get("saved_size")) else tile_size
             needs_resize = saved_size != tile_size
 
+            # Resolve tile image path
+            tile_path = _resolve_tile_path(row, tile_dir)
+
             # Load RGB tile
-            if mode in {"rgb", "rgb_and_mask"}:
-                rgb_pil = Image.open(row["image_path"])
+            if mode in {"rgb", "rgb_and_mask"} and tile_path is not None:
+                rgb_pil = Image.open(tile_path)
                 if needs_resize:
                     rgb_pil = rgb_pil.resize((tile_size, tile_size), Image.LANCZOS)
                 rgb_tile = np.array(rgb_pil)
@@ -352,7 +362,7 @@ def reconstruct_wsi(
         def finalize(canvas, weight):
             if blend == "average":
                 canvas = np.divide(
-                    canvas, weight, 
+                    canvas, weight,
                     out=np.zeros_like(canvas),
                     where=weight > 0
                 )
@@ -380,4 +390,16 @@ def reconstruct_wsi(
 
     print("\nReconstruction complete!")
     return results
+
+
+def _resolve_tile_path(row, tile_dir):
+    """Return the path to a tile image, checking tile_dir first then image_path."""
+    if tile_dir is not None:
+        tile_name = row["tile_name"]
+        for ext in (".tif", ".png", ".jpg", ".jpeg", ".bmp", ".webp"):
+            candidate = tile_dir / f"{tile_name}{ext}"
+            if candidate.exists():
+                return candidate
+        return None
+    return row["image_path"]
 

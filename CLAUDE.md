@@ -72,6 +72,18 @@ python tile.py --rgb path/to/wsi --output path/to/tiles --image_type trainA --ti
 python tile.py --rgb path/to/wsi --output path/to/tiles --mask path/to/masks --tile_size 512 --resize_to 256 --image_type trainA --overlap 0.25
 ```
 
+### Reconstruction
+```bash
+# Reconstruct WSI from original tiles (uses image_path from metadata CSV)
+python reconstruct.py --metadata path/to/tiles/trainA/tiles_metadata.csv --output ./reconstructed/
+
+# Reconstruct from translated tiles (e.g. inference output directory)
+python reconstruct.py --metadata path/to/tiles/testA/tiles_metadata.csv --tile_dir ./inference_output/ --output ./reconstructed/
+
+# Reconstruct both RGB and mask, with average blending for overlaps
+python reconstruct.py --metadata path/to/tiles_metadata.csv --output ./reconstructed/ --mode rgb_and_mask --blend average
+```
+
 ### Uncertainty Maps
 ```bash
 # Compute epistemic uncertainty from deep ensemble outputs
