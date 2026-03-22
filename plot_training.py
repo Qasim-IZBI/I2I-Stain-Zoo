@@ -63,7 +63,17 @@ def main():
     plt.close(fig)
     print(f"Saved loss plot to {plot_path}")
 
-    # ---- Load checkpoint for hyperparameters ----
+    # ---- Load training metadata (saved by BaseTrainer at start of training) ----
+    meta_path = os.path.join(run_dir, "training_meta.json")
+    training_meta = None
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            training_meta = json.load(f)
+        print(f"Loaded training metadata from {meta_path}")
+    else:
+        print("No training_meta.json found — falling back to checkpoint only")
+
+    # ---- Load checkpoint for config (fallback if no training_meta) ----
     model_name = None
     config = None
     ckpt_path = find_latest_checkpoint(ckpt_dir)
@@ -72,23 +82,31 @@ def main():
         model_name = ckpt.get("model_name")
         config = ckpt.get("config")
         print(f"Loaded config from {ckpt_path}")
-    else:
-        print("No checkpoint found — summary will not include hyperparameters")
 
     # ---- Build summary ----
     last_row = df.iloc[-1]
     final_losses = {col: float(last_row[col]) for col in loss_cols}
 
-    summary = {
-        "model_name": model_name,
-        "config": _make_serializable(config) if config else None,
-        "training_info": {
+    # Use training_meta as base if available, otherwise build from checkpoint
+    if training_meta:
+        summary = training_meta
+        summary["training_info"] = {
             "total_epochs": int(df["epoch"].max()),
             "total_steps": int(df["global_step"].max()),
             "final_losses": final_losses,
-        },
-        "loss_history": df.to_dict(orient="records"),
-    }
+        }
+    else:
+        summary = {
+            "model_name": model_name,
+            "config": _make_serializable(config) if config else None,
+            "training_info": {
+                "total_epochs": int(df["epoch"].max()),
+                "total_steps": int(df["global_step"].max()),
+                "final_losses": final_losses,
+            },
+        }
+
+    summary["loss_history"] = df.to_dict(orient="records")
 
     summary_path = os.path.join(run_dir, "training_summary.json")
     with open(summary_path, "w") as f:

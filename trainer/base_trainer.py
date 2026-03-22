@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 from dataclasses import asdict
 
@@ -67,6 +68,10 @@ class BaseTrainer:
         self.global_step = 0
         self.epoch = 0
 
+        # --- training metadata ---
+        self.lr = lr
+        self.betas = betas
+
         # --- loss logging ---
         self.log_path = os.path.join(os.path.dirname(save_dir), "loss_log.csv")
         self._log_header_written = os.path.exists(self.log_path)
@@ -77,6 +82,7 @@ class BaseTrainer:
     # ============================================================
 
     def train(self, num_epochs: int):
+        self._save_training_meta(num_epochs)
         for epoch in range(1, num_epochs + 1):
             self.epoch = epoch
             self._train_epoch()
@@ -186,6 +192,42 @@ class BaseTrainer:
     # Utilities
     # ============================================================
 
+    def _save_training_meta(self, num_epochs: int):
+        """Save training metadata at the start of training for later analysis."""
+        dataset = self.dataloader.dataset
+        data_info = {"total_images": len(dataset)}
+        if hasattr(dataset, "A_paths"):
+            data_info["trainA_images"] = len(dataset.A_paths)
+        if hasattr(dataset, "B_paths"):
+            data_info["trainB_images"] = len(dataset.B_paths)
+
+        g_params = sum(p.numel() for p in self.model.generator_parameters())
+        d_params = sum(p.numel() for p in self.model.discriminator_parameters()) if hasattr(self.model, "discriminator_parameters") else 0
+
+        meta = {
+            "model_name": self.model_name,
+            "config": _make_serializable(asdict(self.model.cfg)) if hasattr(self.model, "cfg") else None,
+            "training": {
+                "num_epochs": num_epochs,
+                "batch_size": self.dataloader.batch_size,
+                "learning_rate": self.lr,
+                "betas": list(self.betas),
+                "amp": self.use_amp,
+                "grad_accum_steps": self.grad_accum_steps,
+            },
+            "dataset": data_info,
+            "parameters": {
+                "generator": g_params,
+                "discriminator": d_params,
+                "total": g_params + d_params,
+            },
+        }
+
+        meta_path = os.path.join(os.path.dirname(self.save_dir), "training_meta.json")
+        with open(meta_path, "w") as f:
+            json.dump(meta, f, indent=2)
+        print(f"[Meta] Saved training metadata to {meta_path}")
+
     def _to_device(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         out = {}
         for k, v in batch.items():
@@ -268,3 +310,12 @@ class BaseTrainer:
                     writer.writeheader()
                     self._log_header_written = True
                 writer.writerow(row)
+
+
+def _make_serializable(obj):
+    """Convert tuples and other non-JSON types for json.dump."""
+    if isinstance(obj, dict):
+        return {k: _make_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_make_serializable(v) for v in obj]
+    return obj
