@@ -84,6 +84,13 @@ python reconstruct.py --metadata path/to/tiles/testA/tiles_metadata.csv --tile_d
 python reconstruct.py --metadata path/to/tiles_metadata.csv --output ./reconstructed/ --mode rgb_and_mask --blend average
 ```
 
+### Training Summary & Loss Plots
+```bash
+# Plot losses and save hyperparameters from a training run
+python plot_training.py --run ./results/
+# Outputs: ./results/losses.png, ./results/training_summary.json
+```
+
 ### Uncertainty Maps
 ```bash
 # Compute epistemic uncertainty from deep ensemble outputs
