@@ -179,8 +179,8 @@ def main():
     parser.add_argument("--uvcgan_stage", choices=["pretrain", "finetune"], default="finetune")
     parser.add_argument("--uvcgan_init_ckpt", type=str, default=None,
                     help="Checkpoint from UVCGAN pretrain stage")
-    parser.add_argument("--uvcgan_vit_blocks", type=int, default=12)
-    parser.add_argument("--uvcgan_vit_features", type=int, default=384,
+    parser.add_argument("--uvcgan_vit_blocks", type=int, default=6)
+    parser.add_argument("--uvcgan_vit_features", type=int, default=192,
                     help="ViT hidden dimension for UVCGAN bottleneck")
 
 

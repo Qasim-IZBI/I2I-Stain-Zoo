@@ -343,10 +343,10 @@ class UNetConfig:
     out_channels: int = 3
 
     # “model_channels” in DDPM/OpenAI code
-    base_channels: int = 128
+    base_channels: int = 64
 
     # for 256x256, DDPM uses 6 resolutions (256→128→64→32→16→8)
-    channel_mult: Tuple[int, ...] = (1, 1, 2, 2, 4, 4)
+    channel_mult: Tuple[int, ...] = (1, 2, 2, 4)
 
     num_res_blocks: int = 2
     dropout: float = 0.0

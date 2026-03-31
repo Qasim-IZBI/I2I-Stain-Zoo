@@ -8,6 +8,15 @@ I2I-Stain-Zoo is an image-to-image translation research codebase for virtual sta
 
 ## Commands
 
+### Tiling
+```bash
+# Basic tiling
+python tile.py --rgb path/to/wsi --output path/to/tiles --image_type trainA --tile_size 256
+
+# Extract 512x512 tiles, resize to 256x256, with tissue masks
+python tile.py --rgb path/to/wsi --output path/to/tiles --mask path/to/masks --tile_size 512 --resize_to 256 --image_type trainA --overlap 0.25
+```
+
 ### Training
 ```bash
 # GAN models (cyclegan, unit, munit, dclgan)
@@ -21,14 +30,14 @@ python train.py --model miudiff --dataA ... --dataB ... --epochs 5 --amp --miu_s
 python train.py --model miudiff --dataA ... --dataB ... --epochs 5 --amp --miu_stage finetune --output ./stage1/
 python train.py --model miudiff --miu_stage finetune --miu_pcl --lambda_pcl 0.1 --dataA ... --dataB ... --epochs 5 --amp --output ./stage3/
 
-# MIUDiff UNet architecture controls (defaults: base_channels=64, channel_mult=1,2,2,4)
+# MIUDiff UNet architecture controls (original: base_channels=128, channel_mult=1,1,2,2,4,4)
 python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,2,4 --dataA ... --dataB ... --epochs 5 --amp --miu_stage pretrain --output ./out/
 
 # UVCGAN (2-stage): optional pretrain → finetune
 python train.py --model uvcgan --uvcgan_stage pretrain --dataA ... --dataB ... --epochs 50 --amp --output ./uvcgan_pt/
 python train.py --model uvcgan --uvcgan_stage finetune --uvcgan_init_ckpt ./uvcgan_pt/checkpoints/epoch_50.pt --dataA ... --dataB ... --epochs 100 --amp --output ./uvcgan/
 
-# UVCGAN ViT architecture controls (defaults: vit_n_blocks=12, vit_features=384)
+# UVCGAN ViT architecture controls (original: vit_n_blocks=12, vit_features=384)
 python train.py --model uvcgan --uvcgan_vit_blocks 6 --uvcgan_vit_features 192 --dataA ... --dataB ... --epochs 100 --amp --output ./uvcgan/
 ```
 
@@ -61,15 +70,6 @@ python evaluation.py --metric lpips --path_real real_images/ --path_fake generat
 
 # Save results to CSV (works with any metric)
 python evaluation.py --metric ssim --path_real real_images/ --path_fake generated_images/ --save_csv results.csv
-```
-
-### Tiling
-```bash
-# Basic tiling
-python tile.py --rgb path/to/wsi --output path/to/tiles --image_type trainA --tile_size 256
-
-# Extract 512x512 tiles, resize to 256x256, with tissue masks
-python tile.py --rgb path/to/wsi --output path/to/tiles --mask path/to/masks --tile_size 512 --resize_to 256 --image_type trainA --overlap 0.25
 ```
 
 ### Reconstruction

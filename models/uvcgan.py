@@ -19,9 +19,9 @@ class UVCGANConfig:
     # generator
     ngf: int = 64
     n_down: int = 4
-    vit_features: int = 384
+    vit_features: int = 192
     vit_n_heads: int = 6
-    vit_n_blocks: int = 12
+    vit_n_blocks: int = 6
     vit_rezero: bool = True
 
     # discriminator
