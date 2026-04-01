@@ -4,6 +4,8 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
+import time
 from dataclasses import asdict
 
 import torch
@@ -72,6 +74,10 @@ class BaseTrainer:
         self.lr = lr
         self.betas = betas
 
+        # --- timing ---
+        self.accumulated_training_seconds: float = 0.0
+        self._session_start: Optional[float] = None
+
         # --- loss logging ---
         self.log_path = os.path.join(os.path.dirname(save_dir), "loss_log.csv")
         self._log_header_written = os.path.exists(self.log_path)
@@ -82,12 +88,28 @@ class BaseTrainer:
     # ============================================================
 
     def train(self, num_epochs: int):
-        self._save_training_meta(num_epochs)
-        for epoch in range(1, num_epochs + 1):
+        self.resume_if_exists()
+
+        start_epoch = self.epoch
+        if start_epoch >= num_epochs:
+            print(f"[Trainer] Already completed {start_epoch}/{num_epochs} epochs — nothing to do.")
+            return
+
+        if start_epoch == 0:
+            self._save_training_meta(num_epochs)
+        else:
+            print(f"[Trainer] Resuming from epoch {start_epoch} → target {num_epochs} epochs.")
+
+        self._session_start = time.time()
+
+        for epoch in range(start_epoch + 1, num_epochs + 1):
             self.epoch = epoch
             self._train_epoch()
-            if epoch % self.save_epochs  == 0:
+            if epoch % self.save_epochs == 0:
                 self.save_checkpoint(f"epoch_{epoch}.pt")
+
+        # Final timing update (captures any epochs after the last checkpoint)
+        self._update_timing_meta(num_epochs)
 
     def _train_epoch(self):
         self.model.train()
@@ -193,7 +215,7 @@ class BaseTrainer:
     # ============================================================
 
     def _save_training_meta(self, num_epochs: int):
-        """Save training metadata at the start of training for later analysis."""
+        """Save training metadata at the start of a fresh training run."""
         dataset = self.dataloader.dataset
         data_info = {"total_images": len(dataset)}
         if hasattr(dataset, "A_paths"):
@@ -221,12 +243,46 @@ class BaseTrainer:
                 "discriminator": d_params,
                 "total": g_params + d_params,
             },
+            "timing": {
+                "accumulated_seconds": 0.0,
+                "human_readable": "0h 00m 00s",
+                "last_updated_epoch": 0,
+                "avg_seconds_per_epoch": None,
+            },
         }
 
         meta_path = os.path.join(os.path.dirname(self.save_dir), "training_meta.json")
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=2)
         print(f"[Meta] Saved training metadata to {meta_path}")
+
+    def _update_timing_meta(self, num_epochs: Optional[int]):
+        """Update the timing block in training_meta.json with current elapsed time."""
+        meta_path = os.path.join(os.path.dirname(self.save_dir), "training_meta.json")
+        if not os.path.exists(meta_path):
+            return
+
+        session_elapsed = time.time() - self._session_start if self._session_start else 0.0
+        total_seconds = self.accumulated_training_seconds + session_elapsed
+
+        epochs_done = self.epoch
+        avg = total_seconds / epochs_done if epochs_done > 0 else None
+
+        try:
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+        except Exception:
+            return
+
+        meta["timing"] = {
+            "accumulated_seconds": round(total_seconds, 2),
+            "human_readable": _seconds_to_hms(total_seconds),
+            "last_updated_epoch": epochs_done,
+            "avg_seconds_per_epoch": round(avg, 2) if avg is not None else None,
+        }
+
+        with open(meta_path, "w") as f:
+            json.dump(meta, f, indent=2)
 
     def _to_device(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         out = {}
@@ -259,6 +315,9 @@ class BaseTrainer:
 
     def save_checkpoint(self, name: str):
         path = os.path.join(self.save_dir, name)
+        # Snapshot accumulated time including the current session so far
+        session_elapsed = time.time() - self._session_start if self._session_start else 0.0
+        accumulated = self.accumulated_training_seconds + session_elapsed
         state = {
             "epoch": self.epoch,
             "global_step": self.global_step,
@@ -266,11 +325,13 @@ class BaseTrainer:
             "opt_G": self.opt_G.state_dict(),
             "config": asdict(self.model.cfg),
             "model_name": self.model_name,
+            "accumulated_training_seconds": accumulated,
         }
         if self.opt_D is not None:
             state["opt_D"] = self.opt_D.state_dict()
         torch.save(state, path)
         print(f"[Checkpoint] Saved: {path}")
+        self._update_timing_meta(None)  # persist timing after every checkpoint
 
     def load_checkpoint(self, path: str):
         ckpt = torch.load(path, map_location=self.device)
@@ -280,7 +341,26 @@ class BaseTrainer:
             self.opt_D.load_state_dict(ckpt["opt_D"])
         self.epoch = ckpt.get("epoch", 0)
         self.global_step = ckpt.get("global_step", 0)
+        self.accumulated_training_seconds = ckpt.get("accumulated_training_seconds", 0.0)
         print(f"[Checkpoint] Loaded: {path}")
+
+    def resume_if_exists(self):
+        """Scan save_dir for epoch_*.pt files and resume from the latest one."""
+        pattern = re.compile(r"^epoch_(\d+)\.pt$")
+        candidates = []
+        for fname in os.listdir(self.save_dir):
+            m = pattern.match(fname)
+            if m:
+                candidates.append((int(m.group(1)), fname))
+        if not candidates:
+            return
+        _, latest_fname = max(candidates, key=lambda x: x[0])
+        latest_path = os.path.join(self.save_dir, latest_fname)
+        print(f"[Trainer] Found existing checkpoint: {latest_fname}")
+        try:
+            self.load_checkpoint(latest_path)
+        except Exception as e:
+            print(f"[Trainer] Could not load {latest_fname} ({e}), starting fresh.")
 
     def _flush_losses(self) -> Dict[str, float]:
         """Average accumulated losses and reset the buffer."""
@@ -310,6 +390,14 @@ class BaseTrainer:
                     writer.writeheader()
                     self._log_header_written = True
                 writer.writerow(row)
+
+
+def _seconds_to_hms(seconds: float) -> str:
+    seconds = int(seconds)
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    return f"{h}h {m:02d}m {s:02d}s"
 
 
 def _make_serializable(obj):
