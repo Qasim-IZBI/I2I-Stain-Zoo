@@ -7,6 +7,9 @@ Metrics:
   - ssim: Structural Similarity Index (paired, matched by filename)
   - patch_ssim: Patch-based SSIM — extract random patches and compute SSIM per patch (paired)
   - lpips: Learned Perceptual Image Patch Similarity using VGG16 features (paired, lower=better)
+  - regen_error: Cycle reconstruction MAE — translate A→B'→A' and measure |A−A'| per pixel;
+                 requires --path_A, --model, --ckpt; optionally saves heatmap/overlay images
+                 via --overlay_dir. Not supported for MIUDiff (no B→A generator).
 
 Feature backends (FID only):
   - inception: torchvision InceptionV3 pool3 (2048-d), classic FID
@@ -21,10 +24,15 @@ Example (SSIM):
 Example (Patch SSIM):
   python evaluation.py --metric patch_ssim --path_real data/CD13 --path_fake results/he_to_cd13 --patch_size 64 --patches_per_image 16
 
+Example (Cycle reconstruction error with overlays):
+  python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ckpt model.pt \\
+      --direction A2B --overlay_dir ./regen_overlays/ --device cuda
+
 Notes:
 - For DINO backend we still compute the same Fréchet distance formula; it's "FID-like" but not the canonical Inception FID.
 - SSIM and patch_ssim require paired images matched by filename.
 - Images are treated as RGB.
+- regen_error MAE is reported in [0, 255] pixel scale.
 """
 
 from __future__ import annotations
@@ -32,7 +40,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -433,6 +441,205 @@ def compute_lpips(
 
 
 # ============================================================
+# Cycle reconstruction error  (A → B' → A')
+# ============================================================
+
+def _load_model_for_regen(model_name: str, ckpt_path: str, device: torch.device, style_dim: int = 8):
+    """Load a translation model from checkpoint for cycle reconstruction."""
+    from models.cyclegan import CycleGAN, CycleGANConfig
+    from models.unit import UNIT, UNITConfig
+    from models.munit import MUNIT, MUNITConfig
+    from models.dclgan import DCLGAN, DCLGANConfig
+    from models.uvcgan import UVCGAN, UVCGANConfig
+
+    ckpt = torch.load(ckpt_path, map_location=device)
+    saved_cfg = ckpt.get("config")
+
+    if model_name == "cyclegan":
+        cfg = CycleGANConfig(**saved_cfg) if saved_cfg else CycleGANConfig()
+        model = CycleGAN(cfg)
+    elif model_name == "unit":
+        cfg = UNITConfig(**saved_cfg) if saved_cfg else UNITConfig()
+        model = UNIT(cfg)
+    elif model_name == "munit":
+        cfg = MUNITConfig(**saved_cfg) if saved_cfg else MUNITConfig(style_dim=style_dim)
+        model = MUNIT(cfg)
+    elif model_name == "dclgan":
+        cfg = DCLGANConfig(**saved_cfg) if saved_cfg else DCLGANConfig()
+        model = DCLGAN(cfg)
+    elif model_name == "uvcgan":
+        cfg = UVCGANConfig(**saved_cfg) if saved_cfg else UVCGANConfig()
+        model = UVCGAN(cfg)
+    elif model_name == "miudiff":
+        raise ValueError(
+            "MIUDiff does not support regen_error: it has no B→A generator. "
+            "Use a GAN model (cyclegan, unit, munit, dclgan, uvcgan) instead."
+        )
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+
+    sd = ckpt["model"] if "model" in ckpt else ckpt
+    model.load_state_dict(sd)
+    model.to(device).eval()
+    if saved_cfg:
+        print(f"Restored {model_name} config from checkpoint")
+    return model
+
+
+def _cycle_forward(
+    model,
+    model_name: str,
+    x: torch.Tensor,
+    direction: str,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Run one cycle: A → B' → A'  (or B → A' → B' when direction='B2A').
+    Returns (b_prime, a_prime) both in [-1, 1].
+    """
+    with torch.no_grad():
+        if model_name == "cyclegan":
+            fwd = model.forward_A2B if direction == "A2B" else model.forward_B2A
+            bwd = model.forward_B2A if direction == "A2B" else model.forward_A2B
+            b_prime = fwd(x)
+            a_prime = bwd(b_prime)
+
+        elif model_name == "unit":
+            fwd = model.forward_A2B if direction == "A2B" else model.forward_B2A
+            bwd = model.forward_B2A if direction == "A2B" else model.forward_A2B
+            b_prime, _ = fwd(x)
+            a_prime, _ = bwd(b_prime)
+
+        elif model_name == "munit":
+            if direction == "A2B":
+                c, _ = model.encode_A(x)
+                s = torch.randn(x.shape[0], model.cfg.style_dim, device=device)
+                b_prime = model.decode_B(c, s)
+                c2, _ = model.encode_B(b_prime)
+                s2 = torch.randn(x.shape[0], model.cfg.style_dim, device=device)
+                a_prime = model.decode_A(c2, s2)
+            else:
+                c, _ = model.encode_B(x)
+                s = torch.randn(x.shape[0], model.cfg.style_dim, device=device)
+                b_prime = model.decode_A(c, s)
+                c2, _ = model.encode_A(b_prime)
+                s2 = torch.randn(x.shape[0], model.cfg.style_dim, device=device)
+                a_prime = model.decode_B(c2, s2)
+
+        elif model_name == "dclgan":
+            if direction == "A2B":
+                b_prime, _ = model.G_A2B(x)
+                a_prime, _ = model.G_B2A(b_prime)
+            else:
+                b_prime, _ = model.G_B2A(x)
+                a_prime, _ = model.G_A2B(b_prime)
+
+        elif model_name == "uvcgan":
+            fwd = model.forward_A2B if direction == "A2B" else model.forward_B2A
+            bwd = model.forward_B2A if direction == "A2B" else model.forward_A2B
+            b_prime = fwd(x)
+            a_prime = bwd(b_prime)
+
+        else:
+            raise ValueError(f"Unsupported model for cycle forward: {model_name}")
+
+    return b_prime, a_prime
+
+
+def compute_regen_error(
+    path_A: str,
+    model,
+    model_name: str,
+    direction: str,
+    device: torch.device,
+    image_size: int = 256,
+    overlay_dir: Optional[str] = None,
+) -> Tuple[float, List[Tuple[str, float]]]:
+    """
+    Compute per-image cycle reconstruction MAE: A → B' → A', error = |A − A'|.
+
+    MAE values are in [0, 255] pixel scale.
+    If overlay_dir is given, saves:
+      overlay_dir/heatmaps/<stem>.png  — error heatmap with colorbar (hot colormap)
+      overlay_dir/overlays/<stem>.png  — 50/50 blend of heatmap and original A
+
+    Returns (mean_mae, [(stem, mae), ...]).
+    """
+    from torchvision.utils import save_image as tv_save_image
+
+    tfm = transforms.Compose([
+        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),  # [0,1] → [-1,1]
+    ])
+
+    paths = list_images(path_A)
+
+    # --- Pass 1: compute all error maps ---
+    stems: List[str] = []
+    error_maps: List[np.ndarray] = []   # each [H, W] in [0, 255]
+    orig_tensors: List[torch.Tensor] = []  # each [3, H, W] in [-1, 1] on CPU
+
+    for p in paths:
+        img = Image.open(p).convert("RGB")
+        x = tfm(img).unsqueeze(0).to(device)
+
+        _, a_prime = _cycle_forward(model, model_name, x, direction, device)
+
+        x_255 = (x + 1.0) * 127.5
+        a_prime_255 = (a_prime.clamp(-1.0, 1.0) + 1.0) * 127.5
+        err = torch.abs(x_255 - a_prime_255).mean(dim=1).squeeze(0)  # [H, W]
+
+        stems.append(os.path.splitext(os.path.basename(p))[0])
+        error_maps.append(err.cpu().numpy())
+        orig_tensors.append(x.squeeze(0).cpu())
+
+    # --- Global percentile normalization for consistent colormap ---
+    all_vals = np.concatenate([e.flatten() for e in error_maps])
+    vmin = float(np.percentile(all_vals, 1))
+    vmax = float(np.percentile(all_vals, 99))
+
+    # --- Pass 2: save overlays (optional) ---
+    if overlay_dir:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.cm as cm
+
+        heatmap_dir = os.path.join(overlay_dir, "heatmaps")
+        overlay_out_dir = os.path.join(overlay_dir, "overlays")
+        os.makedirs(heatmap_dir, exist_ok=True)
+        os.makedirs(overlay_out_dir, exist_ok=True)
+
+        cmap = cm.get_cmap("hot")
+
+        for stem, err_map, orig_t in zip(stems, error_maps, orig_tensors):
+            # Heatmap with colorbar
+            fig, ax = plt.subplots(figsize=(4, 4))
+            im = ax.imshow(err_map, cmap="hot", vmin=vmin, vmax=vmax)
+            plt.colorbar(im, ax=ax, label="MAE [0–255]")
+            ax.axis("off")
+            ax.set_title(f"Regen error: {stem}", fontsize=8)
+            plt.tight_layout()
+            plt.savefig(os.path.join(heatmap_dir, f"{stem}.png"), dpi=150, bbox_inches="tight")
+            plt.close(fig)
+
+            # Overlay: blend heatmap with original A
+            err_norm = np.clip((err_map - vmin) / (vmax - vmin + 1e-8), 0.0, 1.0)
+            heat_rgb = torch.from_numpy(cmap(err_norm)[:, :, :3]).permute(2, 0, 1).float()  # [3,H,W] in [0,1]
+            orig_rgb = (orig_t + 1.0) / 2.0  # [-1,1] → [0,1]
+            blend = (0.5 * heat_rgb + 0.5 * orig_rgb).clamp(0.0, 1.0)
+            tv_save_image(blend, os.path.join(overlay_out_dir, f"{stem}.png"))
+
+        print(f"[regen_error] Saved heatmaps → {heatmap_dir}")
+        print(f"[regen_error] Saved overlays → {overlay_out_dir}")
+
+    results = [(s, float(e.mean())) for s, e in zip(stems, error_maps)]
+    mean_mae = float(np.mean([v for _, v in results]))
+    return mean_mae, results
+
+
+# ============================================================
 # CSV output
 # ============================================================
 
@@ -451,8 +658,9 @@ def _save_csv(path: str, fieldnames: List[str], rows: List[dict]):
 
 def main():
     ap = argparse.ArgumentParser("Evaluation metrics for image-to-image translation")
-    ap.add_argument("--metric", choices=["fid", "ssim", "patch_ssim", "lpips"], default="fid",
-                    help="Metric to compute: fid (unpaired), ssim/patch_ssim/lpips (paired)")
+    ap.add_argument("--metric", choices=["fid", "ssim", "patch_ssim", "lpips", "regen_error"], default="fid",
+                    help="Metric to compute: fid (unpaired), ssim/patch_ssim/lpips (paired), "
+                         "regen_error (cycle A→B'→A', requires --path_A --model --ckpt)")
     ap.add_argument("--path_real", required=True, type=str, help="Folder with real target-domain images")
     ap.add_argument("--path_fake", required=True, type=str, help="Folder with generated images")
     ap.add_argument("--backend", choices=["inception", "dino"], default="inception",
@@ -473,6 +681,20 @@ def main():
                     help="Patch size for patch_ssim")
     ap.add_argument("--patches_per_image", default=16, type=int,
                     help="Number of random patches per image for patch_ssim")
+
+    # regen_error options
+    ap.add_argument("--path_A", type=str, default=None,
+                    help="Folder of source-domain A images (required for regen_error)")
+    ap.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "uvcgan"], default=None,
+                    help="Model type (required for regen_error)")
+    ap.add_argument("--ckpt", type=str, default=None,
+                    help="Model checkpoint path (required for regen_error)")
+    ap.add_argument("--direction", choices=["A2B", "B2A"], default="A2B",
+                    help="Translation direction for regen_error cycle (default: A2B)")
+    ap.add_argument("--overlay_dir", type=str, default=None,
+                    help="Directory to save error heatmaps and overlays (regen_error only)")
+    ap.add_argument("--style_dim", type=int, default=8,
+                    help="Style dimension for MUNIT (regen_error only, ignored if config in checkpoint)")
 
     # Output
     ap.add_argument("--save_csv", type=str, default=None,
@@ -547,6 +769,31 @@ def main():
             rows = [{"filename": os.path.basename(p[0]), "lpips": f"{s:.6f}"} for p, s in zip(pairs, per_image)]
             rows.append({"filename": "MEAN", "lpips": f"{mean_lpips:.6f}"})
             _save_csv(args.save_csv, ["filename", "lpips"], rows)
+
+    elif args.metric == "regen_error":
+        for flag, name in [(args.path_A, "--path_A"), (args.model, "--model"), (args.ckpt, "--ckpt")]:
+            if flag is None:
+                ap.error(f"regen_error requires {name}")
+
+        device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
+        model = _load_model_for_regen(args.model, args.ckpt, device, style_dim=args.style_dim)
+
+        mean_mae, per_image = compute_regen_error(
+            path_A=args.path_A,
+            model=model,
+            model_name=args.model,
+            direction=args.direction,
+            device=device,
+            image_size=args.ssim_image_size,
+            overlay_dir=args.overlay_dir,
+        )
+        print(f"Regen Error MAE ({args.direction} cycle, path={args.path_A}): {mean_mae:.4f}")
+        print(f"N_images={len(per_image)}, image_size={args.ssim_image_size}")
+
+        if args.save_csv:
+            rows = [{"filename": f"{s}.tif", "regen_mae": f"{v:.6f}"} for s, v in per_image]
+            rows.append({"filename": "MEAN", "regen_mae": f"{mean_mae:.6f}"})
+            _save_csv(args.save_csv, ["filename", "regen_mae"], rows)
 
 
 if __name__ == "__main__":

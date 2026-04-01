@@ -109,6 +109,14 @@ python evaluation.py --metric patch_ssim --path_real real_images/ --path_fake ge
 # LPIPS (paired, VGG16 perceptual distance, lower=better)
 python evaluation.py --metric lpips --path_real real_images/ --path_fake generated_images/ --device cuda
 
+# Cycle reconstruction error A→B'→A' (MAE in [0,255]; correlates with uncertainty)
+python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ckpt model.pt \
+    --direction A2B --device cuda
+
+# Regen error with error heatmaps and overlays saved
+python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ckpt model.pt \
+    --direction A2B --overlay_dir ./regen_overlays/ --save_csv regen.csv --device cuda
+
 # Save results to CSV (works with any metric)
 python evaluation.py --metric ssim --path_real real_images/ --path_fake generated_images/ --save_csv results.csv
 ```
