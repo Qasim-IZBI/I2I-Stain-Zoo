@@ -79,6 +79,9 @@ def main():
     parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff", "uvcgan"], required=True)
     parser.add_argument("--direction", choices=["A2B", "B2A"], required=True)
     parser.add_argument("--data", type=str, required=True)
+    parser.add_argument("--data_range", type=str, default=None,
+                        help="Load tiles from a range of numbered folders, e.g. '1,6' loads "
+                             "001/images/ through 006/images/ under --data")
     parser.add_argument("--ckpt", type=str, required=True)
     parser.add_argument("--outdir", type=str, default="results")
 
@@ -102,7 +105,12 @@ def main():
 
     transform = default_train_transform(image_size=256)
 
-    dataset = SingleDomainDataset(args.data, transform=transform)
+    data_range = None
+    if args.data_range:
+        parts = args.data_range.split(",")
+        data_range = (int(parts[0]), int(parts[1]))
+
+    dataset = SingleDomainDataset(args.data, transform=transform, data_range=data_range)
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
     os.makedirs(args.outdir, exist_ok=True)
 

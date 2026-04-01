@@ -136,6 +136,9 @@ def main():
     # ---- data ----
     parser.add_argument("--dataA", type=str, required=True)
     parser.add_argument("--dataB", type=str, required=True)
+    parser.add_argument("--data_range", type=str, default=None,
+                        help="Load tiles from a range of numbered folders, e.g. '1,6' loads "
+                             "001/images/ through 006/images/ under dataA and dataB")
 
     # ---- training ----
     parser.add_argument("--epochs", type=int, default=100)
@@ -191,10 +194,15 @@ def main():
     # ---- dataset ----
     transform = default_train_transform(image_size=256)
 
+    data_range = None
+    if args.data_range:
+        parts = args.data_range.split(",")
+        data_range = (int(parts[0]), int(parts[1]))
+
     if args.model == "miudiff" and args.miu_stage == "pretrain":
-        dataset = TargetOnlyDataset(root_B=args.dataB, transform=transform)
+        dataset = TargetOnlyDataset(root_B=args.dataB, transform=transform, data_range=data_range)
     else:
-        dataset = UnpairedDataset(root_A=args.dataA, root_B=args.dataB, transform=transform)
+        dataset = UnpairedDataset(root_A=args.dataA, root_B=args.dataB, transform=transform, data_range=data_range)
 
 
 

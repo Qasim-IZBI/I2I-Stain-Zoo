@@ -9,21 +9,50 @@ I2I-Stain-Zoo is an image-to-image translation research codebase for virtual sta
 ## Commands
 
 ### Tiling
+Tiles are saved per-WSI into numbered subfolders (`001/`, `002/`, ...) under the output directory.
+Each folder contains `images/` (RGB tiles) and `masks/` (tissue mask tiles, if provided).
+Tile filenames are `{tile_id:07d}.tif`. Running tiling again on the same output directory
+automatically resumes from the next available index.
+
 ```bash
-# Basic tiling
+# Basic tiling (256×256, no overlap, no mask filtering)
 python tile.py --rgb path/to/wsi --output path/to/tiles --image_type trainA --tile_size 256
 
-# Extract 512x512 tiles, resize to 256x256, with tissue masks
-python tile.py --rgb path/to/wsi --output path/to/tiles --mask path/to/masks --tile_size 512 --resize_to 256 --image_type trainA --overlap 0.25
+# Extract 512×512 tiles, resize to 256×256, with tissue masks and 25% overlap
+python tile.py --rgb path/to/wsi --output path/to/tiles --mask path/to/masks \
+    --tile_size 512 --resize_to 256 --image_type trainA --overlap 0.25
+
+# Test set tiling with overlap (all tiles kept, no tissue filtering)
+python tile.py --rgb path/to/wsi --output path/to/tiles --image_type testA \
+    --tile_size 256 --overlap 0.25
+```
+
+Output structure:
+```
+path/to/tiles/
+  trainA/
+    001/
+      images/   ← 0000001.tif, 0000002.tif, ...
+      masks/    ← 0000001.tif, ... (only if --mask provided)
+    002/
+      images/
+      masks/
+    tiles_metadata.csv   ← stride, overlap, x/y positions; appended on re-run
 ```
 
 ### Training
 ```bash
-# GAN models (cyclegan, unit, munit, dclgan)
-python train.py --model cyclegan --dataA path/to/trainA --dataB path/to/trainB --epochs 100 --amp --output ./results/
+# GAN models (cyclegan, unit, munit, dclgan) — all tiles under trainA/trainB
+python train.py --model cyclegan --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
+    --epochs 100 --amp --output ./results/
+
+# Train on a subset of WSIs (folders 001–006 only)
+python train.py --model cyclegan --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
+    --data_range 1,6 --epochs 100 --amp --output ./results/
 
 # Resume/initialise any model from a pretrained checkpoint
-python train.py --model cyclegan --dataA ... --dataB ... --epochs 50 --init_ckpt ./prev_run/checkpoints/epoch_50.pt --output ./new_run/
+python train.py --model cyclegan --dataA ... --dataB ... --epochs 50 \
+    --init_ckpt ./prev_run/checkpoints/epoch_50.pt --output ./new_run/
 
 # MIUDiff (3-stage): pretrain → finetune → finetune+PCL
 python train.py --model miudiff --dataA ... --dataB ... --epochs 5 --amp --miu_stage pretrain --output ./stage1/
@@ -31,26 +60,38 @@ python train.py --model miudiff --dataA ... --dataB ... --epochs 5 --amp --miu_s
 python train.py --model miudiff --miu_stage finetune --miu_pcl --lambda_pcl 0.1 --dataA ... --dataB ... --epochs 5 --amp --output ./stage3/
 
 # MIUDiff UNet architecture controls (original: base_channels=128, channel_mult=1,1,2,2,4,4)
-python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,2,4 --dataA ... --dataB ... --epochs 5 --amp --miu_stage pretrain --output ./out/
+python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,2,4 \
+    --dataA ... --dataB ... --epochs 5 --amp --miu_stage pretrain --output ./out/
 
 # UVCGAN (2-stage): optional pretrain → finetune
 python train.py --model uvcgan --uvcgan_stage pretrain --dataA ... --dataB ... --epochs 50 --amp --output ./uvcgan_pt/
-python train.py --model uvcgan --uvcgan_stage finetune --uvcgan_init_ckpt ./uvcgan_pt/checkpoints/epoch_50.pt --dataA ... --dataB ... --epochs 100 --amp --output ./uvcgan/
+python train.py --model uvcgan --uvcgan_stage finetune --uvcgan_init_ckpt ./uvcgan_pt/checkpoints/epoch_50.pt \
+    --dataA ... --dataB ... --epochs 100 --amp --output ./uvcgan/
 
 # UVCGAN ViT architecture controls (original: vit_n_blocks=12, vit_features=384)
-python train.py --model uvcgan --uvcgan_vit_blocks 6 --uvcgan_vit_features 192 --dataA ... --dataB ... --epochs 100 --amp --output ./uvcgan/
+python train.py --model uvcgan --uvcgan_vit_blocks 6 --uvcgan_vit_features 192 \
+    --dataA ... --dataB ... --epochs 100 --amp --output ./uvcgan/
 ```
 
 ### Inference
 ```bash
-python inference.py --model cyclegan --direction A2B --data path/to/images --ckpt model.pt --outdir ./output/
-# MUNIT adds --num_samples and --style_image; MIUDiff adds --miu_pcl --pcl_refine_steps 3 --miu_steps 200 --miu_guidance 1.0
+# All tiles under testA/
+python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA \
+    --ckpt model.pt --outdir ./output/
+
+# Subset of WSIs (folders 001–003 only)
+python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA \
+    --data_range 1,3 --ckpt model.pt --outdir ./output/
 
 # MUNIT with random style sampling
-python inference.py --model munit --direction A2B --data imgs/ --ckpt model.pt --num_samples 3
+python inference.py --model munit --direction A2B --data path/to/tiles/testA \
+    --ckpt model.pt --num_samples 3
 
 # MUNIT with style extracted from a reference image
-python inference.py --model munit --direction A2B --data imgs/ --ckpt model.pt --style_image ref.png
+python inference.py --model munit --direction A2B --data path/to/tiles/testA \
+    --ckpt model.pt --style_image ref.png
+
+# MIUDiff adds --miu_pcl --pcl_refine_steps 3 --miu_steps 200 --miu_guidance 1.0
 ```
 
 ### Evaluation
@@ -73,15 +114,21 @@ python evaluation.py --metric ssim --path_real real_images/ --path_fake generate
 ```
 
 ### Reconstruction
+Reconstructed files are saved with the **original WSI filename** (e.g. `slide_001.tif`).
+Mask outputs are saved as `{stem}_mask.tif`. Overlapping tiles are averaged by default.
+
 ```bash
 # Reconstruct WSI from original tiles (uses image_path from metadata CSV)
 python reconstruct.py --metadata path/to/tiles/trainA/tiles_metadata.csv --output ./reconstructed/
 
 # Reconstruct from translated tiles (e.g. inference output directory)
-python reconstruct.py --metadata path/to/tiles/testA/tiles_metadata.csv --tile_dir ./inference_output/ --output ./reconstructed/
+# Tiles are matched by tile_name (0000001.tif, etc.) inside --tile_dir
+python reconstruct.py --metadata path/to/tiles/testA/tiles_metadata.csv \
+    --tile_dir ./inference_output/ --output ./reconstructed/
 
-# Reconstruct both RGB and mask, with average blending for overlaps
-python reconstruct.py --metadata path/to/tiles_metadata.csv --output ./reconstructed/ --mode rgb_and_mask --blend average
+# Reconstruct both RGB and mask, with average blending for overlapping tiles
+python reconstruct.py --metadata path/to/tiles_metadata.csv --output ./reconstructed/ \
+    --mode rgb_and_mask --blend average
 ```
 
 ### Training Summary & Loss Plots
@@ -136,11 +183,13 @@ Reusable building blocks across all GAN models:
 
 ### Data Pipeline
 
-- `datasets/unpaired_dataset.py` — training (A+B folders, pseudo-random pairing)
-- `datasets/single_domain_dataset.py` — inference (single folder)
-- `datasets/target_only_dataset.py` — MIUDiff stage 1 pretraining
+- `datasets/unpaired_dataset.py` — training (A+B folders, pseudo-random pairing); supports `data_range`
+- `datasets/single_domain_dataset.py` — inference (single folder); supports `data_range`
+- `datasets/target_only_dataset.py` — MIUDiff stage 1 pretraining; supports `data_range`
 - `datasets/transforms.py` — resize to 256×256, normalize to [-1, 1]
 - Supported formats: .png, .jpg, .jpeg, .tif, .tiff, .bmp, .webp
+- When `data_range=(start, end)` is given, datasets load from `root/{i:03d}/images/` for `i` in `[start, end]`
+- Without `data_range`, datasets walk the entire root directory (backward-compatible)
 
 ### Key Conventions
 

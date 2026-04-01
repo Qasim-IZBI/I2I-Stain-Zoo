@@ -1,4 +1,5 @@
 import os
+import re
 import csv
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -14,11 +15,11 @@ def _process_single_image(
     file_name,
     img_idx,
     rgb_folder,
-    output_images_dir,
-    output_masks_dir,
+    img_folder,
     mask_folder,
     tile_size,
     stride,
+    overlap,
     tissue_threshold,
     image_type,
     resize_to=None,
@@ -27,9 +28,13 @@ def _process_single_image(
     Process a single RGB (and optional mask) image:
     - Extract tiles
     - Optionally filter by tissue threshold (for train-like sets)
-    - Save RGB tiles and mask tiles (if mask available)
+    - Save RGB tiles under img_folder/images/ and mask tiles under img_folder/masks/
     - Collect metadata for each tile
     """
+    images_dir = img_folder / "images"
+    masks_dir = img_folder / "masks"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
     rgb_path = rgb_folder / file_name
     rgb_img = tifffile.imread(rgb_path)
 
@@ -41,8 +46,8 @@ def _process_single_image(
             mask_img = tifffile.imread(mask_path)
             assert rgb_img.shape[:2] == mask_img.shape[:2], \
                 f"Image and mask dimensions must match for {file_name}"
+            masks_dir.mkdir(parents=True, exist_ok=True)
         else:
-            # Mask folder provided but mask file missing for this image
             has_mask = False
 
     height, width = rgb_img.shape[:2]
@@ -57,24 +62,21 @@ def _process_single_image(
             save_tile = False
 
             if image_type in {"testA", "testB"}:
-                # Test images: always save tiles (if you want filtering here, change this logic)
                 save_tile = True
             else:
-                # Train images: apply tissue mask filtering if mask is available
                 if has_mask:
                     mask_tile = mask_img[y:y + tile_size, x:x + tile_size]
                     tissue_fraction = float(np.mean(mask_tile > 0))
                     if tissue_fraction >= tissue_threshold:
                         save_tile = True
                 else:
-                    # Original behavior: if no mask for train images, nothing is saved.
                     save_tile = False
 
             if not save_tile:
                 continue
 
-            tile_name_base = f"i{img_idx:03d}_tile_{tile_id:07d}"
-            img_tile_path = output_images_dir / f"{tile_name_base}.tif"
+            tile_name = f"{tile_id:07d}"
+            img_tile_path = images_dir / f"{tile_name}.tif"
             rgb_pil = Image.fromarray(rgb_tile)
             if resize_to is not None:
                 rgb_pil = rgb_pil.resize((resize_to, resize_to), Image.LANCZOS)
@@ -83,7 +85,7 @@ def _process_single_image(
             mask_tile_path = None
             if has_mask:
                 mask_tile = mask_img[y:y + tile_size, x:x + tile_size]
-                mask_tile_path = output_masks_dir / f"{tile_name_base}.tif"
+                mask_tile_path = masks_dir / f"{tile_name}.tif"
                 mask_pil = Image.fromarray(mask_tile)
                 if resize_to is not None:
                     mask_pil = mask_pil.resize((resize_to, resize_to), Image.NEAREST)
@@ -92,17 +94,18 @@ def _process_single_image(
             metadata_rows.append(
                 {
                     "source_file": file_name,
+                    "img_idx": f"{img_idx:03d}",
                     "tile_id": tile_id,
-                    "tile_name": tile_name_base,
+                    "tile_name": tile_name,
                     "image_path": str(img_tile_path),
                     "mask_path": str(mask_tile_path) if mask_tile_path else "",
                     "x": x,
                     "y": y,
                     "tile_size": tile_size,
                     "saved_size": resize_to if resize_to is not None else tile_size,
-                    "tissue_fraction": tissue_fraction
-                    if tissue_fraction is not None
-                    else "",
+                    "stride": stride,
+                    "overlap": overlap,
+                    "tissue_fraction": tissue_fraction if tissue_fraction is not None else "",
                     "image_type": image_type,
                 }
             )
@@ -127,47 +130,39 @@ def create_tiles(
     """
     Create tiles from RGB images (and optional masks).
 
+    Each WSI gets its own numbered subfolder (001/, 002/, ...) under
+    <output_folder_dir>/<image_type>/. RGB tiles are saved in <idx>/images/
+    and mask tiles in <idx>/masks/. If the output directory already contains
+    numbered folders, new images continue from the next available index.
+
     Parameters
     ----------
     rgb_folder_path : str or Path
         Root folder containing image_type subfolder with RGB .tif files.
     output_folder_dir : str or Path
         Root output folder. Tiles will be saved in:
-            <output_folder_dir>/<image_type>/images/
-            <output_folder_dir>/<image_type>/masks/
+            <output_folder_dir>/<image_type>/<img_idx:03d>/images/
+            <output_folder_dir>/<image_type>/<img_idx:03d>/masks/
     mask_folder_path : str or Path, optional
         Root folder containing image_type subfolder with mask .tif files.
-        If provided, paired mask tiles will be saved.
     tile_size : int, default 256
         Size of square tiles extracted from the WSI.
     resize_to : int, optional
-        If provided, resize each extracted tile to this size before saving.
-        E.g., tile_size=512 with resize_to=256 extracts 512x512 tiles and
-        saves them as 256x256. RGB tiles use LANCZOS, masks use NEAREST.
+        Resize each extracted tile to this size before saving.
     overlap : float, default 0
-        Fractional overlap between tiles (0 to <1). E.g., 0.5 gives 50% overlap.
+        Fractional overlap between tiles (0 to <1).
     tissue_threshold : float, default 0.5
-        Minimum fraction of tissue (mask > 0) required to keep a tile
-        for non-test image types.
+        Minimum tissue fraction to keep a tile for non-test image types.
     image_type : str, default "trainA"
         Subfolder name under both rgb_folder_path and mask_folder_path.
-        Example: "trainA", "trainB", "testA", "testB".
     num_workers : int, optional
         Number of worker processes. If None, use os.cpu_count().
     metadata_csv_name : str, default "tiles_metadata.csv"
         Name of the CSV metadata file saved in the image_type output folder.
-
-    Returns
-    -------
-    None
     """
     rgb_folder = Path(rgb_folder_path) / image_type
     output_root = Path(output_folder_dir) / image_type
-    output_images_dir = output_root / "images"
-    output_masks_dir = output_root / "masks"
-
-    output_images_dir.mkdir(parents=True, exist_ok=True)
-    output_masks_dir.mkdir(parents=True, exist_ok=True)
+    output_root.mkdir(parents=True, exist_ok=True)
 
     mask_folder = Path(mask_folder_path) / image_type if mask_folder_path else None
 
@@ -178,26 +173,30 @@ def create_tiles(
             f"Got stride={stride} for tile_size={tile_size}."
         )
 
-    # Collect list of .tif files (sorted for deterministic index assignment)
+    # --- Resume: find the next available img_idx ---
+    existing = [
+        int(d.name) for d in output_root.iterdir()
+        if d.is_dir() and re.fullmatch(r"\d{3}", d.name)
+    ]
+    start_idx = max(existing) + 1 if existing else 1
+
+    # --- Collect input files ---
     file_names = sorted(
         f for f in os.listdir(rgb_folder)
         if f.lower().endswith(".tif")
     )
-
     if not file_names:
         print(f"No .tif files found in {rgb_folder}")
         return
 
-    # Prepare multiprocessing
-    total_tiles = 0
-    all_metadata = []
-
     num_workers = num_workers or os.cpu_count() or 1
-
     print(
         f"Processing {len(file_names)} images from {rgb_folder} "
-        f"with {num_workers} worker(s)..."
+        f"(starting at img_idx={start_idx:03d}) with {num_workers} worker(s)..."
     )
+
+    total_tiles = 0
+    new_metadata = []
 
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = {
@@ -206,16 +205,16 @@ def create_tiles(
                 file_name,
                 img_idx,
                 rgb_folder,
-                output_images_dir,
-                output_masks_dir,
+                output_root / f"{img_idx:03d}",
                 mask_folder,
                 tile_size,
                 stride,
+                overlap,
                 tissue_threshold,
                 image_type,
                 resize_to,
             ): file_name
-            for img_idx, file_name in enumerate(file_names, start=1)
+            for img_idx, file_name in enumerate(file_names, start=start_idx)
         }
 
         for future in tqdm(as_completed(futures), total=len(futures), desc="Tiling"):
@@ -223,37 +222,42 @@ def create_tiles(
             try:
                 tile_count, metadata_rows = future.result()
                 total_tiles += tile_count
-                all_metadata.extend(metadata_rows)
+                new_metadata.extend(metadata_rows)
             except Exception as e:
                 print(f"Error processing {file_name}: {e}")
 
-    # Save metadata CSV
-    if all_metadata:
+    # --- Save / append metadata CSV ---
+    fieldnames = [
+        "source_file",
+        "img_idx",
+        "tile_id",
+        "tile_name",
+        "image_path",
+        "mask_path",
+        "x",
+        "y",
+        "tile_size",
+        "saved_size",
+        "stride",
+        "overlap",
+        "tissue_fraction",
+        "image_type",
+    ]
+
+    if new_metadata:
         metadata_path = output_root / metadata_csv_name
-        fieldnames = [
-            "source_file",
-            "tile_id",
-            "tile_name",
-            "image_path",
-            "mask_path",
-            "x",
-            "y",
-            "tile_size",
-            "saved_size",
-            "tissue_fraction",
-            "image_type",
-        ]
-        with metadata_path.open("w", newline="") as csvfile:
+        write_header = not metadata_path.exists()
+
+        with metadata_path.open("a", newline="") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in all_metadata:
+            if write_header:
+                writer.writeheader()
+            for row in new_metadata:
                 writer.writerow(row)
 
-        print(f"Saved metadata for {len(all_metadata)} tiles to {metadata_path}")
+        print(f"{'Created' if write_header else 'Appended'} metadata for {len(new_metadata)} tiles → {metadata_path}")
 
-    print(f"Total tiles saved: {total_tiles} (images in {output_images_dir}, masks in {output_masks_dir})")
-    return
-
+    print(f"Total tiles saved: {total_tiles}")
 
 
 def reconstruct_wsi(
@@ -261,7 +265,7 @@ def reconstruct_wsi(
     output_dir,
     tile_dir=None,
     mode="rgb",
-    blend="average",   # "average" or "overwrite"
+    blend="average",
 ):
     """
     Reconstruct full WSI(s) from tiles using the metadata CSV.
@@ -273,16 +277,16 @@ def reconstruct_wsi(
     output_dir : str or Path
         Where reconstructed WSIs will be saved.
     tile_dir : str or Path, optional
-        Directory containing tile images to reconstruct from. Tiles are
-        matched by ``tile_name`` from the CSV (tries .tif, .png, .jpg).
-        If None, falls back to the ``image_path`` column in the CSV.
+        Directory containing translated tile images (e.g. inference output).
+        Tiles are matched by tile_name from the CSV. If None, falls back to
+        the image_path column in the CSV.
     mode : str
         "rgb" -> reconstruct only RGB images
         "mask" -> reconstruct only mask images
         "rgb_and_mask" -> reconstruct both
         "auto" -> reconstruct mask only if mask paths exist
     blend : str
-        "average" -> average overlapping regions (recommended)
+        "average" -> average overlapping regions (recommended for overlapping tiles)
         "overwrite" -> last tile wins
 
     Returns
@@ -290,52 +294,41 @@ def reconstruct_wsi(
     dict:
         Dictionary mapping source_file -> dict with reconstructed paths.
     """
-
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     tile_dir = Path(tile_dir) if tile_dir else None
 
     df = pd.read_csv(metadata_csv)
 
-    # Detect whether masks exist
     has_masks = df["mask_path"].notna().any() and (df["mask_path"] != "").any()
     if mode == "auto":
         mode = "rgb_and_mask" if has_masks else "rgb"
 
     results = {}
 
-    # Group tiles by WSI source file
     for source_file, group in df.groupby("source_file"):
-
         print(f"\nReconstructing WSI: {source_file}")
-        wsi_name = Path(source_file).stem  # removes .tif extension
 
-        # Determine output WSI size
         max_x = (group["x"] + group["tile_size"]).max()
         max_y = (group["y"] + group["tile_size"]).max()
 
-        # Prepare output arrays
         rgb_canvas = np.zeros((max_y, max_x, 3), dtype=np.float32)
         rgb_weight = np.zeros((max_y, max_x, 1), dtype=np.float32)
 
         mask_canvas = None
         mask_weight = None
-
         if mode in {"mask", "rgb_and_mask"} and has_masks:
             mask_canvas = np.zeros((max_y, max_x), dtype=np.float32)
             mask_weight = np.zeros((max_y, max_x), dtype=np.float32)
 
-        # ---- Insert tiles ----
         for _, row in tqdm(group.iterrows(), total=len(group), desc="Placing tiles"):
             x, y = int(row["x"]), int(row["y"])
             tile_size = int(row["tile_size"])
             saved_size = int(row["saved_size"]) if "saved_size" in row and pd.notna(row.get("saved_size")) else tile_size
             needs_resize = saved_size != tile_size
 
-            # Resolve tile image path
             tile_path = _resolve_tile_path(row, tile_dir)
 
-            # Load RGB tile
             if mode in {"rgb", "rgb_and_mask"} and tile_path is not None:
                 rgb_pil = Image.open(tile_path)
                 if needs_resize:
@@ -344,7 +337,6 @@ def reconstruct_wsi(
                 rgb_canvas[y:y+tile_size, x:x+tile_size] += rgb_tile
                 rgb_weight[y:y+tile_size, x:x+tile_size] += 1
 
-            # Load mask tile if available
             if (
                 mode in {"mask", "rgb_and_mask"}
                 and has_masks
@@ -358,7 +350,6 @@ def reconstruct_wsi(
                 mask_canvas[y:y+tile_size, x:x+tile_size] += mask_tile
                 mask_weight[y:y+tile_size, x:x+tile_size] += 1
 
-        # ---- Blend overlapping areas ----
         def finalize(canvas, weight):
             if blend == "average":
                 canvas = np.divide(
@@ -366,8 +357,6 @@ def reconstruct_wsi(
                     out=np.zeros_like(canvas),
                     where=weight > 0
                 )
-            elif blend == "overwrite":
-                pass
             return canvas
 
         rgb_output = None
@@ -375,12 +364,13 @@ def reconstruct_wsi(
 
         if mode in {"rgb", "rgb_and_mask"}:
             rgb_reconstructed = finalize(rgb_canvas, rgb_weight)
-            rgb_output = output_dir / f"{wsi_name}_reconstructed_rgb.tif"
+            rgb_output = output_dir / source_file
             Image.fromarray(rgb_reconstructed.astype(np.uint8)).save(rgb_output)
 
         if mode in {"mask", "rgb_and_mask"} and has_masks:
             mask_reconstructed = finalize(mask_canvas, mask_weight)
-            mask_output = output_dir / f"{wsi_name}_reconstructed_mask.tif"
+            mask_stem = Path(source_file).stem
+            mask_output = output_dir / f"{mask_stem}_mask.tif"
             Image.fromarray(mask_reconstructed.astype(np.uint8)).save(mask_output)
 
         results[source_file] = {
@@ -402,4 +392,3 @@ def _resolve_tile_path(row, tile_dir):
                 return candidate
         return None
     return row["image_path"]
-
