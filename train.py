@@ -94,6 +94,7 @@ def build_model(args):
     if args.model == "uvcgan":
         cfg = UVCGANConfig(
             pretrain=(args.uvcgan_stage == "pretrain"),
+            ngf=args.uvcgan_ngf,
             vit_n_blocks=args.uvcgan_vit_blocks,
             vit_features=args.uvcgan_vit_features,
         )
@@ -112,13 +113,39 @@ def build_model(args):
 def _build_default_gan_config(args):
     """Build config from CLI args for the 4 GAN models (no checkpoint)."""
     if args.model == "cyclegan":
-        return CycleGANConfig()
+        return CycleGANConfig(
+            ngf=args.cyclegan_ngf,
+            n_blocks=args.cyclegan_n_blocks,
+        )
     elif args.model == "unit":
-        return UNITConfig()
+        n_shared = args.unit_n_blocks_shared
+        n_side = (args.unit_n_blocks - n_shared) // 2
+        if n_side * 2 + n_shared != args.unit_n_blocks:
+            raise ValueError(
+                f"--unit_n_blocks ({args.unit_n_blocks}) - --unit_n_blocks_shared "
+                f"({n_shared}) must be even so pre/post halves are equal."
+            )
+        n_down = 2  # fixed for UNIT
+        z_dim = args.unit_ngf * (2 ** n_down)
+        return UNITConfig(
+            ngf=args.unit_ngf,
+            z_dim=z_dim,
+            n_blocks_total=args.unit_n_blocks,
+            n_blocks_shared=n_shared,
+            n_blocks_private_pre=n_side,
+            n_blocks_private_post=n_side,
+        )
     elif args.model == "munit":
-        return MUNITConfig(style_dim=args.style_dim)
+        return MUNITConfig(
+            ngf=args.munit_ngf,
+            style_dim=args.style_dim,
+            n_content_blocks=args.munit_n_content_blocks,
+            n_adain_blocks=args.munit_n_adain_blocks,
+        )
     elif args.model == "dclgan":
         return DCLGANConfig(
+            ngf=args.dclgan_ngf,
+            n_blocks=args.dclgan_n_blocks,
             lambda_dcl=args.lambda_dcl,
             n_patches=args.n_patches,
             proj_dim=args.proj_dim,
@@ -127,15 +154,62 @@ def _build_default_gan_config(args):
 
 
 
+def _count_a2b_params(model, model_name, miu_stage="finetune"):
+    """Return (total_params, a2b_params) for the generator of the given model."""
+    def n(m):
+        return sum(p.numel() for p in m.parameters())
+
+    total = n(model)
+
+    if model_name == "cyclegan":
+        a2b = n(model.Enc_A) + n(model.Bn_A) + n(model.Dec_B)
+    elif model_name == "unit":
+        a2b = (n(model.E_A) + n(model.latent_A) + n(model.bn_pre_A)
+               + n(model.bn_shared) + n(model.bn_post_B) + n(model.Dec_B))
+    elif model_name == "munit":
+        # random-style A→B: content encoder A + content bottleneck A + AdaIN decoder B
+        a2b = n(model.Ec_A) + n(model.Bn_A) + n(model.AdaIN_B) + n(model.Dec_B)
+    elif model_name == "dclgan":
+        a2b = n(model.Enc_A) + n(model.Bn_A) + n(model.Dec_B)
+    elif model_name == "uvcgan":
+        a2b = n(model.G_A2B)
+    elif model_name == "miudiff":
+        if miu_stage == "pretrain":
+            a2b = n(model.eps_uncond)
+        else:
+            # Both UNets active at inference (classifier-free guidance)
+            a2b = n(model.eps_uncond) + n(model.eps_cond)
+    else:
+        a2b = total
+
+    return total, a2b
+
+
+def _print_param_counts(args, device):
+    model = build_model(args).to(device)
+    miu_stage = getattr(args, "miu_stage", "finetune")
+    total, a2b = _count_a2b_params(model, args.model, miu_stage)
+
+    print(f"\n{'=' * 52}")
+    print(f"  Model        : {args.model}")
+    print(f"  Total params : {total:>12,}")
+    print(f"  A→B params   : {a2b:>12,}  ({a2b/1e6:.2f}M)")
+    print(f"{'=' * 52}\n")
+
+
 def main():
     parser = argparse.ArgumentParser("Unified I2I Training")
 
     # ---- model ----
     parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff", "uvcgan"], required=True)
+    parser.add_argument("--count_params", action="store_true",
+                        help="Print A→B generator parameter count and exit (no training)")
 
     # ---- data ----
-    parser.add_argument("--dataA", type=str, required=True)
-    parser.add_argument("--dataB", type=str, required=True)
+    parser.add_argument("--dataA", type=str, default=None,
+                        help="Path to domain A tiles (required unless --count_params)")
+    parser.add_argument("--dataB", type=str, default=None,
+                        help="Path to domain B tiles (required unless --count_params)")
     parser.add_argument("--data_range", type=str, default=None,
                         help="Load tiles from a range of numbered folders, e.g. '1,6' loads "
                              "001/images/ through 006/images/ under dataA and dataB")
@@ -146,16 +220,44 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--amp", action="store_true")
-    parser.add_argument("--output", type=str, required=True)
+    parser.add_argument("--output", type=str, default=None,
+                        help="Output directory for checkpoints (required unless --count_params)")
     parser.add_argument("--save_epochs", type=int, default=5)
     parser.add_argument("--init_ckpt", type=str, default=None,
                     help="Pretrained checkpoint to initialise model weights")
 
-    # ---- MUNIT specific ----
+    # ---- CycleGAN architecture ----
+    parser.add_argument("--cyclegan_ngf", type=int, default=64,
+                        help="Generator base channels for CycleGAN")
+    parser.add_argument("--cyclegan_n_blocks", type=int, default=9,
+                        help="ResNet blocks in CycleGAN bottleneck")
+
+    # ---- UNIT architecture ----
+    parser.add_argument("--unit_ngf", type=int, default=64,
+                        help="Generator base channels for UNIT")
+    parser.add_argument("--unit_n_blocks", type=int, default=9,
+                        help="Total ResNet blocks in UNIT bottleneck (pre + shared + post)")
+    parser.add_argument("--unit_n_blocks_shared", type=int, default=3,
+                        help="Shared blocks in UNIT bottleneck; pre=post=(total-shared)//2")
+
+    # ---- MUNIT architecture ----
+    parser.add_argument("--munit_ngf", type=int, default=64,
+                        help="Generator base channels for MUNIT")
+    parser.add_argument("--munit_n_content_blocks", type=int, default=4,
+                        help="Content ResNet blocks for MUNIT")
+    parser.add_argument("--munit_n_adain_blocks", type=int, default=4,
+                        help="AdaIN ResNet blocks in MUNIT decoder")
+
+    # ---- MUNIT style ----
     parser.add_argument("--style_dim", type=int, default=8)
 
+    # ---- DCLGAN architecture ----
+    parser.add_argument("--dclgan_ngf", type=int, default=64,
+                        help="Generator base channels for DCLGAN")
+    parser.add_argument("--dclgan_n_blocks", type=int, default=9,
+                        help="ResNet blocks in DCLGAN bottleneck")
 
-    # ---- DCLGAN specific ----
+    # ---- DCLGAN contrastive ----
     parser.add_argument("--lambda_dcl", type=float, default=1.0)
     parser.add_argument("--n_patches", type=int, default=256)
     parser.add_argument("--proj_dim", type=int, default=256)
@@ -182,6 +284,8 @@ def main():
     parser.add_argument("--uvcgan_stage", choices=["pretrain", "finetune"], default="finetune")
     parser.add_argument("--uvcgan_init_ckpt", type=str, default=None,
                     help="Checkpoint from UVCGAN pretrain stage")
+    parser.add_argument("--uvcgan_ngf", type=int, default=64,
+                    help="Generator base channels for UVCGAN UNet encoder/decoder")
     parser.add_argument("--uvcgan_vit_blocks", type=int, default=6)
     parser.add_argument("--uvcgan_vit_features", type=int, default=192,
                     help="ViT hidden dimension for UVCGAN bottleneck")
@@ -190,6 +294,11 @@ def main():
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # ---- parameter count dry-run ----
+    if args.count_params:
+        _print_param_counts(args, device)
+        return
 
     # ---- dataset ----
     transform = default_train_transform(image_size=256)
