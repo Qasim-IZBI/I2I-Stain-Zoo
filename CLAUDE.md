@@ -197,5 +197,7 @@ Reusable building blocks across all GAN models:
 - AMP (automatic mixed precision) supported via `--amp` flag
 - Checkpoints saved as `{"model": state_dict, "config": asdict(cfg), "model_name": str, ...}` in `output/checkpoints/`
 - Config is auto-restored from checkpoint on `--init_ckpt` (train) and `--ckpt` (inference); old checkpoints without `"config"` fall back to CLI args/defaults
+- **Auto-resume**: `BaseTrainer.train()` automatically scans `output/checkpoints/` for `epoch_*.pt` files at startup and resumes from the latest — no extra flags needed. If all target epochs are already done, training exits immediately.
+- **Training time tracking**: elapsed time is accumulated across resume sessions and stored in each checkpoint. After every checkpoint save and at the end of training, `output/training_meta.json` is updated with `accumulated_seconds`, `human_readable` (e.g. `2h 15m 30s`), `last_updated_epoch`, and `avg_seconds_per_epoch`.
 - No external diffusion libraries — DDPM/DDIM sampling implemented from scratch in `models/miudiff.py`
 - No requirements.txt — core deps: torch, torchvision, numpy, PIL, tifffile, tqdm, pandas, matplotlib
