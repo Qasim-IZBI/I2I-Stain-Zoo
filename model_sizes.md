@@ -74,15 +74,15 @@ All counts were verified with `python train.py --model <model> --count_params <a
 ```bash
 # Small CycleGAN
 python train.py --model cyclegan --cyclegan_ngf 64 --cyclegan_n_blocks 8 \
-    --dataA /tiles/trainA --dataB /tiles/trainB --epochs 100 --amp --output ./results/
+    --dataA /tiles/trainA --dataB /tiles/trainB --steps 5000000 --amp --output ./results/
 
 # Medium UVCGAN
 python train.py --model uvcgan --uvcgan_ngf 96 --uvcgan_vit_features 384 --uvcgan_vit_blocks 6 \
-    --dataA /tiles/trainA --dataB /tiles/trainB --epochs 100 --amp --output ./results/
+    --dataA /tiles/trainA --dataB /tiles/trainB --steps 5000000 --amp --output ./results/
 
 # Large MIUDiff (stage 2)
 python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,4,8 \
-    --miu_stage finetune --dataA /tiles/trainA --dataB /tiles/trainB --epochs 10 --amp --output ./results/
+    --miu_stage finetune --dataA /tiles/trainA --dataB /tiles/trainB --steps 500000 --amp --output ./results/
 
 # Dry-run parameter count (no data needed)
 python train.py --model cyclegan --count_params --cyclegan_ngf 128 --cyclegan_n_blocks 10
