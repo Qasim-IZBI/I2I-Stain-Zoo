@@ -215,14 +215,18 @@ def main():
                              "001/images/ through 006/images/ under dataA and dataB")
 
     # ---- training ----
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--steps", type=int, default=5_000_000,
+                        help="Total number of optimiser steps to train for")
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--output", type=str, default=None,
                         help="Output directory for checkpoints (required unless --count_params)")
-    parser.add_argument("--save_epochs", type=int, default=5)
+    parser.add_argument("--save_steps", type=int, default=250_000,
+                        help="Save a checkpoint every this many steps")
+    parser.add_argument("--log_steps", type=int, default=1_000,
+                        help="Log losses every this many steps")
     parser.add_argument("--init_ckpt", type=str, default=None,
                     help="Pretrained checkpoint to initialise model weights")
 
@@ -337,10 +341,11 @@ def main():
         use_amp=args.amp,
         save_dir=args.output + '/checkpoints',
         sample_dir=args.output + '/samples',
-        save_epochs=args.save_epochs
+        save_steps=args.save_steps,
+        log_steps=args.log_steps,
     )
 
-    trainer.train(num_epochs=args.epochs)
+    trainer.train(total_steps=args.steps)
 
 
 if __name__ == "__main__":

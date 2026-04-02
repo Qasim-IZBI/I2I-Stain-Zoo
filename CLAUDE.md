@@ -41,36 +41,43 @@ path/to/tiles/
 ```
 
 ### Training
+Training is step-based (not epoch-based) so comparisons across different dataset sizes are fair.
+Logs are printed every `--log_steps` steps with wall time for that interval. Checkpoints are saved every `--save_steps` steps.
+
 ```bash
 # GAN models (cyclegan, unit, munit, dclgan) — all tiles under trainA/trainB
 python train.py --model cyclegan --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
-    --epochs 100 --amp --output ./results/
+    --steps 5000000 --amp --output ./results/
 
 # Train on a subset of WSIs (folders 001–006 only)
 python train.py --model cyclegan --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
-    --data_range 1,6 --epochs 100 --amp --output ./results/
+    --data_range 1,6 --steps 5000000 --amp --output ./results/
+
+# Custom log and checkpoint frequency
+python train.py --model cyclegan --dataA ... --dataB ... --steps 5000000 --amp \
+    --log_steps 500 --save_steps 100000 --output ./results/
 
 # Resume/initialise any model from a pretrained checkpoint
-python train.py --model cyclegan --dataA ... --dataB ... --epochs 50 \
-    --init_ckpt ./prev_run/checkpoints/epoch_50.pt --output ./new_run/
+python train.py --model cyclegan --dataA ... --dataB ... --steps 5000000 \
+    --init_ckpt ./prev_run/checkpoints/step_250000.pt --output ./new_run/
 
 # MIUDiff (3-stage): pretrain → finetune → finetune+PCL
-python train.py --model miudiff --dataA ... --dataB ... --epochs 5 --amp --miu_stage pretrain --output ./stage1/
-python train.py --model miudiff --dataA ... --dataB ... --epochs 5 --amp --miu_stage finetune --output ./stage1/
-python train.py --model miudiff --miu_stage finetune --miu_pcl --lambda_pcl 0.1 --dataA ... --dataB ... --epochs 5 --amp --output ./stage3/
+python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp --miu_stage pretrain --output ./stage1/
+python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp --miu_stage finetune --output ./stage1/
+python train.py --model miudiff --miu_stage finetune --miu_pcl --lambda_pcl 0.1 --dataA ... --dataB ... --steps 500000 --amp --output ./stage3/
 
 # MIUDiff UNet architecture controls (original: base_channels=128, channel_mult=1,1,2,2,4,4)
 python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,2,4 \
-    --dataA ... --dataB ... --epochs 5 --amp --miu_stage pretrain --output ./out/
+    --dataA ... --dataB ... --steps 500000 --amp --miu_stage pretrain --output ./out/
 
 # UVCGAN (2-stage): optional pretrain → finetune
-python train.py --model uvcgan --uvcgan_stage pretrain --dataA ... --dataB ... --epochs 50 --amp --output ./uvcgan_pt/
-python train.py --model uvcgan --uvcgan_stage finetune --uvcgan_init_ckpt ./uvcgan_pt/checkpoints/epoch_50.pt \
-    --dataA ... --dataB ... --epochs 100 --amp --output ./uvcgan/
+python train.py --model uvcgan --uvcgan_stage pretrain --dataA ... --dataB ... --steps 1000000 --amp --output ./uvcgan_pt/
+python train.py --model uvcgan --uvcgan_stage finetune --uvcgan_init_ckpt ./uvcgan_pt/checkpoints/step_1000000.pt \
+    --dataA ... --dataB ... --steps 5000000 --amp --output ./uvcgan/
 
 # UVCGAN ViT architecture controls (original: vit_n_blocks=12, vit_features=384)
 python train.py --model uvcgan --uvcgan_vit_blocks 6 --uvcgan_vit_features 192 \
-    --dataA ... --dataB ... --epochs 100 --amp --output ./uvcgan/
+    --dataA ... --dataB ... --steps 5000000 --amp --output ./uvcgan/
 ```
 
 ### Inference
@@ -203,9 +210,11 @@ Reusable building blocks across all GAN models:
 
 - All images normalized to [-1, 1] during training; denormalized to [0, 1] for saving
 - AMP (automatic mixed precision) supported via `--amp` flag
-- Checkpoints saved as `{"model": state_dict, "config": asdict(cfg), "model_name": str, ...}` in `output/checkpoints/`
+- Checkpoints saved as `{"model": state_dict, "config": asdict(cfg), "model_name": str, ...}` in `output/checkpoints/step_<N>.pt`
 - Config is auto-restored from checkpoint on `--init_ckpt` (train) and `--ckpt` (inference); old checkpoints without `"config"` fall back to CLI args/defaults
-- **Auto-resume**: `BaseTrainer.train()` automatically scans `output/checkpoints/` for `epoch_*.pt` files at startup and resumes from the latest — no extra flags needed. If all target epochs are already done, training exits immediately.
-- **Training time tracking**: elapsed time is accumulated across resume sessions and stored in each checkpoint. After every checkpoint save and at the end of training, `output/training_meta.json` is updated with `accumulated_seconds`, `human_readable` (e.g. `2h 15m 30s`), `last_updated_epoch`, and `avg_seconds_per_epoch`.
+- **Step-based training**: `--steps` (default 5,000,000) controls total optimiser updates; `--save_steps` (default 250,000) controls checkpoint frequency; `--log_steps` (default 1,000) controls loss logging frequency. This keeps model updates constant across different dataset sizes.
+- **Auto-resume**: `BaseTrainer.train()` automatically scans `output/checkpoints/` for `step_*.pt` files at startup and resumes from the latest — no extra flags needed. If the target step count is already reached, training exits immediately.
+- **Training time tracking**: elapsed time is accumulated across resume sessions and stored in each checkpoint. After every checkpoint save and at the end of training, `output/training_meta.json` is updated with `accumulated_seconds`, `human_readable` (e.g. `2h 15m 30s`), `last_updated_step`, and `avg_seconds_per_1k_steps`.
+- **Log format**: `[S00001000 |   12.3s] loss_G:0.4017 ...` — step number and wall time elapsed since the previous log.
 - No external diffusion libraries — DDPM/DDIM sampling implemented from scratch in `models/miudiff.py`
 - No requirements.txt — core deps: torch, torchvision, numpy, PIL, tifffile, tqdm, pandas, matplotlib

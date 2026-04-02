@@ -37,7 +37,8 @@ class BaseTrainer:
         grad_accum_steps: int = 1,
         save_dir: str = "checkpoints",
         sample_dir: str = "samples",
-        save_epochs: int = 5,
+        save_steps: int = 250_000,
+        log_steps: int = 1_000,
     ):
         self.model = model.to(device)
         self.dataloader = dataloader
@@ -52,7 +53,8 @@ class BaseTrainer:
 
         self.save_dir = save_dir
         self.sample_dir = sample_dir
-        self.save_epochs = save_epochs
+        self.save_steps = save_steps
+        self.log_steps = log_steps
 
         # --- optimizers ---
         g_params = list(self.model.generator_parameters())
@@ -68,7 +70,7 @@ class BaseTrainer:
         self.scaler = torch.cuda.amp.GradScaler(enabled=use_amp, growth_interval=500)
 
         self.global_step = 0
-        self.epoch = 0
+        self._internal_epoch = 0  # counts full passes through the dataloader (internal only)
 
         # --- training metadata ---
         self.lr = lr
@@ -77,144 +79,122 @@ class BaseTrainer:
         # --- timing ---
         self.accumulated_training_seconds: float = 0.0
         self._session_start: Optional[float] = None
+        self._log_interval_start: Optional[float] = None
 
         # --- loss logging ---
         self.log_path = os.path.join(os.path.dirname(save_dir), "loss_log.csv")
         self._log_header_written = os.path.exists(self.log_path)
-        self._epoch_losses: List[Dict[str, float]] = []
+        self._step_losses: List[Dict[str, float]] = []
 
     # ============================================================
     # Core training loop
     # ============================================================
 
-    def train(self, num_epochs: int):
+    def train(self, total_steps: int):
         self.resume_if_exists()
 
-        start_epoch = self.epoch
-        if start_epoch >= num_epochs:
-            print(f"[Trainer] Already completed {start_epoch}/{num_epochs} epochs — nothing to do.")
+        if self.global_step >= total_steps:
+            print(f"[Trainer] Already completed {self.global_step}/{total_steps} steps — nothing to do.")
             return
 
-        if start_epoch == 0:
-            self._save_training_meta(num_epochs)
+        if self.global_step == 0:
+            self._save_training_meta(total_steps)
         else:
-            print(f"[Trainer] Resuming from epoch {start_epoch} → target {num_epochs} epochs.")
+            print(f"[Trainer] Resuming from step {self.global_step} → target {total_steps} steps.")
 
         self._session_start = time.time()
+        self._log_interval_start = time.time()
 
-        for epoch in range(start_epoch + 1, num_epochs + 1):
-            self.epoch = epoch
-            self._train_epoch()
-            if epoch % self.save_epochs == 0:
-                self.save_checkpoint(f"epoch_{epoch}.pt")
-
-        # Final timing update (captures any epochs after the last checkpoint)
-        self._update_timing_meta(num_epochs)
-
-    def _train_epoch(self):
         self.model.train()
-        total_steps = len(self.dataloader)
-        half_step = total_steps // 2
 
-        for step_in_epoch, batch in enumerate(self.dataloader, 1):
-            self.global_step += 1
+        while self.global_step < total_steps:
+            self._internal_epoch += 1
+            for batch in self.dataloader:
+                if self.global_step >= total_steps:
+                    break
 
-            batch = self._to_device(batch)
+                self.global_step += 1
+                batch = self._to_device(batch)
 
-            # -------------------------
-            # Generator step
-            # -------------------------
+                # -------------------------
+                # Generator step
+                # -------------------------
+                with torch.cuda.amp.autocast(enabled=self.use_amp):
+                    loss_G, logs_G, visuals = self.model.compute_generator_loss(batch)
 
-            with torch.cuda.amp.autocast(enabled=self.use_amp):
-                loss_G, logs_G, visuals = self.model.compute_generator_loss(batch)
-
-            # Skip bad steps early (prevents poisoning the optimizer state)
-            if not torch.isfinite(loss_G):
-                print(f"[WARN] Non-finite loss_G at step {self.global_step}, skipping step.")
-                self.opt_G.zero_grad(set_to_none=True)
-                continue
-
-            self.scaler.scale(loss_G / self.grad_accum_steps).backward()
-
-            if self.global_step % self.grad_accum_steps == 0:
-                # unscale first so we can check true grads
-                self.scaler.unscale_(self.opt_G)
-
-                # If any grad is non-finite, skip the optimizer step (prevents poisoning)
-                found_inf = False
-                for p in self.model.generator_parameters():
-                    if p.grad is not None and not torch.isfinite(p.grad).all():
-                        found_inf = True
-                        break
-
-                if found_inf:
-                    print(f"[WARN] Non-finite gradients at step {self.global_step}, skipping optimizer step.")
+                if not torch.isfinite(loss_G):
+                    print(f"[WARN] Non-finite loss_G at step {self.global_step}, skipping step.")
                     self.opt_G.zero_grad(set_to_none=True)
-                    self.scaler.update()  # still update scaler to reduce scale
                     continue
 
-                torch.nn.utils.clip_grad_norm_(self.model.generator_parameters(), 1.0)
-
-                self.scaler.step(self.opt_G)
-                self.scaler.update()
-                self.opt_G.zero_grad(set_to_none=True)
-
-            # if self.global_step % self.grad_accum_steps == 0:
-            #     # IMPORTANT: unscale before clipping
-            #     self.scaler.unscale_(self.opt_G)
-            #     torch.nn.utils.clip_grad_norm_(self.model.generator_parameters(), 1.0)
-
-            #     self.scaler.step(self.opt_G)
-            #     self.scaler.update()
-            #     self.opt_G.zero_grad(set_to_none=True)
-
-            # # -------------------------
-            # # Generator step
-            # # -------------------------
-            # with torch.cuda.amp.autocast(enabled=self.use_amp):
-            #     loss_G, logs_G, visuals = self.model.compute_generator_loss(batch)
-
-            # self.scaler.scale(loss_G / self.grad_accum_steps).backward()
-
-            # if self.global_step % self.grad_accum_steps == 0:
-            #     self.scaler.step(self.opt_G)
-            #     self.scaler.update()
-            #     self.opt_G.zero_grad(set_to_none=True)
-
-            # -------------------------
-            # Discriminator step
-            # -------------------------
-            if self.opt_D is not None:
-                with torch.cuda.amp.autocast(enabled=self.use_amp):
-                    loss_D, logs_D = self.model.compute_discriminator_loss(batch, visuals)
-
-                self.scaler.scale(loss_D / self.grad_accum_steps).backward()
+                self.scaler.scale(loss_G / self.grad_accum_steps).backward()
 
                 if self.global_step % self.grad_accum_steps == 0:
-                    self.scaler.step(self.opt_D)
+                    self.scaler.unscale_(self.opt_G)
+
+                    found_inf = False
+                    for p in self.model.generator_parameters():
+                        if p.grad is not None and not torch.isfinite(p.grad).all():
+                            found_inf = True
+                            break
+
+                    if found_inf:
+                        print(f"[WARN] Non-finite gradients at step {self.global_step}, skipping optimizer step.")
+                        self.opt_G.zero_grad(set_to_none=True)
+                        self.scaler.update()
+                        continue
+
+                    torch.nn.utils.clip_grad_norm_(self.model.generator_parameters(), 1.0)
+                    self.scaler.step(self.opt_G)
                     self.scaler.update()
-                    self.opt_D.zero_grad(set_to_none=True)
-            else:
-                logs_D = {}
+                    self.opt_G.zero_grad(set_to_none=True)
 
-            # -------------------------
-            # Accumulate losses
-            # -------------------------
-            self._epoch_losses.append({**logs_G, **logs_D})
+                # -------------------------
+                # Discriminator step
+                # -------------------------
+                if self.opt_D is not None:
+                    with torch.cuda.amp.autocast(enabled=self.use_amp):
+                        loss_D, logs_D = self.model.compute_discriminator_loss(batch, visuals)
 
-            # -------------------------
-            # Logging / sampling (twice per epoch: at half and end)
-            # -------------------------
-            if step_in_epoch == half_step or step_in_epoch == total_steps:
-                self.save_samples(visuals)
-                avg_losses = self._flush_losses()
-                self.log(avg_losses, save=True)
+                    self.scaler.scale(loss_D / self.grad_accum_steps).backward()
+
+                    if self.global_step % self.grad_accum_steps == 0:
+                        self.scaler.step(self.opt_D)
+                        self.scaler.update()
+                        self.opt_D.zero_grad(set_to_none=True)
+                else:
+                    logs_D = {}
+
+                # -------------------------
+                # Accumulate losses
+                # -------------------------
+                self._step_losses.append({**logs_G, **logs_D})
+
+                # -------------------------
+                # Log every log_steps
+                # -------------------------
+                if self.global_step % self.log_steps == 0:
+                    self.save_samples(visuals)
+                    avg_losses = self._flush_losses()
+                    self.log(avg_losses, save=True)
+
+                # -------------------------
+                # Checkpoint every save_steps
+                # -------------------------
+                if self.global_step % self.save_steps == 0:
+                    self.save_checkpoint(f"step_{self.global_step}.pt")
+
+        # Save final state if the last step wasn't already a checkpoint boundary
+        if self.global_step % self.save_steps != 0:
+            self.save_checkpoint(f"step_{self.global_step}.pt")
+
+        self._update_timing_meta(total_steps)
 
     # ============================================================
     # Utilities
     # ============================================================
 
-    def _save_training_meta(self, num_epochs: int):
+    def _save_training_meta(self, total_steps: int):
         """Save training metadata at the start of a fresh training run."""
         dataset = self.dataloader.dataset
         data_info = {"total_images": len(dataset)}
@@ -230,12 +210,14 @@ class BaseTrainer:
             "model_name": self.model_name,
             "config": _make_serializable(asdict(self.model.cfg)) if hasattr(self.model, "cfg") else None,
             "training": {
-                "num_epochs": num_epochs,
+                "total_steps": total_steps,
                 "batch_size": self.dataloader.batch_size,
                 "learning_rate": self.lr,
                 "betas": list(self.betas),
                 "amp": self.use_amp,
                 "grad_accum_steps": self.grad_accum_steps,
+                "save_steps": self.save_steps,
+                "log_steps": self.log_steps,
             },
             "dataset": data_info,
             "parameters": {
@@ -246,8 +228,8 @@ class BaseTrainer:
             "timing": {
                 "accumulated_seconds": 0.0,
                 "human_readable": "0h 00m 00s",
-                "last_updated_epoch": 0,
-                "avg_seconds_per_epoch": None,
+                "last_updated_step": 0,
+                "avg_seconds_per_1k_steps": None,
             },
         }
 
@@ -256,7 +238,7 @@ class BaseTrainer:
             json.dump(meta, f, indent=2)
         print(f"[Meta] Saved training metadata to {meta_path}")
 
-    def _update_timing_meta(self, num_epochs: Optional[int]):
+    def _update_timing_meta(self, total_steps: Optional[int]):
         """Update the timing block in training_meta.json with current elapsed time."""
         meta_path = os.path.join(os.path.dirname(self.save_dir), "training_meta.json")
         if not os.path.exists(meta_path):
@@ -265,8 +247,8 @@ class BaseTrainer:
         session_elapsed = time.time() - self._session_start if self._session_start else 0.0
         total_seconds = self.accumulated_training_seconds + session_elapsed
 
-        epochs_done = self.epoch
-        avg = total_seconds / epochs_done if epochs_done > 0 else None
+        steps_done = self.global_step
+        avg = (total_seconds / steps_done * 1000) if steps_done > 0 else None
 
         try:
             with open(meta_path, "r") as f:
@@ -277,8 +259,8 @@ class BaseTrainer:
         meta["timing"] = {
             "accumulated_seconds": round(total_seconds, 2),
             "human_readable": _seconds_to_hms(total_seconds),
-            "last_updated_epoch": epochs_done,
-            "avg_seconds_per_epoch": round(avg, 2) if avg is not None else None,
+            "last_updated_step": steps_done,
+            "avg_seconds_per_1k_steps": round(avg, 2) if avg is not None else None,
         }
 
         with open(meta_path, "w") as f:
@@ -315,11 +297,9 @@ class BaseTrainer:
 
     def save_checkpoint(self, name: str):
         path = os.path.join(self.save_dir, name)
-        # Snapshot accumulated time including the current session so far
         session_elapsed = time.time() - self._session_start if self._session_start else 0.0
         accumulated = self.accumulated_training_seconds + session_elapsed
         state = {
-            "epoch": self.epoch,
             "global_step": self.global_step,
             "model": self.model.state_dict(),
             "opt_G": self.opt_G.state_dict(),
@@ -331,7 +311,7 @@ class BaseTrainer:
             state["opt_D"] = self.opt_D.state_dict()
         torch.save(state, path)
         print(f"[Checkpoint] Saved: {path}")
-        self._update_timing_meta(None)  # persist timing after every checkpoint
+        self._update_timing_meta(None)
 
     def load_checkpoint(self, path: str):
         ckpt = torch.load(path, map_location=self.device)
@@ -339,14 +319,13 @@ class BaseTrainer:
         self.opt_G.load_state_dict(ckpt["opt_G"])
         if self.opt_D is not None and "opt_D" in ckpt:
             self.opt_D.load_state_dict(ckpt["opt_D"])
-        self.epoch = ckpt.get("epoch", 0)
         self.global_step = ckpt.get("global_step", 0)
         self.accumulated_training_seconds = ckpt.get("accumulated_training_seconds", 0.0)
-        print(f"[Checkpoint] Loaded: {path}")
+        print(f"[Checkpoint] Loaded: {path}  (step {self.global_step})")
 
     def resume_if_exists(self):
-        """Scan save_dir for epoch_*.pt files and resume from the latest one."""
-        pattern = re.compile(r"^epoch_(\d+)\.pt$")
+        """Scan save_dir for step_*.pt files and resume from the latest one."""
+        pattern = re.compile(r"^step_(\d+)\.pt$")
         candidates = []
         for fname in os.listdir(self.save_dir):
             m = pattern.match(fname)
@@ -364,24 +343,28 @@ class BaseTrainer:
 
     def _flush_losses(self) -> Dict[str, float]:
         """Average accumulated losses and reset the buffer."""
-        if not self._epoch_losses:
+        if not self._step_losses:
             return {}
-        keys = self._epoch_losses[0].keys()
+        keys = self._step_losses[0].keys()
         avg = {}
         for k in keys:
-            vals = [d[k] for d in self._epoch_losses if k in d]
+            vals = [d[k] for d in self._step_losses if k in d]
             avg[k] = sum(vals) / len(vals) if vals else 0.0
-        self._epoch_losses = []
+        self._step_losses = []
         return avg
 
     def log(self, logs: Dict[str, float], save: bool = False):
-        """Print and optionally save losses to CSV."""
-        msg = f"[E{self.epoch:03d} | S{self.global_step:06d}] "
+        """Print losses with elapsed time since the last log, and optionally save to CSV."""
+        now = time.time()
+        elapsed = now - self._log_interval_start if self._log_interval_start else 0.0
+        self._log_interval_start = now
+
+        msg = f"[S{self.global_step:08d} | {elapsed:6.1f}s] "
         msg += " ".join([f"{k}:{v:.4f}" for k, v in logs.items()])
         print(msg)
 
         if save and logs:
-            row = {"epoch": self.epoch, "global_step": self.global_step, **logs}
+            row = {"global_step": self.global_step, "elapsed_s": f"{elapsed:.1f}", **logs}
             fieldnames = list(row.keys())
             write_header = not self._log_header_written
             with open(self.log_path, "a", newline="") as f:
