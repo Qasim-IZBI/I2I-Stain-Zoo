@@ -65,7 +65,7 @@ class BaseTrainer:
             self.opt_D = torch.optim.Adam(d_params, lr=lr, betas=betas)
 
         # --- AMP ---
-        self.scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=use_amp, growth_interval=500)
 
         self.global_step = 0
         self.epoch = 0
