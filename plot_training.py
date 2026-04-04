@@ -10,17 +10,17 @@ import torch
 
 
 def find_latest_checkpoint(ckpt_dir):
-    """Find the checkpoint with the highest epoch number."""
+    """Find the checkpoint with the highest step number."""
     if not os.path.isdir(ckpt_dir):
         return None
-    pattern = re.compile(r"epoch_(\d+)\.pt$")
-    best, best_epoch = None, -1
+    pattern = re.compile(r"step_(\d+)\.pt$")
+    best, best_step = None, -1
     for f in os.listdir(ckpt_dir):
         m = pattern.match(f)
         if m:
-            ep = int(m.group(1))
-            if ep > best_epoch:
-                best_epoch = ep
+            step = int(m.group(1))
+            if step > best_step:
+                best_step = step
                 best = os.path.join(ckpt_dir, f)
     return best
 
@@ -42,26 +42,41 @@ def main():
     df = pd.read_csv(log_path)
     print(f"Loaded {len(df)} log entries from {log_path}")
 
-    # Identify loss columns (everything except epoch/global_step)
-    loss_cols = [c for c in df.columns if c not in ("epoch", "global_step")]
+    # Identify loss columns (everything except step/elapsed columns)
+    loss_cols = [c for c in df.columns if c not in ("global_step", "elapsed_s")]
 
-    # ---- Plot ----
-    n = len(loss_cols)
-    fig, axes = plt.subplots(n, 1, figsize=(10, 4 * n), squeeze=False)
+    x = df["global_step"]
+    plot_dir = os.path.join(run_dir, "loss_plots")
+    os.makedirs(plot_dir, exist_ok=True)
 
-    for idx, col in enumerate(loss_cols):
-        ax = axes[idx, 0]
-        ax.plot(df["epoch"], df[col], linewidth=1)
-        ax.set_xlabel("Epoch")
+    # ---- Individual plots ----
+    for col in loss_cols:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(x, df[col], linewidth=1)
+        ax.set_xlabel("Step")
         ax.set_ylabel(col)
         ax.set_title(col)
         ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(os.path.join(plot_dir, f"{col}.png"), dpi=150)
+        plt.close(fig)
+        print(f"Saved {col} plot to {plot_dir}/{col}.png")
 
+    # ---- Combined plot ----
+    n = len(loss_cols)
+    fig, axes = plt.subplots(n, 1, figsize=(10, 3 * n), squeeze=False)
+    for idx, col in enumerate(loss_cols):
+        ax = axes[idx, 0]
+        ax.plot(x, df[col], linewidth=1)
+        ax.set_xlabel("Step")
+        ax.set_ylabel(col)
+        ax.set_title(col)
+        ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    plot_path = os.path.join(run_dir, "losses.png")
-    fig.savefig(plot_path, dpi=150)
+    combined_path = os.path.join(plot_dir, "all_losses.png")
+    fig.savefig(combined_path, dpi=150)
     plt.close(fig)
-    print(f"Saved loss plot to {plot_path}")
+    print(f"Saved combined loss plot to {combined_path}")
 
     # ---- Load training metadata (saved by BaseTrainer at start of training) ----
     meta_path = os.path.join(run_dir, "training_meta.json")
@@ -91,7 +106,6 @@ def main():
     if training_meta:
         summary = training_meta
         summary["training_info"] = {
-            "total_epochs": int(df["epoch"].max()),
             "total_steps": int(df["global_step"].max()),
             "final_losses": final_losses,
         }
@@ -100,7 +114,6 @@ def main():
             "model_name": model_name,
             "config": _make_serializable(config) if config else None,
             "training_info": {
-                "total_epochs": int(df["epoch"].max()),
                 "total_steps": int(df["global_step"].max()),
                 "final_losses": final_losses,
             },

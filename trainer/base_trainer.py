@@ -13,6 +13,16 @@ from torch import nn, optim
 from torchvision.utils import save_image
 from typing import Dict, Any, List, Optional
 
+# matplotlib is optional — only imported when plotting
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    _PLOT_AVAILABLE = True
+except ImportError:
+    _PLOT_AVAILABLE = False
+
 
 class BaseTrainer:
     """
@@ -85,6 +95,9 @@ class BaseTrainer:
         self.log_path = os.path.join(os.path.dirname(save_dir), "loss_log.csv")
         self._log_header_written = os.path.exists(self.log_path)
         self._step_losses: List[Dict[str, float]] = []
+
+        # --- loss plots ---
+        self.plot_dir = os.path.join(os.path.dirname(save_dir), "loss_plots")
 
     # ============================================================
     # Core training loop
@@ -177,6 +190,7 @@ class BaseTrainer:
                     self.save_samples(visuals)
                     avg_losses = self._flush_losses()
                     self.log(avg_losses, save=True)
+                    self._plot_losses()
 
                 # -------------------------
                 # Checkpoint every save_steps
@@ -352,6 +366,50 @@ class BaseTrainer:
             avg[k] = sum(vals) / len(vals) if vals else 0.0
         self._step_losses = []
         return avg
+
+    def _plot_losses(self):
+        """Regenerate per-loss and combined loss plots from loss_log.csv."""
+        if not _PLOT_AVAILABLE or not os.path.exists(self.log_path):
+            return
+        try:
+            df = pd.read_csv(self.log_path)
+        except Exception:
+            return
+        if df.empty or "global_step" not in df.columns:
+            return
+
+        loss_cols = [c for c in df.columns if c not in ("global_step", "elapsed_s")]
+        if not loss_cols:
+            return
+
+        os.makedirs(self.plot_dir, exist_ok=True)
+        x = df["global_step"]
+
+        # Individual plot per loss
+        for col in loss_cols:
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(x, df[col], linewidth=1)
+            ax.set_xlabel("Step")
+            ax.set_ylabel(col)
+            ax.set_title(col)
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            fig.savefig(os.path.join(self.plot_dir, f"{col}.png"), dpi=120)
+            plt.close(fig)
+
+        # Combined plot (all losses, one subplot each)
+        n = len(loss_cols)
+        fig, axes = plt.subplots(n, 1, figsize=(10, 3 * n), squeeze=False)
+        for idx, col in enumerate(loss_cols):
+            ax = axes[idx, 0]
+            ax.plot(x, df[col], linewidth=1)
+            ax.set_xlabel("Step")
+            ax.set_ylabel(col)
+            ax.set_title(col)
+            ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(os.path.join(self.plot_dir, "all_losses.png"), dpi=120)
+        plt.close(fig)
 
     def log(self, logs: Dict[str, float], save: bool = False):
         """Print losses with elapsed time since the last log, and optionally save to CSV."""
