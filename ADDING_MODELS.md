@@ -101,6 +101,7 @@ from typing import Dict, Tuple
 from base_models import (
     Encoder, ResnetBottleneck, Decoder,
     NLayerDiscriminator, ImagePool, GANLoss,
+    discriminator_loss, identity_loss,
 )
 
 
@@ -177,17 +178,7 @@ class MyModel(nn.Module):
         real_A, real_B = batch["A"], batch["B"]
         fake_A = self.pool_A.query(visuals["fake_A"].detach())
         fake_B = self.pool_B.query(visuals["fake_B"].detach())
-
-        loss_D_A = 0.5 * (self.gan(self.D_A(real_A), True) + self.gan(self.D_A(fake_A), False))
-        loss_D_B = 0.5 * (self.gan(self.D_B(real_B), True) + self.gan(self.D_B(fake_B), False))
-        loss_D = loss_D_A + loss_D_B
-
-        logs = {
-            "loss_D":   float(loss_D.detach().cpu()),
-            "loss_D_A": float(loss_D_A.detach().cpu()),
-            "loss_D_B": float(loss_D_B.detach().cpu()),
-        }
-        return loss_D, logs
+        return discriminator_loss(self.gan, self.D_A, self.D_B, real_A, real_B, fake_A, fake_B)
 
     # ---- Inference helpers -------------------------------------------
     # inference.py calls these directly — must be defined
@@ -224,10 +215,11 @@ Import from `base_models` — do not reimplement these.
 | `GANLoss(mode)` | `mode="lsgan"` (MSE) or `"vanilla"` (BCE). Call as `self.gan(pred, is_real: bool)`. |
 | `ImagePool(pool_size)` | Replay buffer. Call `.query(fake.detach())` in discriminator step. |
 | `PatchSampler` | Samples spatial feature vectors from `[B,C,H,W]` maps. Static `.sample(feat, n_patches)`. |
-| `PatchProjector(in_dim, proj_dim)` | MLP projection head with L2 norm, for contrastive losses. |
 | `info_nce(q, k, temperature)` | InfoNCE loss with one-to-one positives. |
 | `init_weights(net, init_type, init_gain)` | Normal/Xavier/Kaiming weight init. |
 | `denorm01(x)` | `[-1,1] → [0,1]` helper. |
+| `discriminator_loss(gan, D_A, D_B, real_A, real_B, fake_A, fake_B)` | Standard symmetric PatchGAN discriminator loss. Pass already-detached (and optionally pool-queried) fakes. Returns `(loss_D, logs_dict)`. |
+| `identity_loss(l1, forward_A2B, forward_B2A, real_A, real_B, lam)` | Optional CycleGAN-style identity regularisation. Returns zero tensor when `lam <= 0`. `forward_A2B`/`forward_B2A` must return plain tensors. |
 
 **Typical channel arithmetic:**
 ```python
@@ -398,6 +390,10 @@ defaults.
 All three support `data_range=(start, end)` to load from numbered subfolders `001/` … `00N/`.
 Without `data_range`, they walk the full directory recursively.
 
+Shared image-listing utilities (`IMG_EXTS`, `list_images()`, `list_images_from_range()`) live in
+`datasets/common.py` and are imported by all three dataset classes. Do not redefine them in new
+dataset files — import from there instead.
+
 ---
 
 ## 11. Complete Checklist
@@ -450,6 +446,6 @@ Without `data_range`, they walk the full directory recursively.
 | CycleGAN | `CycleGANConfig` | `Enc_A→Bn_A→Dec_B`, `Enc_B→Bn_B→Dec_A` | `D_A`, `D_B` | Identity loss, ImagePool |
 | UNIT | `UNITConfig` | Shared `bn_shared` bottleneck, KL on latent | `D_A`, `D_B` | VAE reparameterization |
 | MUNIT | `MUNITConfig` | Content enc + style enc + AdaIN decoder | `D_A`, `D_B` | Style sampling at inference |
-| DCLGAN | `DCLGANConfig` | `Enc_A→Bn_A→Dec_B` + contrastive heads | `D_A`, `D_B` | Dual patch contrastive loss |
+| DCLGAN | `DCLGANConfig` | `Enc_A→Bn_A→Dec_B` + contrastive heads | `D_A`, `D_B` | Dual patch contrastive loss; `G_A2B`/`G_B2A` return `(image, feats)` tuples — use `forward_A2B`/`forward_B2A` for plain tensor access |
 | UVCGAN | `UVCGANConfig` | UNet-ViT hybrid `G_A2B`, `G_B2A` | `D_A`, `D_B` | 2-stage: masked pretrain → cycle finetune |
 | MIUDiff | `MIUDiffConfig` | `eps_uncond` + `eps_cond` (DDPM UNets) | None | 3-stage, diffusion sampling, PCL |
