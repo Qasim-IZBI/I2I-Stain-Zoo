@@ -98,8 +98,39 @@ python inference.py --model munit --direction A2B --data path/to/tiles/testA \
 python inference.py --model munit --direction A2B --data path/to/tiles/testA \
     --ckpt model.pt --style_image ref.png
 
-# MIUDiff adds --miu_pcl --pcl_refine_steps 3 --miu_steps 200 --miu_guidance 1.0
+# ---- MIUDiff inference (3 modes) ----
+
+# Stage 1 — unconditional sampling from domain B (pretrain checkpoint).
+# Reads tiles from a domain B directory; each real tile provides a filename anchor.
+# Output: {outdir}/{stem}_uncond.tif  (one generated sample per B tile found)
+python inference.py --model miudiff --miu_stage pretrain --direction A2B \
+    --data path/to/tiles/testB --ckpt stage1.pt --miu_steps 200 --outdir ./uncond_out/
+
+# Stage 1 — unconditional sampling, count-based (no domain B directory needed).
+# Output: {outdir}/uncond_0000.tif, uncond_0001.tif, ...
+python inference.py --model miudiff --miu_stage pretrain --direction A2B \
+    --data path/to/tiles/testB --ckpt stage1.pt --num_uncond_samples 50 \
+    --miu_steps 200 --outdir ./uncond_out/
+
+# Stage 2/3 — conditional A→B translation (finetune checkpoint, default behaviour).
+# Uses eps_cond with optional MI guidance and PCL refinement.
+# --miu_stage finetune is the default and can be omitted.
+python inference.py --model miudiff --miu_stage finetune --direction A2B \
+    --data path/to/tiles/testA --ckpt stage2.pt --miu_steps 200 \
+    --miu_guidance 1.0 --outdir ./cond_out/
+
+# Stage 2/3 with PCL latent refinement enabled
+python inference.py --model miudiff --miu_stage finetune --direction A2B \
+    --data path/to/tiles/testA --ckpt stage3.pt --miu_steps 200 \
+    --miu_pcl --pcl_refine_steps 3 --outdir ./cond_pcl_out/
 ```
+
+**MIUDiff inference notes:**
+- `--miu_stage pretrain` uses only `eps_uncond` (unconditional DDPM on target domain B). No source image is fed into the network; samples are drawn from pure noise. MI guidance and PCL refinement are not applicable and are silently ignored.
+- `--miu_stage finetune` (default) uses `eps_cond` conditioned on the grayscale source image, with optional MI guidance (`--miu_guidance`) and optional PCL latent refinement (`--miu_pcl --pcl_refine_steps`).
+- `--miu_steps` controls the number of DDIM denoising steps for both stages (fewer = faster but lower quality; 200–300 is typical).
+- Pretrain checkpoints contain random-weight `eps_cond` parameters. Passing `--miu_stage finetune` to a pretrain checkpoint will produce garbage — a warning is printed if this is detected.
+- Finetune checkpoints have a fully-trained `eps_uncond` (updated alongside `eps_cond`). Running `--miu_stage pretrain` on a finetune checkpoint is valid and samples from the updated unconditional model.
 
 ### Evaluation
 ```bash

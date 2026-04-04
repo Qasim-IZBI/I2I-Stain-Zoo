@@ -8,6 +8,7 @@ from torchvision.utils import save_image
 from utils import get_device
 
 from datasets.single_domain_dataset import SingleDomainDataset
+from datasets.target_only_dataset import TargetOnlyDataset
 from datasets.transforms import default_train_transform
 
 from models.cyclegan import CycleGAN, CycleGANConfig
@@ -39,9 +40,15 @@ def load_model(args, device):
         model = DCLGAN(cfg)
 
     elif args.model == "miudiff":
+        miu_stage = args.miu_stage
         if saved_cfg:
+            ckpt_stage = saved_cfg.get("stage", "finetune")
+            if miu_stage == "finetune" and ckpt_stage == "pretrain":
+                print("[WARN] Checkpoint was saved at stage 'pretrain' but --miu_stage finetune "
+                      "was requested. eps_cond has random weights — output will be garbage. "
+                      "Did you mean --miu_stage pretrain?")
             # Override runtime-only params from CLI args
-            saved_cfg["stage"] = "finetune"
+            saved_cfg["stage"] = miu_stage
             saved_cfg["sample_steps"] = args.miu_steps
             saved_cfg["guidance_scale"] = args.miu_guidance
             saved_cfg["miu_pcl"] = args.miu_pcl
@@ -50,7 +57,7 @@ def load_model(args, device):
             cfg = MIUDiffConfig(**saved_cfg)
         else:
             cfg = MIUDiffConfig(
-                stage="finetune",
+                stage=miu_stage,
                 sample_steps=args.miu_steps,
                 guidance_scale=args.miu_guidance,
                 miu_pcl=args.miu_pcl,
@@ -70,7 +77,9 @@ def load_model(args, device):
         print(f"Restored {args.model} config from checkpoint")
 
     sd = ckpt["model"] if "model" in ckpt else ckpt
-    model.load_state_dict(sd)
+    # pretrain checkpoints may have only eps_uncond keys (trimmed); strict=False tolerates that
+    strict = not (args.model == "miudiff" and args.miu_stage == "pretrain")
+    model.load_state_dict(sd, strict=strict)
     model.to(device).eval()
     return model
 
@@ -94,11 +103,17 @@ def main():
                         help="Reference image to extract style from (MUNIT only)")
 
     # MIU-Diff
+    parser.add_argument("--miu_stage", choices=["pretrain", "finetune"], default="finetune",
+                        help="pretrain: unconditional sampling with eps_uncond only; "
+                             "finetune: conditional A→B with MI guidance (default)")
     parser.add_argument("--miu_steps", type=int, default=300)
     parser.add_argument("--miu_guidance", type=float, default=1.0)
     parser.add_argument("--miu_pcl", action="store_true")
     parser.add_argument("--pcl_refine_steps", type=int, default=0)
     parser.add_argument("--pcl_refine_lr", type=float, default=0.05)
+    parser.add_argument("--num_uncond_samples", type=int, default=None,
+                        help="MIUDiff pretrain only: generate this many unconditional samples "
+                             "from pure noise instead of reading from --data")
 
     args = parser.parse_args()
 
@@ -112,13 +127,45 @@ def main():
         parts = args.data_range.split(",")
         data_range = (int(parts[0]), int(parts[1]))
 
-    dataset = SingleDomainDataset(args.data, transform=transform, data_range=data_range)
-    loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    # MIUDiff pretrain with --num_uncond_samples: skip dataset entirely
+    uncond_count_mode = (
+        args.model == "miudiff"
+        and args.miu_stage == "pretrain"
+        and args.num_uncond_samples is not None
+    )
+
+    if uncond_count_mode:
+        loader = None
+    elif args.model == "miudiff" and args.miu_stage == "pretrain":
+        # Use TargetOnlyDataset so output filenames are anchored to real B tiles
+        dataset = TargetOnlyDataset(args.data, transform=transform, data_range=data_range)
+        loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    else:
+        dataset = SingleDomainDataset(args.data, transform=transform, data_range=data_range)
+        loader = DataLoader(dataset, batch_size=1, shuffle=False)
+
     os.makedirs(args.outdir, exist_ok=True)
 
+    # ---- MIUDiff pretrain, count-based (no dataset) ----
+    if uncond_count_mode:
+        if args.miu_guidance != 1.0:
+            print("[WARN] --miu_guidance is ignored for --miu_stage pretrain.")
+        for i in range(args.num_uncond_samples):
+            y = model.sample_uncond(batch_size=1)
+            save_image((y + 1) / 2, f"{args.outdir}/uncond_{i:04d}.tif")
+        return
+
     with torch.no_grad():
-        for i, (x, path) in enumerate(loader):
-            x = x.to(device)
+        for i, batch in enumerate(loader):
+            # Unpack: SingleDomainDataset yields (tensor, path);
+            #         TargetOnlyDataset yields {"B": tensor, "path_B": str}
+            if isinstance(batch, dict):
+                x    = batch["B"].to(device)
+                path = batch["path_B"]
+            else:
+                x, path = batch
+                x = x.to(device)
+
             stem = os.path.splitext(os.path.basename(path[0]))[0]
 
             if args.model == "cyclegan":
@@ -173,9 +220,14 @@ def main():
                 save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "miudiff":
-                # only meaningful direction is A2B (H&E -> IHC)
-                y = model.sample_A2B(x)
-                save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
+                if args.miu_stage == "pretrain":
+                    if args.miu_guidance != 1.0:
+                        print("[WARN] --miu_guidance is ignored for --miu_stage pretrain.")
+                    y = model.sample_uncond(batch_size=1)
+                    save_image((y + 1) / 2, f"{args.outdir}/{stem}_uncond.tif")
+                else:
+                    y = model.sample_A2B(x)
+                    save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "uvcgan":
                 if args.direction == "A2B":

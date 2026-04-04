@@ -808,6 +808,51 @@ class MIUDiff(nn.Module):
         # Final clamp
         return y.clamp(-1, 1)
 
+    # =========================
+    # Sampling — stage 1 (unconditional)
+    # =========================
+    def sample_uncond(self, batch_size: int, image_size: int = 256) -> torch.Tensor:
+        """
+        Pure DDIM sampling using only eps_uncond (stage 1 / pretrain).
+
+        No source image, no MI guidance, no PCL refinement — just DDPM reverse
+        diffusion on the target domain B manifold.  Identical timestep schedule
+        to sample_A2B so --miu_steps controls the number of denoising steps here
+        too (read from self.cfg.sample_steps).
+
+        Returns: [batch_size, 3, image_size, image_size] in [-1, 1].
+        """
+        self.eval()
+        device = next(self.eps_uncond.parameters()).device
+        betas, alphas, a_bar, _ = self.sched.make(device)
+
+        y = torch.randn(batch_size, 3, image_size, image_size, device=device)
+
+        steps = int(self.cfg.sample_steps)
+        t_list = torch.linspace(self.cfg.T - 1, 0, steps, device=device).long()
+        t_list = torch.unique_consecutive(t_list)
+        if t_list.numel() < 2:
+            t_list = torch.arange(self.cfg.T - 1, -1, -1, device=device)
+
+        with torch.no_grad():
+            for i in range(t_list.numel() - 1):
+                t      = t_list[i]
+                t_next = t_list[i + 1]
+
+                t_frac = t.repeat(batch_size).float() / (self.cfg.T - 1)
+
+                eps = self.eps_uncond(y, t_frac)
+
+                a_bar_t    = a_bar[t].view(1, 1, 1, 1)
+                a_bar_next = a_bar[t_next].view(1, 1, 1, 1)
+
+                x0_pred = (y - torch.sqrt(1.0 - a_bar_t) * eps) / torch.sqrt(a_bar_t + 1e-8)
+                x0_pred = x0_pred.clamp(-1, 1)
+
+                y = torch.sqrt(a_bar_next) * x0_pred + torch.sqrt(1.0 - a_bar_next) * eps
+
+        return y.clamp(-1, 1)
+
     # # =========================
     # # Sampling (A -> B) with optional PCL refinement
     # # =========================
