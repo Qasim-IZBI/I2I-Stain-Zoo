@@ -51,19 +51,7 @@ from torchvision import transforms
 from torchvision.models import inception_v3, Inception_V3_Weights
 
 
-IMG_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp")
-
-
-def list_images(root: str) -> List[str]:
-    paths: List[str] = []
-    for dirpath, _, filenames in os.walk(root):
-        for fn in filenames:
-            if fn.lower().endswith(IMG_EXTS):
-                paths.append(os.path.join(dirpath, fn))
-    paths.sort()
-    if len(paths) == 0:
-        raise FileNotFoundError(f"No images found under: {root}")
-    return paths
+from datasets.common import IMG_EXTS, list_images
 
 
 class ImageFolderList(Dataset):

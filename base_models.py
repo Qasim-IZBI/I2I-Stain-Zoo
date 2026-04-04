@@ -109,48 +109,6 @@ class GANLoss(nn.Module):
         return self.loss(pred, tgt)
 
 
-# # ============================================================
-# # Building blocks
-# # ============================================================
-
-# class ResnetBlock(nn.Module):
-#     def __init__(
-#         self,
-#         dim: int,
-#         padding_type: str = "reflect",
-#         norm_layer: nn.Module = nn.InstanceNorm2d,
-#         use_dropout: bool = False,
-#     ):
-#         super().__init__()
-#         p = 0
-#         if padding_type == "reflect":
-#             pad1 = nn.ReflectionPad2d(1)
-#         elif padding_type == "replicate":
-#             pad1 = nn.ReplicationPad2d(1)
-#         elif padding_type == "zero":
-#             pad1 = nn.Identity()
-#             p = 1
-#         else:
-#             raise NotImplementedError(f"padding [{padding_type}] is not implemented")
-
-#         block: List[nn.Module] = [
-#             pad1,
-#             nn.Conv2d(dim, dim, kernel_size=3, padding=p, bias=True),
-#             norm_layer(dim),
-#             nn.ReLU(True),
-#         ]
-#         if use_dropout:
-#             block += [nn.Dropout(0.5)]
-#         block += [
-#             pad1,
-#             nn.Conv2d(dim, dim, kernel_size=3, padding=p, bias=True),
-#             norm_layer(dim),
-#         ]
-#         self.block = nn.Sequential(*block)
-
-#     def forward(self, x: torch.Tensor) -> torch.Tensor:
-#         return x + self.block(x)
-
 
 # ============================================================
 # Building blocks
@@ -383,80 +341,6 @@ class ResnetGenerator(nn.Module):
         return y
 
 
-# class ResnetGenerator(nn.Module):
-#     """
-#     Classic CycleGAN generator:
-#       c7s1-64, d128, d256, N*ResBlocks, u128, u64, c7s1-3
-#     Optionally returns intermediate feature maps (useful for contrastive losses later).
-#     """
-#     def __init__(
-#         self,
-#         input_nc: int,
-#         output_nc: int,
-#         ngf: int = 64, # Number of generator base filters (32 if memory is tight)   
-#         n_blocks: int = 9, # 9 for 256x256 images, 6 for 128x128, 4 for UNIT / MUNIT    
-#         norm_layer: nn.Module = nn.InstanceNorm2d,
-#         return_features: bool = False,
-#         feature_layers: Optional[List[int]] = None,
-#     ):
-#         super().__init__()
-#         assert n_blocks >= 0
-#         self.return_features = return_features
-#         self.feature_layers = feature_layers if feature_layers is not None else []
-
-#         layers: List[nn.Module] = []
-#         layers += [
-#             nn.ReflectionPad2d(3),
-#             nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=True),
-#             norm_layer(ngf),
-#             nn.ReLU(True),
-#         ]
-
-#         # Downsample
-#         mult = 1
-#         for _ in range(2):
-#             layers += [
-#                 nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=True),
-#                 norm_layer(ngf * mult * 2),
-#                 nn.ReLU(True),
-#             ]
-#             mult *= 2
-
-#         # Res blocks
-#         for _ in range(n_blocks):
-#             layers += [ResnetBlock(ngf * mult, padding_type="reflect", norm_layer=norm_layer)]
-
-#         # Upsample
-#         for _ in range(2):
-#             layers += [
-#                 nn.ConvTranspose2d(
-#                     ngf * mult, ngf * mult // 2,
-#                     kernel_size=3, stride=2, padding=1, output_padding=1, bias=True
-#                 ),
-#                 norm_layer(ngf * mult // 2),
-#                 nn.ReLU(True),
-#             ]
-#             mult //= 2
-
-#         layers += [
-#             nn.ReflectionPad2d(3),
-#             nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0, bias=True),
-#             nn.Tanh(),
-#         ]
-
-#         self.layers = nn.ModuleList(layers)
-
-#     def forward(self, x: torch.Tensor) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
-#         feats: Dict[str, torch.Tensor] = {}
-#         h = x
-#         for i, layer in enumerate(self.layers):
-#             h = layer(h)
-#             if self.return_features and (i in self.feature_layers):
-#                 feats[f"layer_{i}"] = h
-#         if self.return_features:
-#             return h, feats
-#         return h
-
 
 class NLayerDiscriminator(nn.Module):
     """70x70 PatchGAN discriminator (no sigmoid by default)."""
@@ -543,16 +427,34 @@ class PatchSampler:
         return gathered.reshape(-1, C), ids
 
 
-class PatchProjector(nn.Module):
-    """MLP projection head with L2 normalization."""
+# ============================================================
+# Shared GAN loss utilities
+# ============================================================
 
-    def __init__(self, in_dim: int, proj_dim: int = 128):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(in_dim, proj_dim),
-            nn.ReLU(True),
-            nn.Linear(proj_dim, proj_dim),
-        )
+def discriminator_loss(gan, D_A, D_B, real_A, real_B, fake_A, fake_B):
+    """Standard symmetric PatchGAN discriminator loss.
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.normalize(self.mlp(x), dim=1)
+    fake_A / fake_B must already be detached (and optionally pool-queried) by the caller.
+    Returns (loss_D tensor, logs dict).
+    """
+    loss_D_A = 0.5 * (gan(D_A(real_A), True) + gan(D_A(fake_A), False))
+    loss_D_B = 0.5 * (gan(D_B(real_B), True) + gan(D_B(fake_B), False))
+    loss_D = loss_D_A + loss_D_B
+    return loss_D, {
+        "loss_D":   float(loss_D.detach().cpu()),
+        "loss_D_A": float(loss_D_A.detach().cpu()),
+        "loss_D_B": float(loss_D_B.detach().cpu()),
+    }
+
+
+def identity_loss(l1, forward_A2B, forward_B2A, real_A, real_B, lam):
+    """Optional CycleGAN-style identity regularisation loss.
+
+    Returns a zero tensor when lam <= 0.
+    forward_A2B / forward_B2A must return plain tensors (not tuples).
+    """
+    if lam <= 0:
+        return torch.tensor(0.0, device=real_A.device)
+    idt_A = forward_B2A(real_A)
+    idt_B = forward_A2B(real_B)
+    return 0.5 * (l1(idt_A, real_A) + l1(idt_B, real_B))

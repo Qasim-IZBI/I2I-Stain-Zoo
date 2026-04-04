@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 
+from utils import make_serializable
+
 
 def find_latest_checkpoint(ckpt_dir):
     """Find the checkpoint with the highest step number."""
@@ -112,7 +114,7 @@ def main():
     else:
         summary = {
             "model_name": model_name,
-            "config": _make_serializable(config) if config else None,
+            "config": make_serializable(config) if config else None,
             "training_info": {
                 "total_steps": int(df["global_step"].max()),
                 "final_losses": final_losses,
@@ -125,15 +127,6 @@ def main():
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"Saved training summary to {summary_path}")
-
-
-def _make_serializable(obj):
-    """Convert tuples and other non-JSON types for json.dump."""
-    if isinstance(obj, dict):
-        return {k: _make_serializable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_make_serializable(v) for v in obj]
-    return obj
 
 
 if __name__ == "__main__":

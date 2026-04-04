@@ -3,6 +3,8 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 
+from utils import get_device
+
 from trainer.base_trainer import BaseTrainer
 from datasets.unpaired_dataset import UnpairedDataset
 from datasets.target_only_dataset import TargetOnlyDataset
@@ -33,7 +35,7 @@ _MODEL_CLS = {
 
 
 def build_model(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
 
     # --- GAN models with --init_ckpt: restore config from checkpoint ---
     if args.init_ckpt and args.model in _CONFIG_CLS:
@@ -297,7 +299,7 @@ def main():
 
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
 
     # ---- parameter count dry-run ----
     if args.count_params:

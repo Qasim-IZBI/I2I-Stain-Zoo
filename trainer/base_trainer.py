@@ -13,6 +13,8 @@ from torch import nn, optim
 from torchvision.utils import save_image
 from typing import Dict, Any, List, Optional
 
+from utils import make_serializable
+
 # matplotlib is optional — only imported when plotting
 try:
     import matplotlib
@@ -222,7 +224,7 @@ class BaseTrainer:
 
         meta = {
             "model_name": self.model_name,
-            "config": _make_serializable(asdict(self.model.cfg)) if hasattr(self.model, "cfg") else None,
+            "config": make_serializable(asdict(self.model.cfg)) if hasattr(self.model, "cfg") else None,
             "training": {
                 "total_steps": total_steps,
                 "batch_size": self.dataloader.batch_size,
@@ -439,12 +441,3 @@ def _seconds_to_hms(seconds: float) -> str:
     m = (seconds % 3600) // 60
     s = seconds % 60
     return f"{h}h {m:02d}m {s:02d}s"
-
-
-def _make_serializable(obj):
-    """Convert tuples and other non-JSON types for json.dump."""
-    if isinstance(obj, dict):
-        return {k: _make_serializable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_make_serializable(v) for v in obj]
-    return obj

@@ -11,6 +11,21 @@ import tifffile
 from tqdm.auto import tqdm
 
 
+def get_device():
+    """Return CUDA device if available, otherwise CPU."""
+    import torch
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def make_serializable(obj):
+    """Recursively convert tuples/non-JSON types so json.dump can handle them."""
+    if isinstance(obj, dict):
+        return {k: make_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [make_serializable(v) for v in obj]
+    return obj
+
+
 def _process_single_image(
     file_name,
     img_idx,

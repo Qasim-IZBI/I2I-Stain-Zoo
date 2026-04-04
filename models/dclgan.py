@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from base_models import GANLoss, NLayerDiscriminator, ImagePool
 from base_models import Encoder, Decoder, ResnetBottleneck
 from base_models import info_nce, PatchSampler
+from base_models import discriminator_loss, identity_loss
 
 
 # ============================================================
@@ -162,6 +163,14 @@ class DCLGAN(nn.Module):
     def discriminator_parameters(self):
         return list(self.D_A.parameters()) + list(self.D_B.parameters())
 
+    # ---------------- BaseTrainer interface helpers ----------------
+
+    def forward_A2B(self, x: torch.Tensor) -> torch.Tensor:
+        return self.G_A2B(x)[0]
+
+    def forward_B2A(self, x: torch.Tensor) -> torch.Tensor:
+        return self.G_B2A(x)[0]
+
     # ---------------- generator forward helpers ----------------
 
     def G_A2B(self, xA: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
@@ -237,11 +246,8 @@ class DCLGAN(nn.Module):
         rec_B, _ = self.G_A2B(fake_A)
 
         # Optional identity (off by default)
-        loss_idt = torch.tensor(0.0, device=real_A.device)
-        if self.cfg.lambda_identity > 0:
-            idt_A, _ = self.G_B2A(real_A)
-            idt_B, _ = self.G_A2B(real_B)
-            loss_idt = 0.5 * (self.l1(idt_A, real_A) + self.l1(idt_B, real_B))
+        loss_idt = identity_loss(self.l1, self.forward_A2B, self.forward_B2A,
+                                 real_A, real_B, self.cfg.lambda_identity)
 
         # GAN losses
         loss_gan = self.gan(self.D_B(fake_B), True) + self.gan(self.D_A(fake_A), True)
@@ -288,19 +294,7 @@ class DCLGAN(nn.Module):
         return loss_G, logs, visuals
 
     def compute_discriminator_loss(self, batch, visuals):
-        real_A = batch["A"]
-        real_B = batch["B"]
-
+        real_A, real_B = batch["A"], batch["B"]
         fake_A = self.pool_A.query(visuals["fake_A"].detach())
         fake_B = self.pool_B.query(visuals["fake_B"].detach())
-
-        loss_D_A = 0.5 * (self.gan(self.D_A(real_A), True) + self.gan(self.D_A(fake_A), False))
-        loss_D_B = 0.5 * (self.gan(self.D_B(real_B), True) + self.gan(self.D_B(fake_B), False))
-        loss_D = loss_D_A + loss_D_B
-
-        logs = {
-            "loss_D": float(loss_D.detach().cpu()),
-            "loss_D_A": float(loss_D_A.detach().cpu()),
-            "loss_D_B": float(loss_D_B.detach().cpu()),
-        }
-        return loss_D, logs
+        return discriminator_loss(self.gan, self.D_A, self.D_B, real_A, real_B, fake_A, fake_B)

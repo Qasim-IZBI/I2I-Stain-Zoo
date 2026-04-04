@@ -5,6 +5,8 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
+from utils import get_device
+
 from datasets.single_domain_dataset import SingleDomainDataset
 from datasets.transforms import default_train_transform
 
@@ -100,7 +102,7 @@ def main():
 
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     model = load_model(args, device)
 
     transform = default_train_transform(image_size=256)
@@ -165,9 +167,9 @@ def main():
 
             elif args.model == "dclgan":
                 if args.direction == "A2B":
-                    y, _ = model.G_A2B(x)
+                    y = model.forward_A2B(x)
                 else:
-                    y, _ = model.G_B2A(x)
+                    y = model.forward_B2A(x)
                 save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "miudiff":

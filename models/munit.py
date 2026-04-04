@@ -10,6 +10,7 @@ import torch.nn.functional as F
 
 from base_models import GANLoss, NLayerDiscriminator
 from base_models import Encoder, Decoder, ResnetBottleneck
+from base_models import discriminator_loss
 
 
 # ============================================================
@@ -318,18 +319,7 @@ class MUNIT(nn.Module):
         return loss_G, logs, visuals
 
     def compute_discriminator_loss(self, batch, visuals):
-        real_A = batch["A"]
-        real_B = batch["B"]
+        real_A, real_B = batch["A"], batch["B"]
         fake_A = visuals["fake_A"].detach()
         fake_B = visuals["fake_B"].detach()
-
-        loss_D_A = 0.5 * (self.gan(self.D_A(real_A), True) + self.gan(self.D_A(fake_A), False))
-        loss_D_B = 0.5 * (self.gan(self.D_B(real_B), True) + self.gan(self.D_B(fake_B), False))
-        loss_D = loss_D_A + loss_D_B
-
-        logs = {
-            "loss_D": float(loss_D.detach().cpu()),
-            "loss_D_A": float(loss_D_A.detach().cpu()),
-            "loss_D_B": float(loss_D_B.detach().cpu()),
-        }
-        return loss_D, logs
+        return discriminator_loss(self.gan, self.D_A, self.D_B, real_A, real_B, fake_A, fake_B)
