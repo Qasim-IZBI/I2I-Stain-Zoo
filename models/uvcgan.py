@@ -40,6 +40,9 @@ class UVCGANConfig:
     mask_patch_size: int = 32
     n_masks: int = 4
 
+    # expected spatial input size (controls ViT pos_embed dimensions)
+    image_size: int = 256
+
 
 # ============================================================
 # Transformer components
@@ -249,8 +252,8 @@ class UVCGAN(nn.Module):
         self.cfg = cfg
 
         # Generators
-        self.G_A2B = UNetViTGenerator(cfg)
-        self.G_B2A = UNetViTGenerator(cfg)
+        self.G_A2B = UNetViTGenerator(cfg, image_size=cfg.image_size)
+        self.G_B2A = UNetViTGenerator(cfg, image_size=cfg.image_size)
 
         # Discriminators (not used during pretrain)
         self.D_A = NLayerDiscriminator(3, ndf=cfg.ndf, n_layers=cfg.n_layers_D)

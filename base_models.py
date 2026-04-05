@@ -427,6 +427,21 @@ class PatchSampler:
         return gathered.reshape(-1, C), ids
 
 
+class PatchProjector(nn.Module):
+    """Two-layer MLP projector for patch-wise contrastive learning."""
+
+    def __init__(self, in_dim: int, proj_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, proj_dim),
+            nn.ReLU(True),
+            nn.Linear(proj_dim, proj_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
 # ============================================================
 # Shared GAN loss utilities
 # ============================================================
