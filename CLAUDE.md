@@ -61,10 +61,28 @@ python train.py --model cyclegan --dataA ... --dataB ... --steps 5000000 --amp \
 python train.py --model cyclegan --dataA ... --dataB ... --steps 5000000 \
     --init_ckpt ./prev_run/checkpoints/step_250000.pt --output ./new_run/
 
-# MIUDiff (3-stage): pretrain → finetune → finetune+PCL
-python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp --miu_stage pretrain --output ./stage1/
-python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp --miu_stage finetune --output ./stage1/
-python train.py --model miudiff --miu_stage finetune --miu_pcl --lambda_pcl 0.1 --dataA ... --dataB ... --steps 500000 --amp --output ./stage3/
+# MIUDiff (3-stage): each stage must be a separate --output directory.
+# Stage 1 — train eps_uncond: unconditional DDPM on domain B only (no domain A needed,
+#            but --dataA is still required by the parser; it is not read during pretrain).
+#            Builds a prior over target domain appearance.
+python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp \
+    --miu_stage pretrain --output ./stage1/
+
+# Stage 2 — train eps_cond: conditional translation A→B with MI guidance.
+#            --miu_init_ckpt copies the stage-1 eps_uncond weights into eps_cond
+#            as a warm start (all except the extra conditioning input channel).
+python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp \
+    --miu_stage finetune \
+    --miu_init_ckpt ./stage1/checkpoints/step_500000.pt \
+    --output ./stage2/
+
+# Stage 3 — finetune with patch contrastive loss (PCL) for structural sharpness.
+#            --miu_init_ckpt loads the fully-trained stage-2 checkpoint directly
+#            (does NOT re-copy eps_uncond → eps_cond).
+python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp \
+    --miu_stage finetune --miu_pcl --lambda_pcl 0.1 \
+    --miu_init_ckpt ./stage2/checkpoints/step_500000.pt \
+    --output ./stage3/
 
 # MIUDiff UNet architecture controls (original: base_channels=128, channel_mult=1,1,2,2,4,4)
 python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,2,4 \
