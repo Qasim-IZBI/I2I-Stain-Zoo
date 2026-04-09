@@ -204,7 +204,9 @@ def create_tiles(
         print(f"No .tif files found in {rgb_folder}")
         return
 
-    num_workers = num_workers or os.cpu_count() or 1
+    if num_workers is None:
+        slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+        num_workers = int(slurm_cpus) if slurm_cpus else (os.cpu_count() or 1)
     print(
         f"Processing {len(file_names)} images from {rgb_folder} "
         f"(starting at img_idx={start_idx:03d}) with {num_workers} worker(s)..."
