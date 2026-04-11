@@ -193,6 +193,7 @@ class BaseTrainer:
                     avg_losses = self._flush_losses()
                     self.log(avg_losses, save=True)
                     self._plot_losses()
+                    self.save_checkpoint("step_latest.pt")
 
                 # -------------------------
                 # Checkpoint every save_steps
@@ -245,6 +246,7 @@ class BaseTrainer:
                 "accumulated_seconds": 0.0,
                 "human_readable": "0h 00m 00s",
                 "last_updated_step": 0,
+                "latest_checkpoint_step": 0,
                 "avg_seconds_per_1k_steps": None,
             },
         }
@@ -276,6 +278,7 @@ class BaseTrainer:
             "accumulated_seconds": round(total_seconds, 2),
             "human_readable": _seconds_to_hms(total_seconds),
             "last_updated_step": steps_done,
+            "latest_checkpoint_step": steps_done,
             "avg_seconds_per_1k_steps": round(avg, 2) if avg is not None else None,
         }
 
@@ -340,22 +343,80 @@ class BaseTrainer:
         print(f"[Checkpoint] Loaded: {path}  (step {self.global_step})")
 
     def resume_if_exists(self):
-        """Scan save_dir for step_*.pt files and resume from the latest one."""
+        """Scan save_dir for checkpoints and resume from the furthest-ahead one.
+
+        Considers both numbered step_N.pt files and the rolling step_latest.pt.
+        If step_latest.pt is ahead of the highest numbered checkpoint (e.g. training
+        crashed between two save_steps boundaries), it is preferred.  When tied,
+        the numbered checkpoint wins as it is permanent.
+        """
         pattern = re.compile(r"^step_(\d+)\.pt$")
-        candidates = []
+        best_num_step, best_num_fname = -1, None
         for fname in os.listdir(self.save_dir):
             m = pattern.match(fname)
             if m:
-                candidates.append((int(m.group(1)), fname))
-        if not candidates:
+                n = int(m.group(1))
+                if n > best_num_step:
+                    best_num_step, best_num_fname = n, fname
+
+        latest_path = os.path.join(self.save_dir, "step_latest.pt")
+        latest_step = -1
+        if os.path.exists(latest_path):
+            try:
+                tmp = torch.load(latest_path, map_location="cpu")
+                latest_step = tmp.get("global_step", -1)
+            except Exception:
+                pass
+
+        if best_num_step == -1 and latest_step == -1:
             return
-        _, latest_fname = max(candidates, key=lambda x: x[0])
-        latest_path = os.path.join(self.save_dir, latest_fname)
-        print(f"[Trainer] Found existing checkpoint: {latest_fname}")
+
+        if latest_step > best_num_step:
+            chosen_path = latest_path
+            chosen_name = "step_latest.pt"
+        else:
+            chosen_path = os.path.join(self.save_dir, best_num_fname)
+            chosen_name = best_num_fname
+
+        print(f"[Trainer] Found existing checkpoint: {chosen_name}")
         try:
-            self.load_checkpoint(latest_path)
+            ckpt = torch.load(chosen_path, map_location=self.device)
         except Exception as e:
-            print(f"[Trainer] Could not load {latest_fname} ({e}), starting fresh.")
+            print(f"[Trainer] Could not load {chosen_name} ({e}), starting fresh.")
+            return
+
+        # Config mismatch check — catches accidental reuse of an output directory
+        # with different architecture or training hyperparameters.
+        if "config" in ckpt and hasattr(self.model, "cfg"):
+            saved_cfg = ckpt["config"]
+            current_cfg = asdict(self.model.cfg)
+            mismatches = {
+                k: (saved_cfg.get(k), current_cfg.get(k))
+                for k in set(saved_cfg) | set(current_cfg)
+                if saved_cfg.get(k) != current_cfg.get(k)
+            }
+            if mismatches:
+                lines = "\n".join(
+                    f"  {k}: checkpoint={v[0]!r}  current={v[1]!r}"
+                    for k, v in sorted(mismatches.items())
+                )
+                raise ValueError(
+                    f"[Trainer] Config mismatch between checkpoint '{chosen_name}' "
+                    f"and current run — refusing to resume.\n"
+                    f"Differing keys:\n{lines}\n"
+                    f"To start fresh in a new directory, change --output. "
+                    f"To intentionally load these weights, use --init_ckpt."
+                )
+        elif "config" not in ckpt:
+            print(f"[Trainer] Warning: checkpoint '{chosen_name}' has no config — skipping mismatch check.")
+
+        self.model.load_state_dict(ckpt["model"])
+        self.opt_G.load_state_dict(ckpt["opt_G"])
+        if self.opt_D is not None and "opt_D" in ckpt:
+            self.opt_D.load_state_dict(ckpt["opt_D"])
+        self.global_step = ckpt.get("global_step", 0)
+        self.accumulated_training_seconds = ckpt.get("accumulated_training_seconds", 0.0)
+        print(f"[Checkpoint] Loaded: {chosen_path}  (step {self.global_step})")
 
     def _flush_losses(self) -> Dict[str, float]:
         """Average accumulated losses and reset the buffer."""
