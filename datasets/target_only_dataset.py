@@ -35,10 +35,20 @@ class TargetOnlyDataset(Dataset):
         return len(self.paths)
 
     def __getitem__(self, idx: int):
-        p = self.paths[idx]
-        img = Image.open(p).convert("RGB")
         if self.transform is None:
             raise ValueError("TargetOnlyDataset requires a transform (PIL->Tensor normalized to [-1,1]).")
+
+        for attempt in range(5):
+            try:
+                p = self.paths[idx % len(self.paths)]
+                img = Image.open(p).convert("RGB")
+                break
+            except OSError as e:
+                print(f"[Dataset] I/O error reading tile (attempt {attempt + 1}/5), skipping: {e}")
+                idx = (idx + 7919) % len(self.paths)
+        else:
+            raise RuntimeError("[Dataset] Failed to load a valid tile after 5 attempts.")
+
         x = self.transform(img)
         if not torch.is_tensor(x):
             raise TypeError("Transform must return torch.Tensor.")

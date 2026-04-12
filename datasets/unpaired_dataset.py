@@ -65,14 +65,22 @@ class UnpairedDataset(Dataset):
         return (idx * 9973 + self.seed) % len(self.B_paths)
 
     def __getitem__(self, idx: int) -> Dict[str, object]:
-        path_A = self.A_paths[idx % len(self.A_paths)]
-        path_B = self.B_paths[self._choose_b_index(idx)]
-
-        img_A = self._load_rgb(path_A)
-        img_B = self._load_rgb(path_B)
-
         if self.transform is None:
             raise ValueError("UnpairedDataset requires a transform (PIL->Tensor normalized to [-1,1]).")
+
+        # Retry up to 5 times on I/O errors (e.g. corrupted tiles on network filesystems).
+        for attempt in range(5):
+            try:
+                path_A = self.A_paths[idx % len(self.A_paths)]
+                path_B = self.B_paths[self._choose_b_index(idx)]
+                img_A = self._load_rgb(path_A)
+                img_B = self._load_rgb(path_B)
+                break
+            except OSError as e:
+                print(f"[Dataset] I/O error reading tile (attempt {attempt + 1}/5), skipping: {e}")
+                idx = (idx + 7919) % len(self.A_paths)  # jump to a different tile
+        else:
+            raise RuntimeError(f"[Dataset] Failed to load a valid tile after 5 attempts.")
 
         A = self.transform(img_A)
         B = self.transform(img_B)
