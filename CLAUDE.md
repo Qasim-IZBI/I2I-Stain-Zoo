@@ -32,12 +32,13 @@ Output structure:
 path/to/tiles/
   trainA/
     001/
-      images/   ← 0000001.tif, 0000002.tif, ...
-      masks/    ← 0000001.tif, ... (only if --mask provided)
+      images/            ← 0000001.tif, 0000002.tif, ...
+      masks/             ← 0000001.tif, ... (only if --mask provided)
+      tiles_metadata.csv ← stride, overlap, x/y positions for this WSI
     002/
       images/
       masks/
-    tiles_metadata.csv   ← stride, overlap, x/y positions; appended on re-run
+      tiles_metadata.csv
 ```
 
 ### Training
@@ -182,13 +183,15 @@ Reconstructed files are saved with the **original WSI filename** (e.g. `slide_00
 Mask outputs are saved as `{stem}_mask.tif`. Overlapping tiles are averaged by default.
 
 ```bash
-# Reconstruct WSI from original tiles (uses image_path from metadata CSV)
-python reconstruct.py --metadata path/to/tiles/trainA/tiles_metadata.csv --output ./reconstructed/
+# Reconstruct WSI from original tiles — pass the dataset directory; all per-WSI CSVs are found automatically
+python reconstruct.py --metadata path/to/tiles/trainA --output ./reconstructed/
 
 # Reconstruct from translated tiles (e.g. inference output directory)
-# Tiles are matched by tile_name (0000001.tif, etc.) inside --tile_dir
-python reconstruct.py --metadata path/to/tiles/testA/tiles_metadata.csv \
+python reconstruct.py --metadata path/to/tiles/testA \
     --tile_dir ./inference_output/ --output ./reconstructed/
+
+# Or pass a single per-WSI CSV directly
+python reconstruct.py --metadata path/to/tiles/trainA/001/tiles_metadata.csv --output ./reconstructed/
 
 # Reconstruct both RGB and mask, with average blending for overlapping tiles
 python reconstruct.py --metadata path/to/tiles_metadata.csv --output ./reconstructed/ \

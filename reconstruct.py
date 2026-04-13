@@ -7,7 +7,8 @@ def main():
     parser = argparse.ArgumentParser("WSI Reconstruction from Tiles")
 
     parser.add_argument("--metadata", type=str, required=True,
-                        help="Path to tiles_metadata.csv from tiling step")
+                        help="Path to a dataset directory containing per-WSI tiles_metadata.csv "
+                             "files (e.g. path/to/tiles/trainA), or a single tiles_metadata.csv")
     parser.add_argument("--output", type=str, required=True,
                         help="Output directory for reconstructed WSIs")
     parser.add_argument("--tile_dir", type=str, default=None,

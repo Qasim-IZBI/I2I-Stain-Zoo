@@ -215,35 +215,6 @@ def create_tiles(
     total_tiles = 0
     new_metadata = []
 
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = {
-            executor.submit(
-                _process_single_image,
-                file_name,
-                img_idx,
-                rgb_folder,
-                output_root / f"{img_idx:03d}",
-                mask_folder,
-                tile_size,
-                stride,
-                overlap,
-                tissue_threshold,
-                image_type,
-                resize_to,
-            ): file_name
-            for img_idx, file_name in enumerate(file_names, start=start_idx)
-        }
-
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Tiling"):
-            file_name = futures[future]
-            try:
-                tile_count, metadata_rows = future.result()
-                total_tiles += tile_count
-                new_metadata.extend(metadata_rows)
-            except Exception as e:
-                print(f"Error processing {file_name}: {e}")
-
-    # --- Save / append metadata CSV ---
     fieldnames = [
         "source_file",
         "img_idx",
@@ -261,18 +232,44 @@ def create_tiles(
         "image_type",
     ]
 
-    if new_metadata:
-        metadata_path = output_root / metadata_csv_name
-        write_header = not metadata_path.exists()
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        futures = {
+            executor.submit(
+                _process_single_image,
+                file_name,
+                img_idx,
+                rgb_folder,
+                output_root / f"{img_idx:03d}",
+                mask_folder,
+                tile_size,
+                stride,
+                overlap,
+                tissue_threshold,
+                image_type,
+                resize_to,
+            ): (img_idx, file_name)
+            for img_idx, file_name in enumerate(file_names, start=start_idx)
+        }
 
-        with metadata_path.open("a", newline="") as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            if write_header:
-                writer.writeheader()
-            for row in new_metadata:
-                writer.writerow(row)
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Tiling"):
+            img_idx, file_name = futures[future]
+            try:
+                tile_count, metadata_rows = future.result()
+                total_tiles += tile_count
+                new_metadata.extend(metadata_rows)
+            except Exception as e:
+                print(f"Error processing {file_name}: {e}")
+                continue
 
-        print(f"{'Created' if write_header else 'Appended'} metadata for {len(new_metadata)} tiles → {metadata_path}")
+            # Write per-WSI metadata CSV into the WSI subfolder alongside images/ and masks/
+            if metadata_rows:
+                wsi_dir = output_root / f"{img_idx:03d}"
+                metadata_path = wsi_dir / metadata_csv_name
+                with metadata_path.open("w", newline="") as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(metadata_rows)
+                print(f"  Saved metadata ({tile_count} tiles) → {metadata_path}")
 
     print(f"Total tiles saved: {total_tiles}")
 
@@ -315,7 +312,18 @@ def reconstruct_wsi(
     output_dir.mkdir(parents=True, exist_ok=True)
     tile_dir = Path(tile_dir) if tile_dir else None
 
-    df = pd.read_csv(metadata_csv)
+    metadata_csv = Path(metadata_csv)
+    if metadata_csv.is_dir():
+        # Accept a dataset root directory — collect all per-WSI CSVs inside it
+        csv_files = sorted(metadata_csv.glob("*/tiles_metadata.csv"))
+        if not csv_files:
+            raise FileNotFoundError(
+                f"No per-WSI tiles_metadata.csv files found under: {metadata_csv}\n"
+                f"Expected structure: {metadata_csv}/<NNN>/tiles_metadata.csv"
+            )
+        df = pd.concat([pd.read_csv(p) for p in csv_files], ignore_index=True)
+    else:
+        df = pd.read_csv(metadata_csv)
 
     has_masks = df["mask_path"].notna().any() and (df["mask_path"] != "").any()
     if mode == "auto":

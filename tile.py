@@ -24,8 +24,6 @@ def main():
                         help="Subfolder name, e.g. trainA, trainB, testA, testB")
     parser.add_argument("--num_workers", type=int, default=None,
                         help="Number of worker processes (default: all CPUs)")
-    parser.add_argument("--metadata_csv", type=str, default="tiles_metadata.csv",
-                        help="Name of the output metadata CSV file")
 
     args = parser.parse_args()
 
@@ -39,7 +37,6 @@ def main():
         tissue_threshold=args.tissue_threshold,
         image_type=args.image_type,
         num_workers=args.num_workers,
-        metadata_csv_name=args.metadata_csv,
     )
 
 
