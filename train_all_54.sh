@@ -47,10 +47,10 @@ DATA_RANGES=("1,7" "1,14" "1,28")
 
 TASK_ID=${SLURM_ARRAY_TASK_ID}
 
-# 6 models x 3 sizes x 3 data sizes
-MODEL_ID=$(( TASK_ID / 9 ))
-SIZE_ID=$(( (TASK_ID % 9) / 3 ))
-DATA_ID=$(( TASK_ID % 3 ))
+# 3 model-sizes x 3 data-sizes x 6 models
+SIZE_ID=$(( TASK_ID / 18 ))
+DATA_ID=$(( (TASK_ID % 18) / 6 ))
+MODEL_ID=$(( TASK_ID % 6 ))
 
 MODEL=${MODELS[$MODEL_ID]}
 SIZE=${SIZES[$SIZE_ID]}
