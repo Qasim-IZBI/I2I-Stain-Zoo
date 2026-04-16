@@ -272,7 +272,7 @@ class UVCGAN(nn.Module):
 
     def discriminator_parameters(self):
         if self.cfg.pretrain:
-            return None
+            return []
         return list(self.D_A.parameters()) + list(self.D_B.parameters())
 
     # ---------------- Forward helpers ----------------
