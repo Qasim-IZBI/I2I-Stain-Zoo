@@ -221,9 +221,7 @@ class ResBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         h = self.conv1(self.act1(self.norm1(x)))
-        with torch.cuda.amp.autocast(enabled=False):
-            t_offset = self.time_proj(t_emb.float()).to(h.dtype)
-        h = h + t_offset[:, :, None, None]
+        h = h + self.time_proj(t_emb)[:, :, None, None]
         h = self.conv2(self.dropout(self.act2(self.norm2(h))))
         return self.skip(x) + h
 
@@ -345,10 +343,14 @@ class DDPMUNet(nn.Module):
         self.out_conv = nn.Conv2d(ch, cfg.out_channels, 3, padding=1)
 
     def forward(self, x: torch.Tensor, t_frac: torch.Tensor) -> torch.Tensor:
-        # time embedding in fp32 — t_emb feeds every ResBlock; overflow here corrupts all of them
+        # Run entirely in fp32 — partial fp16 fixes are insufficient because any large
+        # intermediate value cast back to fp16 produces inf and corrupts all downstream blocks
         with torch.cuda.amp.autocast(enabled=False):
-            t_emb = timestep_embedding(t_frac, self.cfg.base_channels)
-            t_emb = self.time_mlp(t_emb.float())
+            return self._forward(x.float(), t_frac)
+
+    def _forward(self, x: torch.Tensor, t_frac: torch.Tensor) -> torch.Tensor:
+        t_emb = timestep_embedding(t_frac, self.cfg.base_channels)
+        t_emb = self.time_mlp(t_emb)
 
         h = self.input_conv(x)
         hs: List[torch.Tensor] = []
