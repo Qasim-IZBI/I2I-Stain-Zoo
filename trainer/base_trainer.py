@@ -328,6 +328,9 @@ class BaseTrainer:
         }
         if self.opt_D is not None:
             state["opt_D"] = self.opt_D.state_dict()
+        if hasattr(self.model, "aux_optimizers"):
+            for k, opt in self.model.aux_optimizers.items():
+                state[f"aux_opt_{k}"] = opt.state_dict()
         torch.save(state, path)
         print(f"[Checkpoint] Saved: {path}")
         self._update_timing_meta(None)
@@ -338,6 +341,11 @@ class BaseTrainer:
         self.opt_G.load_state_dict(ckpt["opt_G"])
         if self.opt_D is not None and "opt_D" in ckpt:
             self.opt_D.load_state_dict(ckpt["opt_D"])
+        if hasattr(self.model, "aux_optimizers"):
+            for k, opt in self.model.aux_optimizers.items():
+                key = f"aux_opt_{k}"
+                if key in ckpt:
+                    opt.load_state_dict(ckpt[key])
         self.global_step = ckpt.get("global_step", 0)
         self.accumulated_training_seconds = ckpt.get("accumulated_training_seconds", 0.0)
         print(f"[Checkpoint] Loaded: {path}  (step {self.global_step})")
@@ -414,6 +422,11 @@ class BaseTrainer:
         self.opt_G.load_state_dict(ckpt["opt_G"])
         if self.opt_D is not None and "opt_D" in ckpt:
             self.opt_D.load_state_dict(ckpt["opt_D"])
+        if hasattr(self.model, "aux_optimizers"):
+            for k, opt in self.model.aux_optimizers.items():
+                key = f"aux_opt_{k}"
+                if key in ckpt:
+                    opt.load_state_dict(ckpt[key])
         self.global_step = ckpt.get("global_step", 0)
         self.accumulated_training_seconds = ckpt.get("accumulated_training_seconds", 0.0)
         print(f"[Checkpoint] Loaded: {chosen_path}  (step {self.global_step})")

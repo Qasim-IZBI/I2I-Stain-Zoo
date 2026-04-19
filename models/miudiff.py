@@ -510,10 +510,13 @@ class MIUDiff(nn.Module):
     def __init__(self, cfg: MIUDiffConfig):
         super().__init__()
         self.cfg = cfg
-        self.sched = DiffusionSchedule(T=cfg.T, beta_start=cfg.beta_start, beta_end=cfg.beta_end)
+        _sched = DiffusionSchedule(T=cfg.T, beta_start=cfg.beta_start, beta_end=cfg.beta_end)
+        _betas, _alphas, _a_bar, _a_bar_prev = _sched.make('cpu')
+        self.register_buffer('_betas', _betas)
+        self.register_buffer('_alphas', _alphas)
+        self.register_buffer('_a_bar', _a_bar)
+        self.register_buffer('_a_bar_prev', _a_bar_prev)
 
-        # self.eps_uncond = EpsUNet(in_ch=3, base=cfg.base_channels, tdim=cfg.tdim)
-        # self.eps_cond = EpsUNet(in_ch=3 + cfg.cond_channels, base=cfg.base_channels, tdim=cfg.tdim)
         self.eps_uncond = DDPMUNet(UNetConfig(in_channels=3, base_channels=cfg.base_channels, channel_mult=cfg.channel_mult))
         self.eps_cond   = DDPMUNet(UNetConfig(in_channels=3 + cfg.cond_channels, base_channels=cfg.base_channels, channel_mult=cfg.channel_mult))
         self.mi = MIEstimator(patch=cfg.mi_patch)
@@ -549,8 +552,8 @@ class MIUDiff(nn.Module):
         return torch.tensor(0.0, device=next(self.parameters()).device), {}
 
     # ---- q sample ----
-    def q_sample(self, x0: torch.Tensor, t_idx: torch.Tensor, noise: torch.Tensor, a_bar: torch.Tensor) -> torch.Tensor:
-        a = a_bar[t_idx].view(-1, 1, 1, 1)
+    def q_sample(self, x0: torch.Tensor, t_idx: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
+        a = self._a_bar[t_idx].view(-1, 1, 1, 1)
         return torch.sqrt(a) * x0 + torch.sqrt(1.0 - a) * noise
 
     # ---- MI lower bound ----
@@ -577,33 +580,13 @@ class MIUDiff(nn.Module):
         if not torch.isfinite(out):
             return out.new_tensor(0.0)
         return out
-    
-    # def mi_lower_bound(self, g: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    #     gp, yp = sample_patches(g, y, patch=self.cfg.mi_patch, n=self.cfg.mi_patches_per_img)
-
-    #     T_joint = self.mi(gp, yp)
-    #     yp_shuf = yp[torch.randperm(yp.size(0))]
-    #     T_marg = self.mi(gp, yp_shuf)
-
-    #     # Clamp BOTH to prevent runaway -> inf
-    #     T_joint = T_joint.clamp(-20, 20)
-    #     T_marg  = T_marg.clamp(-20, 20)
-
-    #     # log(mean(exp(T_marg))) computed stably
-    #     logN = T_marg.new_tensor(T_marg.numel()).log()
-    #     log_mean_exp = torch.logsumexp(T_marg, dim=0) - logN
-
-    #     return T_joint.mean() - log_mean_exp
 
     # ---- energy ----
     def energy_M(self, y: torch.Tensor, x_struct: torch.Tensor, t_frac: torch.Tensor) -> torch.Tensor:
         B = y.size(0)
-        device = y.device
-        betas, alphas, a_bar, _ = self.sched.make(device)
-
         t_idx = (t_frac * (self.cfg.T - 1)).long().clamp(0, self.cfg.T - 1)
         noise = torch.randn_like(x_struct)
-        x_t = self.q_sample(x_struct, t_idx, noise, a_bar)
+        x_t = self.q_sample(x_struct, t_idx, noise)
 
         g_xt = sobel_grad(x_t)
         I_xt_y = self.mi_lower_bound(g_xt, y)
@@ -637,7 +620,6 @@ class MIUDiff(nn.Module):
     # ---- training ----
     def compute_generator_loss(self, batch: Dict[str, torch.Tensor]):
         device = next(self.parameters()).device
-        betas, alphas, a_bar, _ = self.sched.make(device)
 
         if self.cfg.stage == "pretrain":
             y0 = batch["B"].to(device)
@@ -646,8 +628,8 @@ class MIUDiff(nn.Module):
             t_idx = torch.randint(0, self.cfg.T, (B,), device=device)
             t_frac = t_idx.float() / (self.cfg.T - 1)
 
-            eps = torch.randn_like(y0)
-            y_t = self.q_sample(y0, t_idx, eps, a_bar)
+            eps = torch.randn(y0.shape, dtype=torch.float32, device=device)
+            y_t = self.q_sample(y0.float(), t_idx, eps)
 
             eps_pred = self.eps_uncond(y_t, t_frac)
             loss_eps = F.mse_loss(eps_pred, eps)
@@ -687,8 +669,8 @@ class MIUDiff(nn.Module):
         t_idx = torch.randint(0, self.cfg.T, (B,), device=device)
         t_frac = t_idx.float() / (self.cfg.T - 1)
 
-        eps = torch.randn_like(y0)
-        y_t = self.q_sample(y0, t_idx, eps, a_bar)
+        eps = torch.randn(y0.shape, dtype=torch.float32, device=device)
+        y_t = self.q_sample(y0.float(), t_idx, eps)
 
         eps_pred = self.eps_cond(torch.cat([y_t, x_struct], dim=1), t_frac)
         loss_eps = F.mse_loss(eps_pred, eps)
@@ -717,7 +699,7 @@ class MIUDiff(nn.Module):
             late_mask = (t_idx <= self.cfg.t0_prime)
             if late_mask.any():
                 # predict x0 from y_t (one-step clean estimate)
-                a_bar_t = a_bar[t_idx].view(-1, 1, 1, 1)
+                a_bar_t = self._a_bar[t_idx].view(-1, 1, 1, 1)
                 x0_pred = (y_t - torch.sqrt(1.0 - a_bar_t) * eps_pred) / torch.sqrt(a_bar_t + 1e-8)
                 x0_pred = x0_pred.clamp(-1, 1)
 
@@ -748,7 +730,6 @@ class MIUDiff(nn.Module):
         """
         self.eval()
         device = xA.device
-        betas, alphas, a_bar, _ = self.sched.make(device)
 
         B, _, H, W = xA.shape
         y = torch.randn(B, 3, H, W, device=device)
@@ -776,8 +757,8 @@ class MIUDiff(nn.Module):
             with torch.no_grad():
                 eps = self.eps_cond(torch.cat([y, x_struct], dim=1), t_frac)
 
-                a_bar_t = a_bar[t].view(1, 1, 1, 1)
-                a_bar_next = a_bar[t_next].view(1, 1, 1, 1)
+                a_bar_t = self._a_bar[t].view(1, 1, 1, 1)
+                a_bar_next = self._a_bar[t_next].view(1, 1, 1, 1)
 
                 # predict x0
                 x0_pred = (y - torch.sqrt(1.0 - a_bar_t) * eps) / torch.sqrt(a_bar_t + 1e-8)
@@ -829,7 +810,6 @@ class MIUDiff(nn.Module):
         """
         self.eval()
         device = next(self.eps_uncond.parameters()).device
-        betas, alphas, a_bar, _ = self.sched.make(device)
 
         y = torch.randn(batch_size, 3, image_size, image_size, device=device)
 
@@ -848,8 +828,8 @@ class MIUDiff(nn.Module):
 
                 eps = self.eps_uncond(y, t_frac)
 
-                a_bar_t    = a_bar[t].view(1, 1, 1, 1)
-                a_bar_next = a_bar[t_next].view(1, 1, 1, 1)
+                a_bar_t    = self._a_bar[t].view(1, 1, 1, 1)
+                a_bar_next = self._a_bar[t_next].view(1, 1, 1, 1)
 
                 x0_pred = (y - torch.sqrt(1.0 - a_bar_t) * eps) / torch.sqrt(a_bar_t + 1e-8)
                 x0_pred = x0_pred.clamp(-1, 1)
@@ -858,84 +838,8 @@ class MIUDiff(nn.Module):
 
         return y.clamp(-1, 1)
 
-    # # =========================
-    # # Sampling (A -> B) with optional PCL refinement
-    # # =========================
-    # def sample_A2B(self, xA: torch.Tensor) -> torch.Tensor:
-    #     self.eval()
-    #     device = xA.device
-    #     betas, alphas, a_bar, a_bar_prev = self.sched.make(device)
-
-    #     B, _, H, W = xA.shape
-    #     y = torch.randn(B, 3, H, W, device=device)
-    #     x_struct = to_gray(xA)
-
-    #     steps = self.cfg.sample_steps
-    #     t_list = torch.linspace(self.cfg.T - 1, 0, steps, device=device).long()
-
-    #     for t in t_list:
-    #         t_idx = t.repeat(B)
-    #         t_frac = t_idx.float() / (self.cfg.T - 1)
-
-    #         # Everything except MI guidance can be no_grad
-    #         with torch.no_grad():
-    #             eps = self.eps_cond(torch.cat([y, x_struct], dim=1), t_frac)
-
-    #             beta_t = betas[t_idx].view(-1, 1, 1, 1)
-    #             alpha_t = alphas[t_idx].view(-1, 1, 1, 1)
-    #             a_bar_t = a_bar[t_idx].view(-1, 1, 1, 1)
-    #             a_bar_prev_t = a_bar_prev[t_idx].view(-1, 1, 1, 1)
-
-    #             x0_pred = (y - torch.sqrt(1 - a_bar_t) * eps) / torch.sqrt(a_bar_t + 1e-8)
-    #             x0_pred = x0_pred.clamp(-1, 1)
-
-    #             coef1 = torch.sqrt(a_bar_prev_t) * beta_t / (1 - a_bar_t + 1e-8)
-    #             coef2 = torch.sqrt(alpha_t) * (1 - a_bar_prev_t) / (1 - a_bar_t + 1e-8)
-    #             mu = coef1 * x0_pred + coef2 * y
-
-    #         # MI guidance MUST run with grad enabled
-    #         with torch.enable_grad():
-    #             y_req = y.detach().requires_grad_(True)
-    #             # ensure x_struct does not require grad (it’s a condition)
-    #             x_struct_ng = x_struct.detach()
-
-    #             M = self.energy_M(y_req, x_struct_ng, t_frac)
-    #             assert M.requires_grad, "M does not require grad - guidance will fail."
-
-    #             grad = torch.autograd.grad(
-    #                 M, y_req,
-    #                 retain_graph=False,
-    #                 create_graph=False,
-    #                 allow_unused=False,
-    #             )[0]
-
-    #         mu = mu - self.cfg.guidance_scale * grad
-
-    #         # sample step (no grad)
-    #         with torch.no_grad():
-    #             if t.item() > 0:
-    #                 z = torch.randn_like(y)
-    #                 sigma = torch.sqrt(beta_t)
-    #                 y = mu + sigma * z
-    #             else:
-    #                 y = mu
-
-    #             # Optional late-stage PCL refinement (this uses grads internally)
-    #             # so do NOT put it under no_grad
-    #         if self.cfg.miu_pcl and self.cfg.pcl_refine_steps > 0 and t.item() <= self.cfg.t0_prime:
-    #             y = self._pcl_refine(y, x_struct)
-
-    #     return y.clamp(-1, 1)
-        
     def _pcl_refine(self, y: torch.Tensor, x_struct: torch.Tensor) -> torch.Tensor:
-        """
-        Runs a few GD steps on y to reduce patch contrastive loss vs x_struct.
-        Ensures gradients are enabled even if caller is inside no_grad.
-        """
-        """
-        Gradient-descent refinement on y to reduce PCL loss vs x_struct.
-        Robust to being called from inside no_grad contexts.
-        """
+        """Gradient-descent refinement on y to reduce PCL loss vs x_struct."""
         if not (self.cfg.miu_pcl and self.feat_x is not None):
             return y
 
@@ -945,19 +849,14 @@ class MIUDiff(nn.Module):
             y_ref = y.detach().clone().requires_grad_(True)
 
             for _ in range(self.cfg.pcl_refine_steps):
-                # IMPORTANT: recompute loss each step on the current y_ref
                 loss = self.pcl_loss(x_struct_ng, y_ref)
 
-                # sanity: if this fails, pcl_loss isn't connected to y_ref
                 if not loss.requires_grad:
                     raise RuntimeError(
-                        "PCL loss does not require grad. "
-                        "This means pcl_loss is not connected to y_ref. "
-                        "Check for accidental .detach() / no_grad in pcl_loss."
+                        "PCL loss does not require grad — check for accidental "
+                        ".detach() / no_grad in pcl_loss."
                     )
-                print("loss.requires_grad:", loss.requires_grad, "y_ref.requires_grad:", y_ref.requires_grad)
 
-                # compute d(loss)/d(y_ref)
                 grad = torch.autograd.grad(
                     loss, y_ref,
                     retain_graph=False,
@@ -965,8 +864,10 @@ class MIUDiff(nn.Module):
                     allow_unused=False,
                 )[0]
 
-                print("pcl loss:", float(loss.detach().cpu()), "grad mean:", float(grad.abs().mean().detach().cpu()))
-                # GD update (manual)
                 y_ref = (y_ref - self.cfg.pcl_refine_lr * grad).clamp(-1, 1).detach().requires_grad_(True)
 
         return y_ref.detach()
+
+    @property
+    def aux_optimizers(self):
+        return {"mi": self._mi_opt}
