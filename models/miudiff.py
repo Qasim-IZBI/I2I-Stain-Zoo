@@ -345,7 +345,7 @@ class DDPMUNet(nn.Module):
     def forward(self, x: torch.Tensor, t_frac: torch.Tensor) -> torch.Tensor:
         # Run entirely in fp32 — partial fp16 fixes are insufficient because any large
         # intermediate value cast back to fp16 produces inf and corrupts all downstream blocks
-        with torch.amp.autocast("cuda", enabled=False):
+        with torch.cuda.amp.autocast(enabled=False):
             return self._forward(x.float(), t_frac)
 
     def _forward(self, x: torch.Tensor, t_frac: torch.Tensor) -> torch.Tensor:
@@ -636,7 +636,7 @@ class MIUDiff(nn.Module):
 
             # Train MI estimator with its own optimizer (separate from eps network)
             self._mi_opt.zero_grad()
-            with torch.amp.autocast("cuda", enabled=False):
+            with torch.cuda.amp.autocast(enabled=False):
                 y0_f = y0.float().clamp(-1, 1)
                 g_y = sobel_grad(to_gray(y0_f)).clamp(0, 5)
                 mi_lb = self.mi_lower_bound(g_y, y0_f)
@@ -677,7 +677,7 @@ class MIUDiff(nn.Module):
 
         # Train MI estimator with its own optimizer (separate from eps network)
         self._mi_opt.zero_grad()
-        with torch.amp.autocast("cuda", enabled=False):
+        with torch.cuda.amp.autocast(enabled=False):
             y0_f = y0.float().clamp(-1, 1)
             g_y = sobel_grad(to_gray(y0_f)).clamp(0, 5)
             mi_lb = self.mi_lower_bound(g_y, y0_f)

@@ -79,7 +79,7 @@ class BaseTrainer:
             self.opt_D = torch.optim.Adam(d_params, lr=lr, betas=betas)
 
         # --- AMP ---
-        self.scaler = torch.amp.GradScaler("cuda", enabled=use_amp, growth_interval=500)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=use_amp, growth_interval=500)
 
         self.global_step = 0
         self._internal_epoch = 0  # counts full passes through the dataloader (internal only)
@@ -134,7 +134,7 @@ class BaseTrainer:
                 # -------------------------
                 # Generator step
                 # -------------------------
-                with torch.amp.autocast("cuda", enabled=self.use_amp):
+                with torch.cuda.amp.autocast(enabled=self.use_amp):
                     loss_G, logs_G, visuals = self.model.compute_generator_loss(batch)
 
                 if not torch.isfinite(loss_G):
@@ -168,7 +168,7 @@ class BaseTrainer:
                 # Discriminator step
                 # -------------------------
                 if self.opt_D is not None:
-                    with torch.amp.autocast("cuda", enabled=self.use_amp):
+                    with torch.cuda.amp.autocast(enabled=self.use_amp):
                         loss_D, logs_D = self.model.compute_discriminator_loss(batch, visuals)
 
                     self.scaler.scale(loss_D / self.grad_accum_steps).backward()

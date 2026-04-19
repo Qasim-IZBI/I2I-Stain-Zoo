@@ -101,7 +101,7 @@ class ViTBottleneck(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         # Run the entire ViT in fp32 — attention and large FFN matmuls overflow fp16 under AMP
-        with torch.amp.autocast("cuda", enabled=False):
+        with torch.cuda.amp.autocast(enabled=False):
             tokens = x.float().permute(0, 2, 3, 1).reshape(B, H * W, C)
             tokens = self.proj_in(tokens) + self.pos_embed
             tokens = self.blocks(tokens)
