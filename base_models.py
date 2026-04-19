@@ -399,8 +399,8 @@ def denorm01(x: torch.Tensor) -> torch.Tensor:
 
 def info_nce(q: torch.Tensor, k: torch.Tensor, temperature: float = 0.07) -> torch.Tensor:
     """InfoNCE loss with one-to-one positives by index."""
-    q = F.normalize(q, dim=1)
-    k = F.normalize(k, dim=1)
+    q = F.normalize(q.float(), dim=1)
+    k = F.normalize(k.float(), dim=1)
     logits = q @ k.t() / temperature
     labels = torch.arange(q.size(0), device=q.device)
     return F.cross_entropy(logits, labels)

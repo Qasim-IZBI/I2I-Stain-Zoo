@@ -48,12 +48,13 @@ class UNITConfig:
 # ============================================================
 
 def reparameterize(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-    std = torch.exp(0.5 * logvar)
+    std = torch.exp(0.5 * logvar.clamp(-30, 10))
     eps = torch.randn_like(std)
     return mu + eps * std
 
 
 def kl_loss(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+    logvar = logvar.clamp(-30, 10)
     return -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
 
 

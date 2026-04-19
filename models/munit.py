@@ -135,10 +135,10 @@ class AdaINBottleneck(nn.Module):
 
         h = c
         for i, blk in enumerate(self.blocks):
-            gamma1 = params[:, i, 0, :]
-            beta1  = params[:, i, 1, :]
-            gamma2 = params[:, i, 2, :]
-            beta2  = params[:, i, 3, :]
+            gamma1 = params[:, i, 0, :].clamp(-10, 10)
+            beta1  = params[:, i, 1, :].clamp(-10, 10)
+            gamma2 = params[:, i, 2, :].clamp(-10, 10)
+            beta2  = params[:, i, 3, :].clamp(-10, 10)
             h = blk(h, gamma1, beta1, gamma2, beta2)
         return h
 

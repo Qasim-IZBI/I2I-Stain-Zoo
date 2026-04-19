@@ -171,7 +171,7 @@ class AttentionBlock(nn.Module):
 
         scale = 1.0 / math.sqrt(head_dim)
         attn = torch.einsum("bhcn,bhcm->bhnm", q, k) * scale  # [B,heads,HW,HW]
-        attn = torch.softmax(attn, dim=-1)
+        attn = attn.float().softmax(dim=-1).to(q.dtype)        # fp32 softmax for stability
         out = torch.einsum("bhnm,bhcm->bhcn", attn, v)               # [B,heads,head_dim,HW]
         out = out.reshape(B, C, H * W)                               # [B,C,HW]
         out = self.proj_out(out).view(B, C, H, W)

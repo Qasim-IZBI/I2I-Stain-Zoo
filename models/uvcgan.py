@@ -69,9 +69,10 @@ class TransformerBlock(nn.Module):
             self.alpha2 = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Self-attention
+        # Self-attention (fp32 for numerical stability under AMP)
         h = self.norm1(x)
-        h, _ = self.attn(h, h, h, need_weights=False)
+        h, _ = self.attn(h.float(), h.float(), h.float(), need_weights=False)
+        h = h.to(x.dtype)
         x = x + (h * self.alpha1 if self.alpha1 is not None else h)
 
         # FFN
