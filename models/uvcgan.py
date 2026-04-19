@@ -69,10 +69,9 @@ class TransformerBlock(nn.Module):
             self.alpha2 = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Self-attention (fp32 for numerical stability under AMP)
+        # Self-attention
         h = self.norm1(x)
-        h, _ = self.attn(h.float(), h.float(), h.float(), need_weights=False)
-        h = h.to(x.dtype)
+        h, _ = self.attn(h, h, h, need_weights=False)
         x = x + (h * self.alpha1 if self.alpha1 is not None else h)
 
         # FFN
@@ -101,14 +100,14 @@ class ViTBottleneck(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
-        # (B, C, H, W) -> (B, H*W, C)
-        tokens = x.permute(0, 2, 3, 1).reshape(B, H * W, C)
-        tokens = self.proj_in(tokens) + self.pos_embed
-        tokens = self.blocks(tokens)
-        tokens = self.norm(tokens)
-        tokens = self.proj_out(tokens)
-        # (B, H*W, C) -> (B, C, H, W)
-        return tokens.reshape(B, H, W, C).permute(0, 3, 1, 2)
+        # Run the entire ViT in fp32 — attention and large FFN matmuls overflow fp16 under AMP
+        with torch.cuda.amp.autocast(enabled=False):
+            tokens = x.float().permute(0, 2, 3, 1).reshape(B, H * W, C)
+            tokens = self.proj_in(tokens) + self.pos_embed
+            tokens = self.blocks(tokens)
+            tokens = self.norm(tokens)
+            tokens = self.proj_out(tokens)
+        return tokens.reshape(B, H, W, C).permute(0, 3, 1, 2).to(x.dtype)
 
 
 # ============================================================
