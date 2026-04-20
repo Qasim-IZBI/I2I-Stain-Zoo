@@ -220,10 +220,14 @@ class ResBlock(nn.Module):
                 self.skip = nn.Conv2d(in_channels, out_channels, 1)
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
-        h = self.conv1(self.act1(self.norm1(x)))
+        # Pre-norm: normalise x once and feed to both the residual branch and the
+        # skip path. Without this, residual additions compound un-normalised
+        # magnitudes across blocks, eventually causing fp32 overflow during training.
+        x_n = self.norm1(x)
+        h = self.conv1(self.act1(x_n))
         h = h + self.time_proj(t_emb)[:, :, None, None]
         h = self.conv2(self.dropout(self.act2(self.norm2(h))))
-        return self.skip(x) + h
+        return self.skip(x_n) + h
 
 
 class Downsample(nn.Module):
