@@ -91,7 +91,7 @@ python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,2,
     --dataA ... --dataB ... --steps 500000 --amp --miu_stage pretrain --output ./out/
 
 # Option B: simpler 3-level, 1 ResBlock per level (more stable, faster per step)
-python train.py --model miudiff --miu_base_channels 96 --miu_channel_mult 1,2,4 --miu_num_res_blocks 1 \
+python train.py --model miudiff --miu_base_channels 112 --miu_channel_mult 1,2,4 --miu_num_res_blocks 1 \
     --dataA ... --dataB ... --steps 500000 --amp --miu_stage pretrain --output ./out/
 
 # UVCGAN (2-stage): optional pretrain → finetune

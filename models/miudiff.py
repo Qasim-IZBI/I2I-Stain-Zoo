@@ -127,6 +127,14 @@ class SiLU(nn.Module):
         return x * torch.sigmoid(x)
 
 
+def _gn_groups(n_channels: int) -> int:
+    """Return the largest of {32, 16, 8, 4} that evenly divides n_channels."""
+    for g in (32, 16, 8, 4):
+        if n_channels % g == 0:
+            return g
+    return 1
+
+
 class GroupNorm32(nn.GroupNorm):
     def forward(self, x):
         return super().forward(x.float()).type_as(x)
@@ -153,7 +161,7 @@ class AttentionBlock(nn.Module):
         super().__init__()
         self.channels = channels
         self.num_heads = num_heads
-        self.norm = GroupNorm32(32 if channels >= 32 else 8, channels)
+        self.norm = GroupNorm32(_gn_groups(channels), channels)
         self.qkv = nn.Conv1d(channels, channels * 3, kernel_size=1)
         self.proj_out = ZeroModule(nn.Conv1d(channels, channels, kernel_size=1))
 
@@ -194,8 +202,8 @@ class ResBlock(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        gn_groups_in = 32 if in_channels >= 32 else 8
-        gn_groups_out = 32 if out_channels >= 32 else 8
+        gn_groups_in = _gn_groups(in_channels)
+        gn_groups_out = _gn_groups(out_channels)
 
         self.norm1 = GroupNorm32(gn_groups_in, in_channels)
         self.act1 = SiLU()
@@ -346,7 +354,7 @@ class DDPMUNet(nn.Module):
             else:
                 self.upsamples.append(nn.Identity())
 
-        self.out_norm = GroupNorm32(32 if ch >= 32 else 8, ch)
+        self.out_norm = GroupNorm32(_gn_groups(ch), ch)
         self.out_act = SiLU()
         self.out_conv = nn.Conv2d(ch, cfg.out_channels, 3, padding=1)
 

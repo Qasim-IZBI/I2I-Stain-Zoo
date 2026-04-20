@@ -22,7 +22,7 @@ All counts were verified with `python train.py --model <model> --count_params <a
 | DCLGAN | `--dclgan_ngf 64` | `--dclgan_n_blocks 8` | — | **10.20M** |
 | UVCGAN | `--uvcgan_ngf 48` | `--uvcgan_vit_blocks 6` | `--uvcgan_vit_features 96` | **10.01M** |
 | MIUDiff (A) | `--miu_base_channels 32` | `--miu_num_res_blocks 2` | `--miu_channel_mult 1,2,4,4` | **11.4M** |
-| MIUDiff (B) | `--miu_base_channels 64` | `--miu_num_res_blocks 1` | `--miu_channel_mult 1,2,4` | **17.6M** |
+| MIUDiff (B) | `--miu_base_channels 48` | `--miu_num_res_blocks 1` | `--miu_channel_mult 1,2,4` | **10.4M** |
 
 ---
 
@@ -36,7 +36,7 @@ All counts were verified with `python train.py --model <model> --count_params <a
 | DCLGAN | `--dclgan_ngf 128` | `--dclgan_n_blocks 10` | — | **50.18M** |
 | UVCGAN | `--uvcgan_ngf 96` | `--uvcgan_vit_blocks 6` | `--uvcgan_vit_features 384` | **48.28M** |
 | MIUDiff (A) | `--miu_base_channels 64` | `--miu_num_res_blocks 2` | `--miu_channel_mult 1,2,2,4,4` | **49.1M** |
-| MIUDiff (B) | `--miu_base_channels 96` | `--miu_num_res_blocks 1` | `--miu_channel_mult 1,2,4` | **38.1M** |
+| MIUDiff (B) | `--miu_base_channels 112` | `--miu_num_res_blocks 1` | `--miu_channel_mult 1,2,4` | **51.5M** |
 
 ---
 
@@ -92,7 +92,7 @@ python train.py --model uvcgan --uvcgan_ngf 96 --uvcgan_vit_features 384 --uvcga
 python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,4,8 --miu_num_res_blocks 2 \
     --miu_stage finetune --dataA /tiles/trainA --dataB /tiles/trainB --steps 500000 --amp --output ./results/
 
-# Large MIUDiff Option B — simpler 3-level, 1-ResBlock-per-level (stage 2)
+# MIUDiff Option B — simpler 3-level, 1-ResBlock-per-level (stage 2, large)
 python train.py --model miudiff --miu_base_channels 160 --miu_channel_mult 1,2,4 --miu_num_res_blocks 1 \
     --miu_stage finetune --dataA /tiles/trainA --dataB /tiles/trainB --steps 500000 --amp --output ./results/
 

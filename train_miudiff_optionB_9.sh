@@ -16,8 +16,8 @@
 # Fewer residual accumulations per level → less activation compounding.
 #
 # Model sizes (approx):
-#   small  → base=64,  mult=1,2,4, n_res=1  (~17.6M params)
-#   medium → base=96,  mult=1,2,4, n_res=1  (~38.1M params)
+#   small  → base=48,  mult=1,2,4, n_res=1  (~10.4M params)
+#   medium → base=112, mult=1,2,4, n_res=1  (~51.5M params)
 #   large  → base=160, mult=1,2,4, n_res=1  (~103.9M params)
 
 set -euo pipefail
@@ -66,7 +66,7 @@ DATA_RANGE=${DATA_RANGES[$DATA_SIZE_ID]}
 
 # Option B architecture: 3 levels, 1 ResBlock per level
 #                          small   medium  large
-MIU_MCHLS=(               "64"    "96"    "160")
+MIU_MCHLS=(               "48"    "112"   "160")
 MIU_CHLMULT="1,2,4"       # same for all sizes
 MIU_NRES=1                # 1 ResBlock per level for all sizes
 
