@@ -219,15 +219,19 @@ class ResBlock(nn.Module):
             else:
                 self.skip = nn.Conv2d(in_channels, out_channels, 1)
 
+        # Output norm: normalises the block output before it enters the next block.
+        # Prevents time_proj additions from compounding across the ~19 ResBlocks in
+        # the UNet and eventually overflowing fp32 during long training runs.
+        self.norm_out = GroupNorm32(gn_groups_out, out_channels)
+
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
-        # Pre-norm: normalise x once and feed to both the residual branch and the
-        # skip path. Without this, residual additions compound un-normalised
-        # magnitudes across blocks, eventually causing fp32 overflow during training.
+        # Pre-norm on skip path: normalise x once, feed to both branches so the
+        # skip contribution is also bounded.
         x_n = self.norm1(x)
         h = self.conv1(self.act1(x_n))
         h = h + self.time_proj(t_emb)[:, :, None, None]
         h = self.conv2(self.dropout(self.act2(self.norm2(h))))
-        return self.skip(x_n) + h
+        return self.norm_out(self.skip(x_n) + h)
 
 
 class Downsample(nn.Module):
@@ -471,6 +475,7 @@ class MIUDiffConfig:
     # networks
     base_channels: int = 64
     channel_mult: Tuple[int, ...] = (1, 2, 2, 4)  # 4 levels: 64→128→128→256
+    num_res_blocks: int = 2
     tdim: int = 128
 
     # conditioning
@@ -521,8 +526,8 @@ class MIUDiff(nn.Module):
         self.register_buffer('_a_bar', _a_bar)
         self.register_buffer('_a_bar_prev', _a_bar_prev)
 
-        self.eps_uncond = DDPMUNet(UNetConfig(in_channels=3, base_channels=cfg.base_channels, channel_mult=cfg.channel_mult))
-        self.eps_cond   = DDPMUNet(UNetConfig(in_channels=3 + cfg.cond_channels, base_channels=cfg.base_channels, channel_mult=cfg.channel_mult))
+        self.eps_uncond = DDPMUNet(UNetConfig(in_channels=3, base_channels=cfg.base_channels, channel_mult=cfg.channel_mult, num_res_blocks=cfg.num_res_blocks))
+        self.eps_cond   = DDPMUNet(UNetConfig(in_channels=3 + cfg.cond_channels, base_channels=cfg.base_channels, channel_mult=cfg.channel_mult, num_res_blocks=cfg.num_res_blocks))
         self.mi = MIEstimator(patch=cfg.mi_patch)
 
         # MI estimator gets its own optimizer to prevent its large/volatile

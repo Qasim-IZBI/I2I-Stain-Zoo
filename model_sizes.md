@@ -5,6 +5,10 @@ All counts were verified with `python train.py --model <model> --count_params <a
 
 > **MIUDiff note**: both `eps_uncond` and `eps_cond` are counted because classifier-free guidance
 > requires both UNets at inference time. Stage-1 pretrain uses `eps_uncond` only (~half the A→B count).
+>
+> **Option A** (default): original channel multipliers, `--miu_num_res_blocks 2` (2 ResBlocks per level).
+> **Option B** (simpler): 3-level UNet, `--miu_num_res_blocks 1` — fewer residual accumulations, faster per step.
+> Both variants include the output-norm stability fix in `ResBlock`.
 
 ---
 
@@ -17,7 +21,8 @@ All counts were verified with `python train.py --model <model> --count_params <a
 | MUNIT | `--munit_ngf 64` | `--munit_n_content_blocks 3 --munit_n_adain_blocks 4` | — | **10.14M** |
 | DCLGAN | `--dclgan_ngf 64` | `--dclgan_n_blocks 8` | — | **10.20M** |
 | UVCGAN | `--uvcgan_ngf 48` | `--uvcgan_vit_blocks 6` | `--uvcgan_vit_features 96` | **10.01M** |
-| MIUDiff | `--miu_base_channels 32` | — | `--miu_channel_mult 1,2,4,4` | **10.31M** |
+| MIUDiff (A) | `--miu_base_channels 32` | `--miu_num_res_blocks 2` | `--miu_channel_mult 1,2,4,4` | **11.4M** |
+| MIUDiff (B) | `--miu_base_channels 64` | `--miu_num_res_blocks 1` | `--miu_channel_mult 1,2,4` | **17.6M** |
 
 ---
 
@@ -30,7 +35,8 @@ All counts were verified with `python train.py --model <model> --count_params <a
 | MUNIT | `--munit_ngf 128` | `--munit_n_content_blocks 5 --munit_n_adain_blocks 4` | — | **47.64M** |
 | DCLGAN | `--dclgan_ngf 128` | `--dclgan_n_blocks 10` | — | **50.18M** |
 | UVCGAN | `--uvcgan_ngf 96` | `--uvcgan_vit_blocks 6` | `--uvcgan_vit_features 384` | **48.28M** |
-| MIUDiff | `--miu_base_channels 64` | — | `--miu_channel_mult 1,2,2,4,4` | **47.97M** |
+| MIUDiff (A) | `--miu_base_channels 64` | `--miu_num_res_blocks 2` | `--miu_channel_mult 1,2,2,4,4` | **49.1M** |
+| MIUDiff (B) | `--miu_base_channels 96` | `--miu_num_res_blocks 1` | `--miu_channel_mult 1,2,4` | **38.1M** |
 
 ---
 
@@ -43,7 +49,8 @@ All counts were verified with `python train.py --model <model> --count_params <a
 | MUNIT | `--munit_ngf 192` | `--munit_n_content_blocks 4 --munit_n_adain_blocks 4` | — | **94.87M** |
 | DCLGAN | `--dclgan_ngf 192` | `--dclgan_n_blocks 9` | — | **102.26M** |
 | UVCGAN | `--uvcgan_ngf 128` | `--uvcgan_vit_blocks 17` | `--uvcgan_vit_features 384` | **96.72M** |
-| MIUDiff | `--miu_base_channels 64` | — | `--miu_channel_mult 1,2,4,8` | **98.60M** |
+| MIUDiff (A) | `--miu_base_channels 64` | `--miu_num_res_blocks 2` | `--miu_channel_mult 1,2,4,8` | **99.7M** |
+| MIUDiff (B) | `--miu_base_channels 160` | `--miu_num_res_blocks 1` | `--miu_channel_mult 1,2,4` | **103.9M** |
 
 ---
 
@@ -66,6 +73,7 @@ All counts were verified with `python train.py --model <model> --count_params <a
 | UVCGAN | `--uvcgan_vit_features` | 192 | ViT hidden dimension (must be divisible by `vit_n_heads=6`) |
 | MIUDiff | `--miu_base_channels` | 64 | DDPM UNet base width (must be divisible by 32) |
 | MIUDiff | `--miu_channel_mult` | `1,2,2,4` | Per-level channel multipliers; each `base × mult` must be divisible by 32 |
+| MIUDiff | `--miu_num_res_blocks` | 2 | ResBlocks per level (use 1 for Option B simpler variant) |
 
 ---
 
@@ -80,8 +88,12 @@ python train.py --model cyclegan --cyclegan_ngf 64 --cyclegan_n_blocks 8 \
 python train.py --model uvcgan --uvcgan_ngf 96 --uvcgan_vit_features 384 --uvcgan_vit_blocks 6 \
     --dataA /tiles/trainA --dataB /tiles/trainB --steps 5000000 --amp --output ./results/
 
-# Large MIUDiff (stage 2)
-python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,4,8 \
+# Large MIUDiff Option A (stage 2)
+python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,4,8 --miu_num_res_blocks 2 \
+    --miu_stage finetune --dataA /tiles/trainA --dataB /tiles/trainB --steps 500000 --amp --output ./results/
+
+# Large MIUDiff Option B — simpler 3-level, 1-ResBlock-per-level (stage 2)
+python train.py --model miudiff --miu_base_channels 160 --miu_channel_mult 1,2,4 --miu_num_res_blocks 1 \
     --miu_stage finetune --dataA /tiles/trainA --dataB /tiles/trainB --steps 500000 --amp --output ./results/
 
 # Dry-run parameter count (no data needed)
