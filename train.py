@@ -335,6 +335,14 @@ def main():
     # ---- model ----
     model = build_model(args).to(device)
 
+    # MIUDiff runs its UNet inside autocast(enabled=False) — entirely fp32.
+    # Enabling GradScaler on fp32 computations causes the scale to double every
+    # growth_interval steps until it overflows fp32 (~2^128 at step ~55k with the
+    # default growth_interval=500), permanently locking the scale at +inf.
+    use_amp = args.amp and args.model != "miudiff"
+    if args.amp and args.model == "miudiff":
+        print("[MIUDiff] AMP disabled: DDPMUNet runs in fp32 internally; GradScaler would overflow at ~56k steps.")
+
     # ---- trainer ----
     trainer = BaseTrainer(
         model=model,
@@ -343,7 +351,7 @@ def main():
         model_name=args.model,
         lr=args.lr,
         betas=(0.5, 0.999),
-        use_amp=args.amp,
+        use_amp=use_amp,
         save_dir=args.output + '/checkpoints',
         sample_dir=args.output + '/samples',
         save_steps=args.save_steps,
