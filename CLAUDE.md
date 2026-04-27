@@ -221,6 +221,9 @@ python vis_inference.py --show_source
 # More tiles per cell and faster MIUDiff diffusion
 python vis_inference.py --num_images 5 --miu_steps 30
 
+# Generate only specific size levels (model sizes when --group_by data_size)
+python vis_inference.py --sizes small large
+
 # Dry-run: print which checkpoints would be used without running inference
 python vis_inference.py --dry_run
 

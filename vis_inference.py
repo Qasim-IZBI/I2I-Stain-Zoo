@@ -255,6 +255,12 @@ def main():
                     help="RNG seed for image sampling and style noise   [%(default)s]")
     ap.add_argument("--device",      default=None,
                     help="torch device  (auto-detected if omitted)")
+    ap.add_argument("--sizes",       nargs="+", choices=["small", "medium", "large"],
+                    default=None,
+                    help="Which size levels to generate figures for (default: all three). "
+                         "With --group_by data_size these are model sizes; "
+                         "with --group_by model_size these are data sizes. "
+                         "Example: --sizes small large")
     ap.add_argument("--dry_run",     action="store_true",
                     help="Print checkpoint paths only; skip model loading and inference")
     args = ap.parse_args()
@@ -306,6 +312,13 @@ def main():
 
         def to_run(model, outer, inner):
             return model, outer, inner   # (model, datasize, modelsize)
+
+    if args.sizes:
+        unknown = set(args.sizes) - set(outer_axis)
+        if unknown:
+            sys.exit(f"[ERROR] --sizes {unknown} not valid for --group_by {args.group_by}; "
+                     f"choices: {outer_axis}")
+        outer_axis = [v for v in outer_axis if v in args.sizes]
 
     torch.manual_seed(args.seed)
 
