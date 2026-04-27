@@ -19,7 +19,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-BASE = "/work2/bz66izin-VSproject/Outputs"
+BASE = "/work2/bz66izin-VSproject/Outputs_noamp"
 
 MODELS = ["cyclegan", "unit", "munit", "dclgan", "miudiff", "uvcgan"]
 SIZES = ["small", "medium", "large"]      # model sizes  → color
