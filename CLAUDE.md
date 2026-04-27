@@ -203,6 +203,52 @@ python reconstruct.py --metadata path/to/tiles_metadata.csv --output ./reconstru
     --mode rgb_and_mask --blend average
 ```
 
+### Visual Inference Grid (all 54 runs)
+Runs A→B inference on a sample of testA tiles for every combination of model,
+model size, and data size, then saves one 6-row (model type) × 3-col figure per
+size level. Checkpoints are located automatically from the standard output tree.
+
+```bash
+# Default: 3 figures (one per model size), columns = data sizes, 3 tiles/cell
+python vis_inference.py
+
+# Flip axes: 3 figures (one per data size), columns = model sizes
+python vis_inference.py --group_by model_size
+
+# Show source image row above translated row in each cell
+python vis_inference.py --show_source
+
+# More tiles per cell and faster MIUDiff diffusion
+python vis_inference.py --num_images 5 --miu_steps 30
+
+# Dry-run: print which checkpoints would be used without running inference
+python vis_inference.py --dry_run
+
+# Custom paths
+python vis_inference.py --base /path/to/Outputs --data /path/to/testA --outdir ./vis_out/
+```
+
+Output files: `{outdir}/vis_{group_by}_{size}.png` — 3 files total (one per small/medium/large).
+Multi-stage models: miudiff uses `stage3/`, uvcgan uses `stage2/` checkpoints.
+Missing checkpoints render as a grey placeholder so the grid always completes.
+
+### Loss Plots — All 54 Runs
+Reads `loss_log.csv` files from every combination of model, model size, and data
+size and produces a single 2×3 figure (one subplot per model type). Color encodes
+model size; line style encodes data size. Multi-stage models (miudiff, uvcgan)
+have their stage losses concatenated on a single x-axis.
+
+```bash
+# Plot all 54 runs with default base path
+python plot_all_losses.py
+
+# Custom output path
+python plot_all_losses.py --out /path/to/all_losses.png
+```
+
+Output: one PNG at `--out` (default: `$BASE/all_losses.png`).
+Legend: color = model size (blue/orange/green), line style = data size (solid/dashed/dotted).
+
 ### Training Summary & Loss Plots
 ```bash
 # Plot losses and save hyperparameters from a training run
