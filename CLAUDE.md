@@ -203,6 +203,27 @@ python reconstruct.py --metadata path/to/tiles_metadata.csv --output ./reconstru
     --mode rgb_and_mask --blend average
 ```
 
+### Batch Inference — All 54 Runs (SLURM)
+Runs `inference.py` for every combination of model, model size, and data size as
+a 54-job SLURM array. Each job finds the latest checkpoint automatically and
+writes translated tiles to `{MODEL_DIR}/inference/`.
+
+```bash
+sbatch infer_all_54.sh
+
+# Run only a subset of the array (e.g. first 6 jobs, one per model at small/small)
+sbatch --array=0-5 infer_all_54.sh
+```
+
+Checkpoint resolution:
+- Single-stage models (cyclegan, unit, munit, dclgan): highest `step_*.pt` under `checkpoints/`
+- miudiff: highest `step_*.pt` under `stage3/checkpoints/`
+- uvcgan:  highest `step_*.pt` under `stage2/checkpoints/`
+
+Output per run: `{BASE}/{model}/results/data_{datasize}/model_{size}/inference/`
+Logs: `logs_infer/infer_{jobid}_{taskid}.out / .err`
+MIUDiff DDIM steps are set by `MIU_STEPS=200` at the top of the script.
+
 ### Visual Inference Grid (all 54 runs)
 Runs A→B inference on a sample of testA tiles for every combination of model,
 model size, and data size, then saves one 6-row (model type) × 3-col figure per
