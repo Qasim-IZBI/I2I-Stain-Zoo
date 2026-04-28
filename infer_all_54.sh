@@ -85,6 +85,9 @@ PROJECT_ROOT=I2I-Stain-Zoo
 
 TEST_A="${DATA_DIR}/QP_HE/tiles/testA"
 
+# WSI subfolders to infer on (e.g. "1,2" → 001/images/ and 002/images/)
+DATA_RANGE="1,2"
+
 # MIUDiff: number of DDIM denoising steps for inference (200-300 typical)
 MIU_STEPS=200
 
@@ -104,11 +107,12 @@ case "${MODEL}" in
         echo "Checkpoint: ${CKPT}"
 
         run_cmd python "${PROJECT_ROOT}/inference.py" \
-            --model  "${MODEL}" \
-            --direction A2B \
-            --data   "${TEST_A}" \
-            --ckpt   "${CKPT}" \
-            --outdir "${MODEL_DIR}/inference"
+            --model      "${MODEL}" \
+            --direction  A2B \
+            --data       "${TEST_A}" \
+            --data_range "${DATA_RANGE}" \
+            --ckpt       "${CKPT}" \
+            --outdir     "${MODEL_DIR}/inference"
         ;;
 
     miudiff)
@@ -127,6 +131,7 @@ case "${MODEL}" in
             --miu_stage  finetune \
             --direction  A2B \
             --data       "${TEST_A}" \
+            --data_range "${DATA_RANGE}" \
             --ckpt       "${CKPT}" \
             --miu_steps  "${MIU_STEPS}" \
             --outdir     "${MODEL_DIR}/inference"
@@ -144,11 +149,12 @@ case "${MODEL}" in
         echo "Checkpoint: ${CKPT}"
 
         run_cmd python "${PROJECT_ROOT}/inference.py" \
-            --model     uvcgan \
-            --direction A2B \
-            --data      "${TEST_A}" \
-            --ckpt      "${CKPT}" \
-            --outdir    "${MODEL_DIR}/inference"
+            --model      uvcgan \
+            --direction  A2B \
+            --data       "${TEST_A}" \
+            --data_range "${DATA_RANGE}" \
+            --ckpt       "${CKPT}" \
+            --outdir     "${MODEL_DIR}/inference"
         ;;
 
     *)
