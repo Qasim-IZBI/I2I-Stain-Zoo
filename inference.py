@@ -166,7 +166,9 @@ def main():
                 x, path = batch
                 x = x.to(device)
 
-            stem = os.path.splitext(os.path.basename(path[0]))[0]
+            rel  = os.path.relpath(path[0], args.data)
+            stem = os.path.splitext(rel)[0]   # e.g. "001/images/0000001"
+            os.makedirs(os.path.join(args.outdir, os.path.dirname(stem)), exist_ok=True)
 
             if args.model == "cyclegan":
                 if args.direction == "A2B":
