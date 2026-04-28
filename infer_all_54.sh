@@ -42,11 +42,12 @@ run_cmd() {
 # -----------------------------
 find_latest_ckpt() {
     local dir="$1"
-    local latest=""
-    local max_step=-1
+    local latest="" max_step=-1 step f
     for f in "${dir}"/step_*.pt; do
         [ -f "$f" ] || continue
         step=$(basename "$f" .pt | sed 's/step_//')
+        # skip non-numeric names (e.g. step_latest.pt symlinks)
+        [[ "$step" =~ ^[0-9]+$ ]] || continue
         if [ "$step" -gt "$max_step" ]; then
             max_step="$step"
             latest="$f"

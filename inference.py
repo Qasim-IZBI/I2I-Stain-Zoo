@@ -77,8 +77,10 @@ def load_model(args, device):
         print(f"Restored {args.model} config from checkpoint")
 
     sd = ckpt["model"] if "model" in ckpt else ckpt
-    # pretrain checkpoints may have only eps_uncond keys (trimmed); strict=False tolerates that
-    strict = not (args.model == "miudiff" and args.miu_stage == "pretrain")
+    # MIUDiff: strict=False for both stages —
+    #   pretrain ckpt may lack eps_cond keys;
+    #   stage-3 ckpt carries PCL-only networks (feat_x, feat_y, proj) not used at inference.
+    strict = args.model != "miudiff"
     model.load_state_dict(sd, strict=strict)
     model.to(device).eval()
     return model

@@ -115,7 +115,9 @@ def load_model(model_name: str, ckpt_path: str, device, miu_steps: int = 50):
         raise ValueError(f"Unknown model: {model_name}")
 
     sd = ckpt.get("model", ckpt)
-    net.load_state_dict(sd, strict=True)
+    # MIUDiff strict=False: pretrain ckpts lack eps_cond keys; stage-3 ckpts carry
+    # PCL-only networks (feat_x, feat_y, proj) that are not part of the inference model.
+    net.load_state_dict(sd, strict=(model_name != "miudiff"))
     net.to(device).eval()
     return net
 
