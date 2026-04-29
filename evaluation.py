@@ -542,6 +542,7 @@ def compute_regen_error(
     device: torch.device,
     image_size: int = 256,
     overlay_dir: Optional[str] = None,
+    save_error_npy: bool = False,
 ) -> Tuple[float, List[Tuple[str, float]]]:
     """
     Compute per-image cycle reconstruction MAE: A → B' → A', error = |A − A'|.
@@ -550,6 +551,8 @@ def compute_regen_error(
     If overlay_dir is given, saves:
       overlay_dir/heatmaps/<stem>.png  — error heatmap with colorbar (hot colormap)
       overlay_dir/overlays/<stem>.png  — 50/50 blend of heatmap and original A
+    If save_error_npy is True (requires overlay_dir), additionally saves:
+      overlay_dir/error_npy/<stem>.npy — raw [H, W] error map in [0, 255]
 
     Returns (mean_mae, [(stem, mae), ...]).
     """
@@ -622,6 +625,15 @@ def compute_regen_error(
         print(f"[regen_error] Saved heatmaps → {heatmap_dir}")
         print(f"[regen_error] Saved overlays → {overlay_out_dir}")
 
+    if save_error_npy:
+        if not overlay_dir:
+            raise ValueError("save_error_npy=True requires overlay_dir to be set")
+        npy_dir = os.path.join(overlay_dir, "error_npy")
+        os.makedirs(npy_dir, exist_ok=True)
+        for stem, err_map in zip(stems, error_maps):
+            np.save(os.path.join(npy_dir, f"{stem}.npy"), err_map.astype(np.float32))
+        print(f"[regen_error] Saved error .npy maps → {npy_dir}")
+
     results = [(s, float(e.mean())) for s, e in zip(stems, error_maps)]
     mean_mae = float(np.mean([v for _, v in results]))
     return mean_mae, results
@@ -681,6 +693,9 @@ def main():
                     help="Translation direction for regen_error cycle (default: A2B)")
     ap.add_argument("--overlay_dir", type=str, default=None,
                     help="Directory to save error heatmaps and overlays (regen_error only)")
+    ap.add_argument("--save_error_npy", action="store_true",
+                    help="Save raw per-pixel error maps as .npy under "
+                         "<overlay_dir>/error_npy/ (regen_error only; requires --overlay_dir)")
     ap.add_argument("--style_dim", type=int, default=8,
                     help="Style dimension for MUNIT (regen_error only, ignored if config in checkpoint)")
 
@@ -762,6 +777,8 @@ def main():
         for flag, name in [(args.path_A, "--path_A"), (args.model, "--model"), (args.ckpt, "--ckpt")]:
             if flag is None:
                 ap.error(f"regen_error requires {name}")
+        if args.save_error_npy and not args.overlay_dir:
+            ap.error("--save_error_npy requires --overlay_dir to be set")
 
         device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
         model = _load_model_for_regen(args.model, args.ckpt, device, style_dim=args.style_dim)
@@ -774,6 +791,7 @@ def main():
             device=device,
             image_size=args.ssim_image_size,
             overlay_dir=args.overlay_dir,
+            save_error_npy=args.save_error_npy,
         )
         print(f"Regen Error MAE ({args.direction} cycle, path={args.path_A}): {mean_mae:.4f}")
         print(f"N_images={len(per_image)}, image_size={args.ssim_image_size}")
