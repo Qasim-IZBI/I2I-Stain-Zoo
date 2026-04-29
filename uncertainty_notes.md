@@ -98,19 +98,52 @@ This proxy is implemented in `evaluation.py:compute_regen_error` (cycle
 reconstruction MAE in `[0, 255]`). The patched flag `--save_error_npy` writes
 the per-pixel error map as `error_npy/<stem>.npy`.
 
-### Caveats on the proxy
+### Two variants of the proxy
+
+The repo supports two related proxies, exposed as separate metrics in
+`evaluation.py`:
+
+1. **Self-cycle** (`--metric regen_error`):
+   $E_\mathrm{self}(x, y) = |A(x, y) - F_\mathrm{model}(G_\mathrm{model}(A))(x, y)|$
+   Each model under evaluation provides both $G$ and $F$. Available only for
+   architectures with both directions: cyclegan, unit, munit, dclgan, uvcgan.
+   **Not available for MIUDiff** — diffusion models are one-way ($A \to B$
+   only) and have no learned inverse.
+
+2. **Judge-based** (`--metric judge_regen_error`):
+   $E_\mathrm{judge}(x, y) = |A(x, y) - F_\mathrm{judge}(B')(x, y)|$
+   where $B' = G_\mathrm{model}(A)$ is read from disk and $F_\mathrm{judge}$
+   is a single fixed external GAN inverter applied to *every* model under
+   evaluation. Works for any forward translator including MIUDiff.
+
+**Recommendation for the paper**: use **judge-based** uniformly across all six
+architectures. Two reasons:
+
+- It is the only option that yields a calibration number for MIUDiff at all.
+- Even for the GAN models, judging every model with the *same* fixed inverter
+  removes a confound: with self-cycle, a model whose forward and inverse are
+  jointly biased in the same way (e.g. both ignore a tissue feature) reports
+  low cycle error despite poor translation. The external judge cannot be
+  jointly biased with the model under test.
+
+The judge can be any of cyclegan / unit / munit / dclgan / uvcgan; freeze
+one trained checkpoint and reuse it everywhere. Document in the methods
+section which architecture and checkpoint serves as judge.
+
+### General caveats on the proxy
 
 - Cycle error and translation error are correlated but not equivalent. A
   perfect generator pair can have non-zero cycle error if the inverse is
   imperfect; a poor generator can have low cycle error if both directions are
-  jointly biased the same way.
+  jointly biased the same way (mitigated by judge-based variant).
 - Cycle error is computed in the **source domain (A)**, while uncertainty is
   defined on the **target domain (B′)**. They are pixel-aligned because the
   spatial geometry is preserved by the translation, but they describe
   complementary aspects of the same translation.
 - Calibration results should always be **reported alongside the assumption**:
-  *"using cycle-reconstruction error as the per-pixel error proxy"*. We do not
-  claim absolute calibration, only calibration with respect to this proxy.
+  *"using cycle-reconstruction error as the per-pixel error proxy"* (or
+  *"using judge-based reconstruction error with judge = X"*). We do not claim
+  absolute calibration, only calibration with respect to this proxy.
 
 ---
 
@@ -344,8 +377,10 @@ python uncertainty.py \
     --data ./ensemble_outputs_cyclegan/ \
     --output ./uncertainty_out/
 
-# (d) Compute cycle-reconstruction error for at least one ensemble member.
-#     Repeat for additional members if averaging is desired (--error_dirs).
+# (d) Compute per-pixel error maps. Choose ONE of the two variants:
+#
+# (d-self) Self-cycle, GAN models only (cyclegan, unit, munit, dclgan, uvcgan).
+#          Each member judges its own translation. Not available for MIUDiff.
 python evaluation.py \
     --metric regen_error \
     --path_A /path/to/testA \
@@ -353,6 +388,19 @@ python evaluation.py \
     --direction A2B \
     --overlay_dir ./regen_cyclegan_m01/ \
     --save_error_npy
+#
+# (d-judge) External judge — works for ANY model including MIUDiff, and is the
+#           recommended variant for the paper because the same judge applies
+#           to all 6 architectures. B' tiles are read from the inference output
+#           directory; the judge runs B'→A_judge.
+python evaluation.py \
+    --metric judge_regen_error \
+    --path_A /path/to/testA \
+    --path_B_generated ./ensemble_outputs_cyclegan/model_01/ \
+    --judge_model cyclegan --judge_ckpt ./judge_cyclegan.pt --judge_direction B2A \
+    --overlay_dir ./judge_err_cyclegan_m01/ \
+    --save_error_npy
+# Reuse the SAME --judge_ckpt across every architecture's calibration run.
 
 # (e) Run calibration analysis.
 python uncertainty_calibration.py \
@@ -394,9 +442,12 @@ For ensemble-mean error, repeat step (d) per member with distinct
 - "Epistemic uncertainty was estimated from a deep ensemble of *N* independently
   trained generators (Lakshminarayanan et al., 2017). Per-pixel uncertainty was
   defined as the sum of per-channel sample variances across the ensemble."
-- "Calibration was measured against per-pixel cycle-reconstruction MAE as an
+- "Calibration was measured against per-pixel reconstruction MAE as an
   unsupervised error proxy, since paired ground truth is unavailable in this
-  unpaired translation setting."
+  unpaired translation setting. The same external GAN inverter (judge model
+  X, frozen) was applied to every architecture's translated outputs to
+  produce a comparable error signal — including MIUDiff, which has no
+  inverse generator of its own."
 - "We report (i) within-tile Spearman ρ between uncertainty and cycle error
   (spatial calibration), (ii) AUSE (Ilg et al., 2018) for the ranking quality
   of pixels by uncertainty, and (iii) ECE on jointly normalised values for the
@@ -410,11 +461,13 @@ For ensemble-mean error, repeat step (d) per member with distinct
    to be meaningful (`ddof=1`). More members give tighter estimates but
    diminishing returns past ~10. Report *N* in the methods section.
 
-2. **Cycle error is a proxy, not a ground truth**. Numbers should be reported as
-   "calibration with respect to cycle error", not "calibration of translation
-   error". A model that fails identically in both directions can game this
-   proxy (low cycle error, high actual error). This is mitigated by reporting
-   alongside FID/SSIM/PSR-task results.
+2. **Reconstruction error is a proxy, not a ground truth**. Numbers should be
+   reported as "calibration with respect to reconstruction error", not
+   "calibration of translation error". The self-cycle variant can be gamed
+   by a model whose forward and inverse are jointly biased the same way; the
+   judge-based variant removes that confound but introduces a dependency on
+   the judge's quality. Either way, report calibration alongside FID / SSIM /
+   downstream task results so reviewers can triangulate.
 
 3. **Tissue masking matters**. Background pixels would dominate Spearman/ECE
    because both U and E are near-zero there and trivially co-vary. Always

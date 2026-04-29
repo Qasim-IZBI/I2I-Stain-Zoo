@@ -196,6 +196,18 @@ python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ck
 # Writes <overlay_dir>/error_npy/<stem>.npy alongside heatmaps/ and overlays/.
 # --save_error_npy requires --overlay_dir.
 
+# Judge regen error |A − judge(B')| (model-independent error proxy; required for MIUDiff)
+# Loads precomputed B' tiles from --path_B_generated (no forward inference here),
+# runs an external judge model in --judge_direction (typically B2A) to produce A_judge,
+# and computes |A − A_judge|. Pair to A by relative path under each root.
+python evaluation.py --metric judge_regen_error \
+    --path_A data/HE \
+    --path_B_generated ./inference_miudiff/ \
+    --judge_model cyclegan --judge_ckpt judge_cyclegan.pt --judge_direction B2A \
+    --overlay_dir ./judge_err_miudiff/ --save_error_npy --device cuda
+# The judge must be a GAN (cyclegan, unit, munit, dclgan, uvcgan); MIUDiff cannot judge.
+# For paper symmetry, use the SAME judge across all 6 architectures under evaluation.
+
 # Save results to CSV (works with any metric)
 python evaluation.py --metric ssim --path_real real_images/ --path_fake generated_images/ --save_csv results.csv
 ```
@@ -341,14 +353,28 @@ python uncertainty.py --model cyclegan \
     --data ./ensemble_outputs/cyclegan/ \
     --output ./uncertainty_out/
 
-# (d) Compute per-pixel cycle-reconstruction error for at least one member.
-#     Use the same checkpoint(s) whose outputs went into step (c).
+# (d) Compute per-pixel error maps. Two variants:
+#
+#  (d-self) Self-cycle (only for models with both directions: cyclegan, unit, munit,
+#           dclgan, uvcgan). Each member judges its own translation.
 python evaluation.py --metric regen_error \
     --path_A path/to/tiles/testA \
     --model cyclegan --ckpt ./ensemble/cyclegan/model_01/checkpoints/step_5000000.pt \
     --direction A2B \
     --overlay_dir ./regen_cyclegan_m01/ --save_error_npy --device cuda
-# For ensemble-mean error, repeat (d) per member with distinct --overlay_dir.
+# For ensemble-mean error, repeat (d-self) per member with distinct --overlay_dir.
+#
+#  (d-judge) External judge — required for MIUDiff (no inverse generator) and
+#            recommended for cross-model symmetry: every model judged by the same
+#            fixed inverter. Loads pre-translated B' tiles from inference output.
+python evaluation.py --metric judge_regen_error \
+    --path_A path/to/tiles/testA \
+    --path_B_generated ./ensemble_outputs/cyclegan/model_01/ \
+    --judge_model cyclegan --judge_ckpt ./judge_cyclegan.pt --judge_direction B2A \
+    --overlay_dir ./judge_err_cyclegan_m01/ --save_error_npy --device cuda
+# Use the SAME judge checkpoint across all 6 architectures so error maps are
+# directly comparable. The judge must be a GAN (any of cyclegan/unit/munit/
+# dclgan/uvcgan); pick one trained model and freeze it.
 
 # (e) Run calibration analysis (tissue-only).
 python uncertainty_calibration.py \
