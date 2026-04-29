@@ -190,6 +190,12 @@ python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ck
 python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ckpt model.pt \
     --direction A2B --overlay_dir ./regen_overlays/ --save_csv regen.csv --device cuda
 
+# Regen error with raw per-pixel error maps as .npy (consumed by uncertainty_calibration.py)
+python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ckpt model.pt \
+    --direction A2B --overlay_dir ./regen_overlays/ --save_error_npy --device cuda
+# Writes <overlay_dir>/error_npy/<stem>.npy alongside heatmaps/ and overlays/.
+# --save_error_npy requires --overlay_dir.
+
 # Save results to CSV (works with any metric)
 python evaluation.py --metric ssim --path_real real_images/ --path_fake generated_images/ --save_csv results.csv
 ```
@@ -304,6 +310,88 @@ python uncertainty.py --model cyclegan --data /path/to/cyclegan/output --output 
 - Computes per-pixel variance (ddof=1) across ensemble RGB predictions, summed across channels
 - Global percentile-based normalisation ensures comparable maps across images
 - Outputs: `raw_npy/`, `norm_npy/`, `heatmaps/` (magma colormap with colorbar), optional `overlays/`, `summary.json`
+
+### Uncertainty Calibration
+Pairs ensemble uncertainty maps with cycle-reconstruction error and reduces both
+heatmaps to numerical calibration scores: within-tile Spearman ρ, across-tile
+Pearson/Spearman, AUSE + sparsification curve, reliability diagram + ECE.
+See `uncertainty_notes.md` for the full methodology and paper-writing notes.
+
+**Prerequisite:** the test set should be tiled with `--overlap 0` to avoid
+pixel double-counting in pooled metrics (ECE, across-tile ρ). See
+`uncertainty_notes.md` §6 for details.
+
+End-to-end workflow (per architecture):
+
+```bash
+# (a) Train N ensemble members with different --seed.
+python train.py --model cyclegan --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
+    --steps 5000000 --amp --seed 1 --output ./ensemble/cyclegan/model_01/
+# Repeat for --seed 2 ... N into model_02/, model_03/, ...
+
+# (b) Run inference for each member, mirroring the model_01/, model_02/, ... layout.
+for i in 01 02 03 04 05; do
+  python inference.py --model cyclegan --direction A2B \
+      --data path/to/tiles/testA --ckpt ./ensemble/cyclegan/model_${i}/checkpoints/step_5000000.pt \
+      --outdir ./ensemble_outputs/cyclegan/model_${i}/
+done
+
+# (c) Compute per-pixel ensemble variance (uncertainty maps).
+python uncertainty.py --model cyclegan \
+    --data ./ensemble_outputs/cyclegan/ \
+    --output ./uncertainty_out/
+
+# (d) Compute per-pixel cycle-reconstruction error for at least one member.
+#     Use the same checkpoint(s) whose outputs went into step (c).
+python evaluation.py --metric regen_error \
+    --path_A path/to/tiles/testA \
+    --model cyclegan --ckpt ./ensemble/cyclegan/model_01/checkpoints/step_5000000.pt \
+    --direction A2B \
+    --overlay_dir ./regen_cyclegan_m01/ --save_error_npy --device cuda
+# For ensemble-mean error, repeat (d) per member with distinct --overlay_dir.
+
+# (e) Run calibration analysis (tissue-only).
+python uncertainty_calibration.py \
+    --uncertainty_dir ./uncertainty_out/cyclegan/raw_npy/ \
+    --error_dirs     ./regen_cyclegan_m01/error_npy/ \
+    --mask_dir       ./tissue_masks_flat/ \
+    --tiles_metadata path/to/tiles/testA \
+    --outdir         ./calibration_cyclegan/
+
+# (e′) Ensemble-mean error variant: pass all member error dirs to --error_dirs.
+python uncertainty_calibration.py \
+    --uncertainty_dir ./uncertainty_out/cyclegan/raw_npy/ \
+    --error_dirs     ./regen_cyclegan_m01/error_npy/ ./regen_cyclegan_m02/error_npy/ \
+                     ./regen_cyclegan_m03/error_npy/ ./regen_cyclegan_m04/error_npy/ \
+                     ./regen_cyclegan_m05/error_npy/ \
+    --mask_dir       ./tissue_masks_flat/ \
+    --tiles_metadata path/to/tiles/testA \
+    --outdir         ./calibration_cyclegan/
+```
+
+Inputs to `uncertainty_calibration.py`:
+- `--uncertainty_dir` — flat directory of `<stem>.npy` from `uncertainty.py` (use `raw_npy/`, **not** `norm_npy/` which is clipped at p1/p99).
+- `--error_dirs` — one or more flat directories of `<stem>.npy` from `evaluation.py --save_error_npy`. Multiple dirs are averaged per-pixel before calibration.
+- `--mask_dir` — flat directory of tissue mask `<stem>.tif` files (any non-zero pixel = tissue). Required unless `--no_mask` is passed; background inflates Spearman/ECE spuriously.
+- `--tiles_metadata` *(optional)* — dataset root containing per-WSI `tiles_metadata.csv` files. Enables `per_wsi.csv` rollup via the `source_file` column.
+
+Key flags:
+- `--n_bins 10` — quantile bins for the reliability diagram and ECE.
+- `--ause_steps 100` — fraction-removed steps in the sparsification curve.
+- `--reliability_sample 4096` — pixels sampled per tile into the global ECE pool (caps memory; set 0 for all pixels).
+- `--min_tissue_pixels 256` — skip tiles with fewer tissue pixels than this.
+
+Outputs in `--outdir`:
+- `per_tile.csv` — tile_stem, source_wsi, n_tissue_pixels, spearman_rho, pearson_rho_within, mean_u, mean_e, ause
+- `per_wsi.csv` — per-WSI rollup (only when `--tiles_metadata` provided)
+- `summary.json` — dataset aggregates: within-tile Spearman mean/std/median, across-tile Pearson/Spearman, AUSE mean/std, ECE, reliability bins, sparsification curve arrays, parameter record
+- `calibration.png` — 2×2 figure: reliability diagram, sparsification curve, within-tile ρ histogram, across-tile mean(U) vs mean(E) scatter
+
+Interpretation cheatsheet:
+- Within-tile Spearman ρ → +1 = uncertain pixels are wrong pixels; ≈0 = uninformative; <0 = anti-calibrated.
+- AUSE → 0 = optimal; > 0 = predicted ranking misses high-error pixels.
+- ECE → 0 = bins lie on the y=x diagonal after p1–p99 normalisation.
+- Across-tile ρ → catches the case where uncertainty is locally calibrated but flat at tile level (useless for triage).
 
 ### PSR Positive Area Segmentation
 Runs a nnUNet v2 segmentation model on pre-reconstructed Sirius Red WSIs to produce
