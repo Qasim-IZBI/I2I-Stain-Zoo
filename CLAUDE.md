@@ -94,6 +94,17 @@ python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,2,
 python train.py --model miudiff --miu_base_channels 112 --miu_channel_mult 1,2,4 --miu_num_res_blocks 1 \
     --dataA ... --dataB ... --steps 500000 --amp --miu_stage pretrain --output ./out/
 
+# MIUDiff conditioning feature type (--miu_cond_type, finetune stages only)
+# Controls what structure map is extracted from the source image xA and fed to eps_cond.
+# 'gray'  (default) — grayscale of xA;  1 output channel
+# 'sobel'           — Sobel gradient magnitude of grayscale xA;  1 output channel
+# cond_type is saved in the checkpoint and restored automatically at inference — no
+# inference flag needed.  To add a new type: add a branch in MIUDiff._extract_struct
+# (models/miudiff.py) and update the --miu_cond_type help string in train.py.
+python train.py --model miudiff --miu_stage finetune --miu_cond_type sobel \
+    --miu_init_ckpt ./stage1/checkpoints/step_700000.pt \
+    --dataA ... --dataB ... --steps 900000 --amp --output ./stage2/
+
 # UVCGAN (2-stage): optional pretrain → finetune
 python train.py --model uvcgan --uvcgan_stage pretrain --dataA ... --dataB ... --steps 1000000 --amp --output ./uvcgan_pt/
 python train.py --model uvcgan --uvcgan_stage finetune --uvcgan_init_ckpt ./uvcgan_pt/checkpoints/step_1000000.pt \

@@ -488,6 +488,9 @@ class MIUDiffConfig:
 
     # conditioning
     cond_channels: int = 1
+    # Feature type used to produce x_struct from source image xA.
+    # Must match the channel count above.  Add new types in MIUDiff._extract_struct.
+    cond_type: str = "gray"   # "gray" | "sobel"
 
     # MI estimator
     mi_patch: int = 32
@@ -634,6 +637,24 @@ class MIUDiff(nn.Module):
         k = self.proj(k)
         return info_nce(q, k, temperature=self.cfg.pcl_temp)
 
+    # ---- structure feature extraction ----
+    def _extract_struct(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Convert source image x [B, 3, H, W] → conditioning map [B, cond_channels, H, W].
+
+        To add a new feature type:
+          1. Add an `if self.cfg.cond_type == "<name>":` branch below.
+          2. Ensure output channel count == cfg.cond_channels.
+          3. Add the name to the --miu_cond_type help string in train.py.
+        """
+        if self.cfg.cond_type == "gray":
+            return to_gray(x)
+        if self.cfg.cond_type == "sobel":
+            return sobel_grad(to_gray(x))
+        raise ValueError(
+            f"Unknown cond_type {self.cfg.cond_type!r}. Choices: 'gray', 'sobel'"
+        )
+
     # ---- training ----
     def compute_generator_loss(self, batch: Dict[str, torch.Tensor]):
         device = next(self.parameters()).device
@@ -680,7 +701,7 @@ class MIUDiff(nn.Module):
         # finetune
         xA = batch["A"].to(device)
         y0 = batch["B"].to(device)
-        x_struct = to_gray(xA)  # [B,1,H,W]
+        x_struct = self._extract_struct(xA)  # [B, cond_channels, H, W]
         B = y0.size(0)
 
         t_idx = torch.randint(0, self.cfg.T, (B,), device=device)
@@ -750,7 +771,7 @@ class MIUDiff(nn.Module):
 
         B, _, H, W = xA.shape
         y = torch.randn(B, 3, H, W, device=device)
-        x_struct = to_gray(xA)  # [B,1,H,W]
+        x_struct = self._extract_struct(xA)  # [B, cond_channels, H, W]
 
         steps = int(self.cfg.sample_steps)
 

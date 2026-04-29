@@ -71,6 +71,7 @@ def build_model(args):
             base_channels=args.miu_base_channels,
             channel_mult=tuple(int(x) for x in args.miu_channel_mult.split(",")),
             num_res_blocks=args.miu_num_res_blocks,
+            cond_type=args.miu_cond_type,
             miu_pcl=args.miu_pcl,
             lambda_pcl=args.lambda_pcl,
             pcl_n_patches=args.pcl_n_patches,
@@ -280,6 +281,10 @@ def main():
                     help="Comma-separated channel multipliers for MIUDiff UNet")
     parser.add_argument("--miu_num_res_blocks", type=int, default=2,
                     help="ResBlocks per level in MIUDiff UNet (default 2; use 1 for simpler/faster variant)")
+    parser.add_argument("--miu_cond_type", type=str, default="gray",
+                    help="Structure feature extracted from source image for MIUDiff conditioning. "
+                         "Choices: 'gray' (grayscale), 'sobel' (Sobel gradient magnitude). "
+                         "Add new types in MIUDiff._extract_struct and extend this help string. [%(default)s]")
     parser.add_argument("--miu_pcl", action="store_true")
     parser.add_argument("--lambda_mi", type=float, default=1.0)
     parser.add_argument("--lambda_pcl", type=float, default=0.1)
