@@ -385,6 +385,51 @@ Pairwise metrics reported (each generated condition vs. real SR):
 - Mean difference (generated − real): positive = over-estimates PSR
 - Std ratio (generated / real): <1 = collapsed variance (mode failure)
 
+### Cross-stain Consistency
+Measures spatial agreement between acellular eosinophilic regions in the H&E input
+(collagen proxy, via colour deconvolution) and PSR-positive regions in the generated SR
+mask. Because H&E and generated SR tiles are pixel-aligned by construction, no
+registration is needed. Requires no real SR images.
+
+```bash
+# Reconstruct H&E testA tiles into WSIs first
+python reconstruct.py --metadata /path/to/tiles/testA --output ./wsis_he/
+
+# Then run cross-stain consistency (PSR masks from segment_psr.py on generated SR)
+python cross_stain_consistency.py \
+    --he_wsis    ./wsis_he/ \
+    --psr_masks  ./psr_masks_cyclegan/ \
+    --outdir     ./cross_stain_cyclegan/
+
+# Save H&E collagen proxy masks for visual threshold inspection
+python cross_stain_consistency.py \
+    --he_wsis ./wsis_he/ --psr_masks ./psr_masks_cyclegan/ \
+    --outdir ./cross_stain_cyclegan/ --save_collagen_masks
+
+# Tune deconvolution thresholds if collagen proxy looks wrong
+python cross_stain_consistency.py \
+    --he_wsis ./wsis_he/ --psr_masks ./psr_masks_cyclegan/ \
+    --outdir ./cross_stain_cyclegan/ \
+    --eosin_thresh 0.08 --haem_thresh 0.05 --nuclear_dilation 10
+```
+
+Outputs in `--outdir`:
+- `per_wsi.csv` — wsi stem, Dice, IoU, collagen fraction, PSR+ fraction
+- `summary.json` — mean/std Dice and IoU, parameter record
+- `consistency.png` — Dice per WSI (dot plot) + H&E collagen fraction vs PSR+ fraction (scatter)
+- `collagen_masks/` — H&E collagen proxy TIFs (only with `--save_collagen_masks`)
+
+Collagen proxy pipeline (colour deconvolution + nuclear exclusion):
+1. Macenko colour deconvolution → haematoxylin (H) and eosin (E) channels
+2. `E > eosin_thresh` → eosinophilic mask (collagen + cytoplasm)
+3. Dilate `H > haem_thresh` → nuclear+cytoplasm exclusion mask
+4. Subtract exclusion mask → acellular ECM (collagen proxy)
+
+Key tuning flags:
+- `--eosin_thresh` — higher = stricter, fewer regions classified as eosinophilic [default: 0.05]
+- `--nuclear_dilation` — larger = more cytoplasm excluded around nuclei [default: 8 px]
+- `--min_area` — minimum blob size retained in collagen mask [default: 100 px]
+
 ## Architecture
 
 ### Model Interface

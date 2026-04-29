@@ -106,33 +106,110 @@ All pairwise comparisons are generated condition vs. real SR.
 
 ---
 
-## 8. Scripts
+## 8. Cross-stain consistency (second task-based evaluation)
+
+### What it measures
+
+Does the model put PSR+ signal in the right spatial locations relative to the H&E input?
+Because the H&E input and the generated SR tile are pixel-aligned by construction (same tile,
+input→output), we can directly compare:
+
+- **H&E collagen proxy mask** — acellular eosinophilic regions from colour deconvolution
+- **Generated SR PSR+ mask** — from nnUNet on reconstructed generated SR WSI
+
+A spatially faithful model produces PSR signal where collagen is visible in the H&E. A model
+that generates PSR signal in the wrong locations (e.g., over nuclei, or uniformly distributed)
+will have low Dice even if its total PSR fraction is correct.
+
+This evaluation **requires no real SR images** and is unique to virtual staining pipelines where
+input and output are pixel-aligned.
+
+### Collagen proxy method
+
+1. **Colour deconvolution** (Macenko / Ruifrok–Johnston via `skimage.color.separate_stains`
+   with `hed_from_rgb`) → haematoxylin (H) and eosin (E) channels
+2. **Eosinophilic mask**: `E > eosin_thresh` → collagen + cytoplasm
+3. **Nuclear exclusion**: dilate `H > haem_thresh` by `nuclear_dilation` px → covers cytoplasm
+4. **Collagen proxy**: eosinophilic AND NOT nuclear; remove blobs < `min_area` px
+
+**Limitation**: the E channel cannot cleanly separate collagen from other eosinophilic ECM
+(fibrin, basement membrane). The mask represents "acellular eosinophilic ECM", which is a
+reasonable collagen proxy for fibrotic tissue. State this in the methods section.
+
+**The same cancellation argument applies**: any imprecision in the collagen detector is applied
+identically across all model conditions, so relative Dice comparisons between models remain valid.
+
+### Threshold tuning
+
+Run with `--save_collagen_masks` first to inspect the collagen proxy visually before
+comparing against PSR masks. Default thresholds (`eosin_thresh=0.05`, `haem_thresh=0.05`,
+`nuclear_dilation=8 px`) are a starting point; adjust per dataset.
+
+### Metrics
+
+| Metric | Interpretation |
+|---|---|
+| **Dice** | Spatial overlap between collagen proxy and PSR+ mask; 0 = no overlap, 1 = perfect agreement |
+| **IoU** | More penalising than Dice for false positives/negatives; report alongside Dice |
+
+Report mean ± std across WSIs. With n=5 the same small-sample caveats apply as for the
+PSR fraction comparison — report effect size and acknowledge limited power.
+
+### What to say in the paper
+
+**Methods:**
+> "To assess spatial fidelity of the generated PSR staining, we performed a cross-stain
+> consistency evaluation. An acellular eosinophilic region mask (collagen proxy) was extracted
+> from each H&E input WSI using Macenko colour deconvolution followed by nuclear exclusion
+> (dilation radius = 8 px). This mask was compared with the PSR-positive region mask produced
+> by nnUNet v2 applied to the corresponding generated SR WSI. Because H&E and generated SR
+> images share the same tile coordinates, no registration was required. Spatial agreement was
+> quantified by the Dice coefficient averaged across all test WSIs."
+
+**Results:**
+> "Model X achieved a mean Dice of X.XX ± X.XX between the H&E collagen proxy and the
+> generated SR PSR+ mask, indicating that PSR-positive signal was generated predominantly
+> in regions corresponding to collagen in the H&E input. In contrast, model Y (Dice = X.XX)
+> produced PSR signal independently of the H&E collagen structure."
+
+---
+
+## 9. Scripts
 
 | Script | Role |
 |---|---|
 | `reconstruct.py` | Reconstruct WSI TIFs from inference tiles (run before segment_psr.py) |
 | `segment_psr.py` | Run nnUNet v2 on reconstructed WSIs → mask TIFs (labels: 0=bg, 1=tissue, 2=PSR) |
-| `compare_psr.py` | Compute PSR fractions, run Wasserstein/KS/mean-diff, bootstrap CI, save CSV/JSON/plot |
+| `compare_psr.py` | PSR fraction distribution comparison: Wasserstein/KS/mean-diff, bootstrap CI, plot |
+| `cross_stain_consistency.py` | Dice/IoU between H&E collagen proxy and generated SR PSR+ mask |
 
 Typical workflow:
 ```bash
 # 1. Reconstruct real SR test WSIs
 python reconstruct.py --metadata /path/to/testB --output ./wsis_real/
 
-# 2. Reconstruct generated SR tiles into WSIs (repeat per model config)
+# 2. Reconstruct H&E test WSIs (for cross-stain consistency)
+python reconstruct.py --metadata /path/to/testA --output ./wsis_he/
+
+# 3. Reconstruct generated SR tiles into WSIs (repeat per model config)
 python reconstruct.py --metadata /path/to/testB \
     --tile_dir /path/to/cyclegan/inference/ --output ./wsis_cyclegan/
 
-# 3. Segment PSR in all WSI sets
+# 4. Segment PSR in all WSI sets
 python segment_psr.py --data ./wsis_real/     --outdir ./masks_real/     --nnunet_dataset 1 ...
 python segment_psr.py --data ./wsis_cyclegan/ --outdir ./masks_cyclegan/ --nnunet_dataset 1 ...
 
-# 4. Compare distributions
+# 5. Compare PSR fraction distributions
 python compare_psr.py \
     --masks_real ./masks_real/ \
     --masks_generated ./masks_cyclegan/ ./masks_unit/ ./masks_munit/ \
     --labels cyclegan unit munit \
     --outdir ./psr_comparison/
+
+# 6. Cross-stain consistency (no real SR needed)
+python cross_stain_consistency.py \
+    --he_wsis ./wsis_he/ --psr_masks ./masks_cyclegan/ \
+    --outdir ./cross_stain_cyclegan/ --save_collagen_masks
 ```
 
 Outputs in `psr_comparison/`:
