@@ -305,6 +305,86 @@ python uncertainty.py --model cyclegan --data /path/to/cyclegan/output --output 
 - Global percentile-based normalisation ensures comparable maps across images
 - Outputs: `raw_npy/`, `norm_npy/`, `heatmaps/` (magma colormap with colorbar), optional `overlays/`, `summary.json`
 
+### PSR Positive Area Segmentation
+Runs a nnUNet v2 segmentation model on pre-reconstructed Sirius Red WSIs to produce
+per-WSI tissue and PSR-positive area masks. Intended for task-based evaluation:
+compare PSR segmentation results between real SR WSIs and generated SR WSIs.
+
+**Prerequisite:** reconstruct WSI TIFs from tiles first using `reconstruct.py`.
+
+```bash
+# Segment real SR WSIs
+python segment_psr.py \
+    --data ./reconstructed_real/ \
+    --outdir ./psr_masks_real/ \
+    --nnunet_results /path/to/nnunet/results \
+    --nnunet_dataset 1 \
+    --nnunet_config 2d \
+    --nnunet_folds all
+
+# Segment generated SR WSIs (e.g. from CycleGAN inference)
+python reconstruct.py \
+    --metadata /path/to/tiles/testB \
+    --tile_dir /path/to/cyclegan/inference/ \
+    --output ./reconstructed_generated/
+python segment_psr.py \
+    --data ./reconstructed_generated/ \
+    --outdir ./psr_masks_generated/ \
+    --nnunet_results /path/to/nnunet/results \
+    --nnunet_dataset 1 --nnunet_config 2d
+
+# Stream nnUNet output live and use specific folds
+python segment_psr.py --data ./wsis/ --outdir ./masks/ \
+    --nnunet_results /path/to/nnunet/results --nnunet_dataset 1 \
+    --nnunet_folds "0 1 2" --verbose
+```
+
+Output mask TIF label convention:
+- `0` — background
+- `1` — tissue (Tissue class)
+- `2` — PSR-positive area
+
+Key flags:
+- `--nnunet_results` sets `NNUNET_RESULTS`; can be omitted if already set in the environment
+- `--nnunet_trainer` overrides the nnUNet trainer class (uses nnUNet default if omitted)
+- `--device cuda|cpu|mps` (default: cuda)
+
+### PSR Distribution Comparison
+Compares PSR-positive area fraction distributions between real SR and one or more sets of
+generated SR masks (output of `segment_psr.py`). Computes Wasserstein-1 distance with
+bootstrap 95% CI, KS test, mean difference, and std ratio — all vs. real SR as reference.
+
+```bash
+# Compare one generated condition against real SR
+python compare_psr.py \
+    --masks_real ./psr_masks_real/ \
+    --masks_generated ./psr_masks_cyclegan/ \
+    --labels cyclegan \
+    --outdir ./psr_comparison/
+
+# Compare multiple models at once (produces a single combined plot)
+python compare_psr.py \
+    --masks_real ./psr_masks_real/ \
+    --masks_generated ./masks_cyclegan/ ./masks_unit/ ./masks_munit/ ./masks_dclgan/ \
+    --labels cyclegan unit munit dclgan \
+    --outdir ./psr_comparison/
+```
+
+Outputs in `--outdir`:
+- `per_wsi.csv` — one row per WSI: wsi stem, condition, psr_fraction
+- `summary.json` — per-condition stats (mean, std, median, min, max) and pairwise metrics vs real
+- `comparison.png` — box + individual data point plot, one column per condition
+
+Key flags:
+- `--label_tissue INT` / `--label_psr INT` — nnUNet label indices (default: 1 / 2)
+- `--n_bootstrap INT` — bootstrap iterations for Wasserstein CI (default: 1000)
+
+Pairwise metrics reported (each generated condition vs. real SR):
+- Wasserstein-1 distance + bootstrap 95% CI (WSI-level resampling)
+- KS test statistic and p-value
+- Mean difference (generated − real): positive = over-estimates PSR
+- Std ratio (generated / real): <1 = collapsed variance (mode failure)
+
 ## Architecture
 
 ### Model Interface
