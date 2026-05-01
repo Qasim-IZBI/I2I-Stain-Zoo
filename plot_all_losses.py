@@ -101,6 +101,8 @@ def main(out_path: str):
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     axes_flat = axes.flatten()
 
+    csv_rows: list[dict] = []
+
     for ax_idx, model in enumerate(MODELS):
         ax = axes_flat[ax_idx]
 
@@ -114,11 +116,22 @@ def main(out_path: str):
                 color = COLORS[s_idx]
                 style = STYLES[d_idx]
 
+                smoothed = smooth(loss, SMOOTH_WINDOW)
+                for step, raw, smo in zip(steps, loss, smoothed):
+                    csv_rows.append({
+                        "model": model,
+                        "model_size": size,
+                        "data_size": datasize,
+                        "step": int(step),
+                        "loss_G_raw": float(raw),
+                        "loss_G_smooth": float(smo),
+                    })
+
                 # faint raw curve
                 ax.plot(steps, loss, color=color, linestyle=style,
                         alpha=0.15, linewidth=0.8)
                 # smoothed foreground
-                ax.plot(steps, smooth(loss, SMOOTH_WINDOW),
+                ax.plot(steps, smoothed,
                         color=color, linestyle=style,
                         linewidth=1.8, alpha=0.95)
                 any_plotted = True
@@ -159,6 +172,11 @@ def main(out_path: str):
     plt.tight_layout()
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
     print(f"Saved → {out_path}")
+
+    csv_path = os.path.splitext(out_path)[0] + ".csv"
+    pd.DataFrame(csv_rows).to_csv(csv_path, index=False)
+    print(f"Saved → {csv_path}")
+
     plt.show()
 
 
