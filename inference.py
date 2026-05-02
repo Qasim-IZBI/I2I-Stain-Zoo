@@ -1,7 +1,9 @@
 # infer.py
 import os
 import argparse
+import numpy as np
 import torch
+from PIL import Image
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
@@ -18,6 +20,75 @@ from models.dclgan import DCLGAN, DCLGANConfig
 from models.miudiff import MIUDiff, MIUDiffConfig
 from models.uvcgan import UVCGAN, UVCGANConfig
 
+
+# =============================================================================
+# Reinhard LAB colour transfer helpers
+# =============================================================================
+
+def _rgb_to_lab(img):
+    """[H,W,3] float32 [0,1] -> CIE LAB"""
+    img = img.clip(0, 1)
+    lin = np.where(img > 0.04045,
+                   ((img + 0.055) / 1.055) ** 2.4,
+                   img / 12.92)
+    M = np.array([[0.4124564, 0.3575761, 0.1804375],
+                  [0.2126729, 0.7151522, 0.0721750],
+                  [0.0193339, 0.1191920, 0.9503041]], dtype=np.float32)
+    xyz = (lin.reshape(-1, 3) @ M.T).reshape(img.shape)
+    xyz /= np.array([0.95047, 1.00000, 1.08883], dtype=np.float32)
+    eps, kappa = 0.008856, 903.3
+    f = np.where(xyz > eps, np.cbrt(xyz.clip(0)), (kappa * xyz + 16.0) / 116.0)
+    L = 116.0 * f[..., 1] - 16.0
+    a = 500.0 * (f[..., 0] - f[..., 1])
+    b = 200.0 * (f[..., 1] - f[..., 2])
+    return np.stack([L, a, b], axis=-1)
+
+
+def _lab_to_rgb(lab):
+    """CIE LAB [H,W,3] -> [H,W,3] float32 [0,1]"""
+    L, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
+    fy = (L + 16.0) / 116.0
+    fx = a / 500.0 + fy
+    fz = fy - b / 200.0
+    eps, kappa = 0.008856, 903.3
+    x = np.where(fx ** 3 > eps, fx ** 3, (116.0 * fx - 16.0) / kappa)
+    y = np.where(L > eps * kappa, ((L + 16.0) / 116.0) ** 3, L / kappa)
+    z = np.where(fz ** 3 > eps, fz ** 3, (116.0 * fz - 16.0) / kappa)
+    xyz = np.stack([x, y, z], axis=-1) * np.array([0.95047, 1.00000, 1.08883], dtype=np.float32)
+    M_inv = np.array([[ 3.2404542, -1.5371385, -0.4985314],
+                      [-0.9692660,  1.8760108,  0.0415560],
+                      [ 0.0556434, -0.2040259,  1.0572252]], dtype=np.float32)
+    lin = (xyz.reshape(-1, 3) @ M_inv.T).reshape(xyz.shape).clip(0, None)
+    rgb = np.where(lin > 0.0031308,
+                   1.055 * lin ** (1.0 / 2.4) - 0.055,
+                   12.92 * lin)
+    return rgb.clip(0, 1)
+
+
+def _load_color_ref_stats(path):
+    img = np.array(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
+    lab = _rgb_to_lab(img)
+    flat = lab.reshape(-1, 3)
+    return {"mean": flat.mean(axis=0), "std": flat.std(axis=0) + 1e-6}
+
+
+def save_tile(y, path, color_ref_stats=None):
+    """Save a [-1,1] NCHW tensor tile with optional Reinhard colour normalisation."""
+    img = (y.squeeze(0).permute(1, 2, 0).cpu().float().numpy().clip(-1, 1) + 1.0) / 2.0
+    if color_ref_stats is not None:
+        lab = _rgb_to_lab(img)
+        for c in range(3):
+            m = lab[..., c].mean()
+            s = lab[..., c].std() + 1e-6
+            lab[..., c] = (lab[..., c] - m) / s * color_ref_stats["std"][c] + color_ref_stats["mean"][c]
+        img = _lab_to_rgb(lab)
+    t = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).clamp(0, 1)
+    save_image(t, path)
+
+
+# =============================================================================
+# Model loading
+# =============================================================================
 
 def load_model(args, device):
     ckpt = torch.load(args.ckpt, map_location=device)
@@ -100,6 +171,12 @@ def main():
     parser.add_argument("--ckpt", type=str, required=True)
     parser.add_argument("--outdir", type=str, default="results")
 
+    # Colour normalisation (all models)
+    parser.add_argument("--color_ref", type=str, default=None,
+                        help="Path to a representative target-domain tile. When provided, "
+                             "Reinhard LAB colour transfer is applied to every output tile "
+                             "so its colour statistics match the reference.")
+
     # MUNIT
     parser.add_argument("--style_dim", type=int, default=8)
     parser.add_argument("--num_samples", type=int, default=1)
@@ -125,8 +202,9 @@ def main():
                         help="Fix the global RNG seed for deterministic MIUDiff sampling.")
     parser.add_argument("--miu_noise_level", type=float, default=1.0,
                         help="SDEdit-style init for MIUDiff finetune (0–1). "
-                             "1.0 = pure noise (default); 0.7–0.85 = start from noised xA "
-                             "for more consistent color/structure.")
+                             "1.0 = pure noise (default). Note: values < 1.0 cause HE colour "
+                             "bleed for cross-domain (H&E→SR) translation; use --color_ref "
+                             "instead for colour consistency.")
 
     args = parser.parse_args()
 
@@ -136,6 +214,8 @@ def main():
     if args.seed is not None:
         torch.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
+
+    color_ref_stats = _load_color_ref_stats(args.color_ref) if args.color_ref else None
 
     transform = default_train_transform(image_size=256)
 
@@ -169,7 +249,7 @@ def main():
             print("[WARN] --miu_guidance is ignored for --miu_stage pretrain.")
         for i in range(args.num_uncond_samples):
             y = model.sample_uncond(batch_size=1)
-            save_image((y + 1) / 2, f"{args.outdir}/uncond_{i:04d}.tif")
+            save_tile(y, f"{args.outdir}/uncond_{i:04d}.tif", color_ref_stats)
         return
 
     with torch.no_grad():
@@ -192,68 +272,66 @@ def main():
                     y = model.forward_A2B(x)
                 else:
                     y = model.forward_B2A(x)
-                save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
+                save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
 
             elif args.model == "unit":
                 if args.direction == "A2B":
                     y, _ = model.forward_A2B(x)
                 else:
                     y, _ = model.forward_B2A(x)
-                save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
+                save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
 
             elif args.model == "munit":
                 if args.direction == "A2B":
                     c, _ = model.encode_A(x)
                     if args.style_image:
-                        from PIL import Image
                         ref = transform(Image.open(args.style_image).convert("RGB"))
                         ref = ref.unsqueeze(0).to(device)
                         _, s = model.encode_B(ref)
                         y = model.decode_B(c, s)
-                        save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
+                        save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
                     else:
                         for k in range(args.num_samples):
                             s = torch.randn(1, model.cfg.style_dim, device=device)
                             y = model.decode_B(c, s)
-                            save_image((y + 1) / 2, f"{args.outdir}/{stem}_{k}.tif")
+                            save_tile(y, f"{args.outdir}/{stem}_{k}.tif", color_ref_stats)
                 else:
                     c, _ = model.encode_B(x)
                     if args.style_image:
-                        from PIL import Image
                         ref = transform(Image.open(args.style_image).convert("RGB"))
                         ref = ref.unsqueeze(0).to(device)
                         _, s = model.encode_A(ref)
                         y = model.decode_A(c, s)
-                        save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
+                        save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
                     else:
                         for k in range(args.num_samples):
                             s = torch.randn(1, model.cfg.style_dim, device=device)
                             y = model.decode_A(c, s)
-                            save_image((y + 1) / 2, f"{args.outdir}/{stem}_{k}.tif")
+                            save_tile(y, f"{args.outdir}/{stem}_{k}.tif", color_ref_stats)
 
             elif args.model == "dclgan":
                 if args.direction == "A2B":
                     y = model.forward_A2B(x)
                 else:
                     y = model.forward_B2A(x)
-                save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
+                save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
 
             elif args.model == "miudiff":
                 if args.miu_stage == "pretrain":
                     if args.miu_guidance != 1.0:
                         print("[WARN] --miu_guidance is ignored for --miu_stage pretrain.")
                     y = model.sample_uncond(batch_size=1)
-                    save_image((y + 1) / 2, f"{args.outdir}/{stem}_uncond.tif")
+                    save_tile(y, f"{args.outdir}/{stem}_uncond.tif", color_ref_stats)
                 else:
                     y = model.sample_A2B(x, noise_level=args.miu_noise_level)
-                    save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
+                    save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
 
             elif args.model == "uvcgan":
                 if args.direction == "A2B":
                     y = model.forward_A2B(x)
                 else:
                     y = model.forward_B2A(x)
-                save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
+                save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
 
 
 
