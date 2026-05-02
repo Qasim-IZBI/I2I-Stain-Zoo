@@ -65,11 +65,62 @@ def _lab_to_rgb(lab):
     return rgb.clip(0, 1)
 
 
-def _load_color_ref_stats(path):
-    img = np.array(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
-    lab = _rgb_to_lab(img)
-    flat = lab.reshape(-1, 3)
-    return {"mean": flat.mean(axis=0), "std": flat.std(axis=0) + 1e-6}
+def _load_color_ref_stats(path, data_range=None):
+    """Compute Reinhard LAB stats from a single image file or a directory of tiles.
+
+    Directory mode: if data_range=(start, end) is given, loads from
+    {path}/{i:03d}/images/ for i in [start, end] (same convention as --data_range).
+    Without data_range, walks all images/ subdirectories (excludes masks/);
+    falls back to a flat directory scan if no images/ subdirs are found.
+    Stats are the macro-average of per-tile means and stds.
+    """
+    supported = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.webp'}
+
+    if os.path.isfile(path):
+        img = np.array(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
+        lab = _rgb_to_lab(img)
+        flat = lab.reshape(-1, 3)
+        return {"mean": flat.mean(axis=0), "std": flat.std(axis=0) + 1e-6}
+
+    # --- directory ---
+    image_files = []
+    if data_range is not None:
+        start, end = data_range
+        for i in range(start, end + 1):
+            folder = os.path.join(path, f"{i:03d}", "images")
+            if os.path.isdir(folder):
+                for f in sorted(os.listdir(folder)):
+                    if os.path.splitext(f)[1].lower() in supported:
+                        image_files.append(os.path.join(folder, f))
+    else:
+        # prefer images/ subdirs to exclude binary mask tiles
+        for root, _, files in os.walk(path):
+            if os.path.basename(root) == "images":
+                for f in sorted(files):
+                    if os.path.splitext(f)[1].lower() in supported:
+                        image_files.append(os.path.join(root, f))
+        # fallback: flat directory
+        if not image_files:
+            for f in sorted(os.listdir(path)):
+                fp = os.path.join(path, f)
+                if os.path.isfile(fp) and os.path.splitext(f)[1].lower() in supported:
+                    image_files.append(fp)
+
+    if not image_files:
+        raise ValueError(f"--color_ref {path!r}: no supported image files found.")
+
+    means, stds = [], []
+    for fp in image_files:
+        img = np.array(Image.open(fp).convert("RGB"), dtype=np.float32) / 255.0
+        lab = _rgb_to_lab(img)
+        flat = lab.reshape(-1, 3)
+        means.append(flat.mean(axis=0))
+        stds.append(flat.std(axis=0))
+
+    mean = np.stack(means).mean(axis=0)
+    std  = np.stack(stds).mean(axis=0) + 1e-6
+    print(f"[color_ref] Computed LAB stats from {len(image_files)} tiles.")
+    return {"mean": mean, "std": std}
 
 
 def save_tile(y, path, color_ref_stats=None):
@@ -173,9 +224,13 @@ def main():
 
     # Colour normalisation (all models)
     parser.add_argument("--color_ref", type=str, default=None,
-                        help="Path to a representative target-domain tile. When provided, "
-                             "Reinhard LAB colour transfer is applied to every output tile "
-                             "so its colour statistics match the reference.")
+                        help="Path to a representative target-domain tile OR a directory of "
+                             "tiles. Single file: stats from that tile. Directory: macro-average "
+                             "of per-tile LAB stats (use --color_ref_data_range to limit WSIs). "
+                             "Reinhard LAB transfer is applied to every output tile.")
+    parser.add_argument("--color_ref_data_range", type=str, default=None,
+                        help="When --color_ref is a directory, limit to numbered WSI folders "
+                             "e.g. '1,10' loads 001/images/ through 010/images/.")
 
     # MUNIT
     parser.add_argument("--style_dim", type=int, default=8)
@@ -215,7 +270,11 @@ def main():
         torch.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
 
-    color_ref_stats = _load_color_ref_stats(args.color_ref) if args.color_ref else None
+    color_ref_range = None
+    if args.color_ref_data_range:
+        parts = args.color_ref_data_range.split(",")
+        color_ref_range = (int(parts[0]), int(parts[1]))
+    color_ref_stats = _load_color_ref_stats(args.color_ref, color_ref_range) if args.color_ref else None
 
     transform = default_train_transform(image_size=256)
 
