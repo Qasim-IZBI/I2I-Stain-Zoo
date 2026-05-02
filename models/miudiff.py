@@ -756,7 +756,7 @@ class MIUDiff(nn.Module):
     # =========================
     # Sampling (A -> B) with optional PCL refinement
     # =========================
-    def sample_A2B(self, xA: torch.Tensor) -> torch.Tensor:
+    def sample_A2B(self, xA: torch.Tensor, noise_level: float = 1.0) -> torch.Tensor:
         """
         DDIM-style sampling over an arbitrary timestep schedule (works when sample_steps << T),
         with optional MI guidance and optional late-stage PCL refinement.
@@ -770,17 +770,27 @@ class MIUDiff(nn.Module):
         device = xA.device
 
         B, _, H, W = xA.shape
-        y = torch.randn(B, 3, H, W, device=device)
+
+        # SDEdit-style init: noise_level < 1.0 starts from a noised version of xA
+        # instead of pure noise, constraining the initial point to the source structure
+        # and reducing color-mode variance across runs.
+        t_start = max(int(noise_level * (self.cfg.T - 1)), 1)
+        if noise_level < 1.0:
+            a_bar = self._a_bar[t_start].view(1, 1, 1, 1)
+            y = a_bar.sqrt() * xA + (1.0 - a_bar).sqrt() * torch.randn_like(xA)
+        else:
+            y = torch.randn(B, 3, H, W, device=device)
+
         x_struct = self._extract_struct(xA)  # [B, cond_channels, H, W]
 
         steps = int(self.cfg.sample_steps)
 
-        # Build a strictly descending, unique timestep list
-        t_list = torch.linspace(self.cfg.T - 1, 0, steps, device=device).long()
+        # Build a strictly descending, unique timestep list from t_start → 0
+        t_list = torch.linspace(t_start, 0, steps, device=device).long()
         t_list = torch.unique_consecutive(t_list)  # removes duplicates from rounding
         if t_list.numel() < 2:
             # fallback to full schedule if steps too small
-            t_list = torch.arange(self.cfg.T - 1, -1, -1, device=device)
+            t_list = torch.arange(t_start, -1, -1, device=device)
 
         # DDIM sampling (eta=0 deterministic)
         for i in range(t_list.numel() - 1):

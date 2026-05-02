@@ -121,11 +121,21 @@ def main():
     parser.add_argument("--num_uncond_samples", type=int, default=None,
                         help="MIUDiff pretrain only: generate this many unconditional samples "
                              "from pure noise instead of reading from --data")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Fix the global RNG seed for deterministic MIUDiff sampling.")
+    parser.add_argument("--miu_noise_level", type=float, default=1.0,
+                        help="SDEdit-style init for MIUDiff finetune (0–1). "
+                             "1.0 = pure noise (default); 0.7–0.85 = start from noised xA "
+                             "for more consistent color/structure.")
 
     args = parser.parse_args()
 
     device = get_device()
     model = load_model(args, device)
+
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
 
     transform = default_train_transform(image_size=256)
 
@@ -235,7 +245,7 @@ def main():
                     y = model.sample_uncond(batch_size=1)
                     save_image((y + 1) / 2, f"{args.outdir}/{stem}_uncond.tif")
                 else:
-                    y = model.sample_A2B(x)
+                    y = model.sample_A2B(x, noise_level=args.miu_noise_level)
                     save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "uvcgan":
