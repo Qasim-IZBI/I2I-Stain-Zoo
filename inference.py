@@ -54,6 +54,8 @@ def load_model(args, device):
             saved_cfg["miu_pcl"] = args.miu_pcl
             saved_cfg["pcl_refine_steps"] = args.pcl_refine_steps
             saved_cfg["pcl_refine_lr"] = args.pcl_refine_lr
+            if args.miu_cond_type is not None:
+                saved_cfg["cond_type"] = args.miu_cond_type
             cfg = MIUDiffConfig(**saved_cfg)
         else:
             cfg = MIUDiffConfig(
@@ -105,6 +107,9 @@ def main():
                         help="Reference image to extract style from (MUNIT only)")
 
     # MIU-Diff
+    parser.add_argument("--miu_cond_type", type=str, default=None,
+                        help="Override cond_type from checkpoint (gray|sobel). "
+                             "Usually not needed — restored automatically from the checkpoint.")
     parser.add_argument("--miu_stage", choices=["pretrain", "finetune"], default="finetune",
                         help="pretrain: unconditional sampling with eps_uncond only; "
                              "finetune: conditional A→B with MI guidance (default)")
