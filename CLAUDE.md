@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-I2I-Stain-Zoo is an image-to-image translation research codebase for virtual staining of histopathology images (H&E ↔ IHC). It implements 6 models with a unified training/inference interface: CycleGAN, UNIT, MUNIT, DCLGAN, UVCGAN, and MIUDiff (diffusion-based).
+I2I-Stain-Zoo is an image-to-image translation research codebase for virtual staining of histopathology images (H&E ↔ IHC). It implements 9 models with a unified training/inference interface: CycleGAN, UNIT, MUNIT, DCLGAN, UVCGAN, MIUDiff, UNIT-DDPM, CycleDiffusion, and UNSB (last three are diffusion-based).
 
 ## Commands
 
@@ -185,6 +185,148 @@ python inference.py --model miudiff --miu_stage finetune --direction A2B \
 - Pretrain checkpoints contain random-weight `eps_cond` parameters. Passing `--miu_stage finetune` to a pretrain checkpoint will produce garbage — a warning is printed if this is detected.
 - Finetune checkpoints have a fully-trained `eps_uncond` (updated alongside `eps_cond`). Running `--miu_stage pretrain` on a finetune checkpoint is valid and samples from the updated unconditional model.
 
+### UNIT-DDPM Training and Inference
+
+Two-stage conditional diffusion (unconditional prior + conditional translation).
+Architecture is identical to MIUDiff but without MI guidance, without PCL, and with
+optional full RGB source conditioning (vs. grayscale-only in MIUDiff).
+
+```bash
+# Stage 1 — unconditional DDPM on domain B (builds target domain prior)
+python train.py --model unitddpm --unitddpm_stage pretrain \
+    --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
+    --steps 500000 --output ./unitddpm_stage1/
+
+# Stage 2 — conditional A→B translation (RGB source conditioning, default)
+python train.py --model unitddpm --unitddpm_stage finetune \
+    --unitddpm_init_ckpt ./unitddpm_stage1/checkpoints/step_500000.pt \
+    --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
+    --steps 500000 --output ./unitddpm_stage2/
+
+# Stage 2 with structural regularisation (recommended: 0.5–1.0)
+python train.py --model unitddpm --unitddpm_stage finetune \
+    --unitddpm_init_ckpt ./unitddpm_stage1/checkpoints/step_500000.pt \
+    --unitddpm_lambda_struct 1.0 \
+    --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
+    --steps 500000 --output ./unitddpm_stage2/
+
+# Stage 2 with grayscale conditioning (lower capacity; faster)
+python train.py --model unitddpm --unitddpm_stage finetune --unitddpm_cond_type gray \
+    --unitddpm_init_ckpt ./unitddpm_stage1/checkpoints/step_500000.pt \
+    --dataA ... --dataB ... --steps 500000 --output ./unitddpm_stage2/
+
+# Inference — conditional A→B
+python inference.py --model unitddpm --unitddpm_stage finetune --direction A2B \
+    --data path/to/tiles/testA --ckpt unitddpm_stage2.pt \
+    --unitddpm_steps 200 --outdir ./unitddpm_out/
+```
+
+**UNIT-DDPM architecture sizing** (A→B params = eps_cond only; eps_uncond adds the same again to the total):
+```bash
+# Small  (~9.5M A→B)  — base=64,  4 levels, 1 ResBlock
+python train.py --model unitddpm --unitddpm_base_channels 64 --unitddpm_channel_mult 1,2,2,4 --unitddpm_num_res_blocks 1 ...
+
+# Medium (~50M A→B)   — base=128, 3 levels, 2 ResBlocks
+python train.py --model unitddpm --unitddpm_base_channels 128 --unitddpm_channel_mult 1,2,4 --unitddpm_num_res_blocks 2 ...
+
+# Large  (~100M A→B)  — base=168, 4 levels, 2 ResBlocks
+python train.py --model unitddpm --unitddpm_base_channels 168 --unitddpm_channel_mult 1,2,2,4 --unitddpm_num_res_blocks 2 ...
+```
+
+**UNIT-DDPM notes:**
+- `--unitddpm_stage` controls which UNet is used: `pretrain` = eps_uncond (unconditional), `finetune` = eps_cond (conditioned on source).
+- `--unitddpm_cond_type rgb` (default) concatenates the full 3-ch source image to the noisy target (6-ch input). Use `gray` or `sobel` for lighter 4-ch conditioning.
+- `--unitddpm_lambda_struct` applies L1 loss between grayscale of x0_pred and grayscale of xA at every timestep — provides direct structural guidance. Recommended when training without MI guidance.
+- Finetune warm-start: `--unitddpm_init_ckpt` loads a pretrain checkpoint and initialises eps_cond RGB channels from eps_uncond weights (extra cond channel initialised from mean).
+
+### CycleDiffusion Training and Inference
+
+Two unconditional DDPMs (one per domain) trained jointly. Translation is done via
+DDIM inversion: xA is encoded to a noise code with eps_A, then decoded with eps_B.
+No discriminator, no stages — train both simultaneously.
+
+```bash
+# Joint training (single run, no stages)
+python train.py --model cyclediffusion \
+    --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
+    --steps 1000000 --output ./cyclediffusion/
+
+# Smaller / faster variant (3 levels, 1 ResBlock)
+python train.py --model cyclediffusion \
+    --cd_base_channels 112 --cd_channel_mult 1,2,4 --cd_num_res_blocks 1 \
+    --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
+    --steps 1000000 --output ./cyclediffusion/
+
+# Inference A→B (DDIM-invert with eps_A, decode with eps_B)
+python inference.py --model cyclediffusion --direction A2B \
+    --data path/to/tiles/testA --ckpt cyclediffusion.pt \
+    --cd_steps 200 --outdir ./cyclediffusion_out/
+
+# Inference B→A (symmetric; DDIM-invert with eps_B, decode with eps_A)
+python inference.py --model cyclediffusion --direction B2A \
+    --data path/to/tiles/testB --ckpt cyclediffusion.pt \
+    --cd_steps 200 --outdir ./cyclediffusion_B2A_out/
+```
+
+**CycleDiffusion architecture sizing** (A→B params = eps_A + eps_B = full model; both UNets needed at inference):
+```bash
+# Small  (~10.7M A→B) — base=48, 4 levels, 1 ResBlock
+python train.py --model cyclediffusion --cd_base_channels 48 --cd_channel_mult 1,2,2,4 --cd_num_res_blocks 1 ...
+
+# Medium (~50.3M A→B) — base=84, 4 levels, 2 ResBlocks
+python train.py --model cyclediffusion --cd_base_channels 84 --cd_channel_mult 1,2,2,4 --cd_num_res_blocks 2 ...
+
+# Large  (~100M A→B)  — base=128, 3 levels, 2 ResBlocks
+python train.py --model cyclediffusion --cd_base_channels 128 --cd_channel_mult 1,2,4 --cd_num_res_blocks 2 ...
+```
+
+**CycleDiffusion notes:**
+- Both domains are trained jointly in a single run; no `--init_ckpt` warm-start is required.
+- Translation quality depends on how well eps_A inverts a test image into the shared noise space. More DDIM steps (`--cd_steps`) improves inversion fidelity at the cost of speed.
+- Because both directions are symmetric and there is no domain-specific conditioning, colour/style transfer is implicit through the shared noise latent. Use `--color_ref` for explicit colour alignment.
+
+### UNSB Training and Inference
+
+Schrödinger Bridge-inspired adversarial diffusion. The forward process starts
+from xA (not Gaussian noise): x_t = sqrt(ᾱ_t)·xA + sqrt(1−ᾱ_t)·ε.
+A score network predicts ε conditioned on xA; an adversarial discriminator pushes
+the predicted x0 toward domain B.
+
+```bash
+# Single-stage training (no pretrain needed)
+python train.py --model unsb \
+    --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
+    --steps 1000000 --output ./unsb/
+
+# Tune adversarial vs. score weighting
+python train.py --model unsb --unsb_lambda_adv 0.2 --unsb_lambda_score 1.0 \
+    --dataA ... --dataB ... --steps 1000000 --output ./unsb/
+
+# Inference A→B
+python inference.py --model unsb --direction A2B \
+    --data path/to/tiles/testA --ckpt unsb.pt \
+    --unsb_steps 200 --outdir ./unsb_out/
+```
+
+**UNSB architecture sizing** (A→B params = z_theta only; discriminator adds ~3M to total but is training-only):
+```bash
+# Small  (~9.5M A→B)  — base=64,  4 levels, 1 ResBlock
+python train.py --model unsb --unsb_base_channels 64 --unsb_channel_mult 1,2,2,4 --unsb_num_res_blocks 1 ...
+
+# Medium (~50M A→B)   — base=128, 3 levels, 2 ResBlocks
+python train.py --model unsb --unsb_base_channels 128 --unsb_channel_mult 1,2,4 --unsb_num_res_blocks 2 ...
+
+# Large  (~100M A→B)  — base=168, 4 levels, 2 ResBlocks
+python train.py --model unsb --unsb_base_channels 168 --unsb_channel_mult 1,2,2,4 --unsb_num_res_blocks 2 ...
+```
+
+**UNSB notes:**
+- Single training stage — no pretrain/finetune split.
+- UNSB is directional: the score network is trained A→B only. For B→A, train a separate model with `--dataA` and `--dataB` swapped.
+- `--unsb_lambda_adv` controls the adversarial push toward domain B. Too high → training instability (GANs); too low → poor domain transfer. Start at 0.1 and adjust.
+- `--unsb_lambda_score` controls the diffusion regularisation. Setting this to 0 degrades to a pure GAN; recommended ≥ 0.5.
+- At inference, sampling starts from a heavily-noised version of xA (SB initial distribution) and denoises conditioned on xA. Fewer `--unsb_steps` is faster but may lose fine detail.
+
 **Colour normalisation (all models)**
 
 Applies Reinhard LAB colour transfer to every output tile so its colour statistics
@@ -205,7 +347,7 @@ python inference.py --model miudiff ... \
     --color_ref path/to/trainB/ --color_ref_data_range 1,10 --outdir ./out/
 ```
 
-- Works with all 6 models; combine freely with `--seed` and other flags.
+- Works with all 9 models; combine freely with `--seed` and other flags.
 - Directory mode: walks `images/` subdirectories (excludes binary `masks/` tiles); falls back to a flat directory scan if no `images/` subdirs are found.
 - `--color_ref_data_range` uses the same `start,end` format as `--data_range` and is only relevant when `--color_ref` is a directory.
 
@@ -602,7 +744,7 @@ Reusable building blocks across all GAN models:
 - `Encoder` → `ResnetBottleneck` → `Decoder` pipeline (with `ResnetBlock` internals)
 - `NLayerDiscriminator` — PatchGAN (70×70 receptive field)
 - `ImagePool` — replay buffer for discriminator stability
-- Diffusion components: `DiffusionSchedule`, `DDPMUNet`, `AttentionBlock`, `ResBlock`
+- Diffusion components: `DiffusionSchedule`, `DDPMUNet`, `AttentionBlock`, `ResBlock` — defined in `models/miudiff.py` (not `base_models.py`); imported by UNIT-DDPM, CycleDiffusion, and UNSB as `from models.miudiff import DDPMUNet, UNetConfig, DiffusionSchedule`.
 
 ### Model-Specific Notes
 
@@ -614,6 +756,9 @@ Reusable building blocks across all GAN models:
 | DCLGAN | Patch-level contrastive feature matching |
 | UVCGAN | UNet-ViT hybrid with cycle-consistency; optional masked image pretrain |
 | MIUDiff | Conditional DDPM with MI guidance, 3-stage training, optional PCL refinement |
+| UNIT-DDPM | 2-stage conditional DDPM; full RGB or grayscale source conditioning; DDIM decode |
+| CycleDiffusion | Two unconditional DDPMs; DDIM inversion of source → shared noise code → decode |
+| UNSB | Schrödinger Bridge: SB forward from xA; adversarial + score-matching generator loss |
 
 ### Data Pipeline
 

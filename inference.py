@@ -19,6 +19,9 @@ from models.munit import MUNIT, MUNITConfig
 from models.dclgan import DCLGAN, DCLGANConfig
 from models.miudiff import MIUDiff, MIUDiffConfig
 from models.uvcgan import UVCGAN, UVCGANConfig
+from models.unitddpm import UNITDDPM, UNITDDPMConfig
+from models.cyclediffusion import CycleDiffusion, CycleDiffusionConfig
+from models.unsb import UNSB, UNSBConfig
 
 
 # =============================================================================
@@ -194,6 +197,31 @@ def load_model(args, device):
         cfg = UVCGANConfig(**saved_cfg) if saved_cfg else UVCGANConfig()
         model = UVCGAN(cfg)
 
+    elif args.model == "unitddpm":
+        if saved_cfg:
+            saved_cfg["stage"] = args.unitddpm_stage
+            saved_cfg["sample_steps"] = args.unitddpm_steps
+            cfg = UNITDDPMConfig(**saved_cfg)
+        else:
+            cfg = UNITDDPMConfig(stage=args.unitddpm_stage, sample_steps=args.unitddpm_steps)
+        model = UNITDDPM(cfg)
+
+    elif args.model == "cyclediffusion":
+        if saved_cfg:
+            saved_cfg["sample_steps"] = args.cd_steps
+            cfg = CycleDiffusionConfig(**saved_cfg)
+        else:
+            cfg = CycleDiffusionConfig(sample_steps=args.cd_steps)
+        model = CycleDiffusion(cfg)
+
+    elif args.model == "unsb":
+        if saved_cfg:
+            saved_cfg["sample_steps"] = args.unsb_steps
+            cfg = UNSBConfig(**saved_cfg)
+        else:
+            cfg = UNSBConfig(sample_steps=args.unsb_steps)
+        model = UNSB(cfg)
+
     else:
         raise ValueError(args.model)
 
@@ -201,10 +229,11 @@ def load_model(args, device):
         print(f"Restored {args.model} config from checkpoint")
 
     sd = ckpt["model"] if "model" in ckpt else ckpt
-    # MIUDiff: strict=False for both stages —
-    #   pretrain ckpt may lack eps_cond keys;
-    #   stage-3 ckpt carries PCL-only networks (feat_x, feat_y, proj) not used at inference.
-    strict = args.model != "miudiff"
+    # strict=False for diffusion models:
+    #   miudiff: pretrain ckpt lacks eps_cond keys; stage-3 ckpt has PCL nets not used at inference.
+    #   unitddpm: pretrain ckpt lacks eps_cond keys.
+    _non_strict = {"miudiff", "unitddpm"}
+    strict = args.model not in _non_strict
     model.load_state_dict(sd, strict=strict)
     model.to(device).eval()
     return model
@@ -213,7 +242,8 @@ def load_model(args, device):
 def main():
     parser = argparse.ArgumentParser("Unified I2I Inference")
 
-    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff", "uvcgan"], required=True)
+    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff", "uvcgan",
+                                            "unitddpm", "cyclediffusion", "unsb"], required=True)
     parser.add_argument("--direction", choices=["A2B", "B2A"], required=True)
     parser.add_argument("--data", type=str, required=True)
     parser.add_argument("--data_range", type=str, default=None,
@@ -260,6 +290,21 @@ def main():
                              "1.0 = pure noise (default). Note: values < 1.0 cause HE colour "
                              "bleed for cross-domain (H&E→SR) translation; use --color_ref "
                              "instead for colour consistency.")
+
+    # ---- UNIT-DDPM inference ----
+    parser.add_argument("--unitddpm_stage", choices=["pretrain", "finetune"], default="finetune",
+                        help="pretrain: unconditional sampling (eps_uncond); "
+                             "finetune: conditional A→B (eps_cond) [default]")
+    parser.add_argument("--unitddpm_steps", type=int, default=200,
+                        help="DDIM sampling steps for UNIT-DDPM")
+
+    # ---- CycleDiffusion inference ----
+    parser.add_argument("--cd_steps", type=int, default=200,
+                        help="DDIM inversion+decode steps for CycleDiffusion")
+
+    # ---- UNSB inference ----
+    parser.add_argument("--unsb_steps", type=int, default=200,
+                        help="DDIM sampling steps for UNSB")
 
     args = parser.parse_args()
 
@@ -390,6 +435,34 @@ def main():
                     y = model.forward_A2B(x)
                 else:
                     y = model.forward_B2A(x)
+                save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
+
+            elif args.model == "unitddpm":
+                if args.unitddpm_stage == "pretrain":
+                    y = model.forward_B2A(x)  # unconditional sample (ignores x content)
+                    save_tile(y, f"{args.outdir}/{stem}_uncond.tif", color_ref_stats)
+                else:
+                    if args.direction == "A2B":
+                        y = model.forward_A2B(x)
+                    else:
+                        y = model.forward_B2A(x)
+                    save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
+
+            elif args.model == "cyclediffusion":
+                if args.direction == "A2B":
+                    y = model.forward_A2B(x)
+                else:
+                    y = model.forward_B2A(x)
+                save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
+
+            elif args.model == "unsb":
+                if args.direction == "A2B":
+                    y = model.forward_A2B(x)
+                else:
+                    # B2A not supported (score net is directional); emit a warning
+                    print(f"[WARN] UNSB was trained A→B; B2A inference will produce domain-B outputs. "
+                          f"Train a separate B2A model for the reverse direction.")
+                    y = model.forward_A2B(x)
                 save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
 
 

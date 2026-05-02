@@ -14,6 +14,8 @@ models/
 
 train.py                  ← register Config, Model, CLI args, param counter
 inference.py              ← register model loading + inference forward pass
+model_sizes.md            ← add small/medium/large A→B param counts
+CLAUDE.md                 ← add training and inference command examples
 ```
 
 Everything else — `trainer/base_trainer.py`, `datasets/`, `evaluation.py`,
@@ -201,7 +203,9 @@ are cosmetic (only used for sample grid filenames) but keep them consistent acro
 
 ---
 
-## 4. Available Building Blocks (`base_models.py`)
+## 4. Available Building Blocks
+
+### 4.1 `base_models.py` — GAN primitives
 
 Import from `base_models` — do not reimplement these.
 
@@ -230,6 +234,36 @@ dec = Decoder(enc.out_channels, output_nc=3, ngf=64, n_up=2)
 ```
 `n_down` and `n_up` must match, and `ngf` must match between `Encoder` and `Decoder`.
 
+### 4.2 `models/miudiff.py` — Diffusion primitives
+
+These are **not** in `base_models.py`. Import explicitly:
+
+```python
+from models.miudiff import DDPMUNet, UNetConfig, DiffusionSchedule, to_gray, sobel_grad
+```
+
+| Symbol | Description |
+|--------|-------------|
+| `UNetConfig` | Dataclass controlling DDPMUNet architecture: `in_channels`, `base_channels`, `channel_mult`, `num_res_blocks`, etc. |
+| `DDPMUNet(cfg: UNetConfig)` | DDPM-style UNet. Forward: `(x: [B,C,H,W], t_frac: [B]) → [B,out_ch,H,W]`. Runs entirely in fp32 internally via `autocast(enabled=False)`. |
+| `DiffusionSchedule(T, beta_start, beta_end)` | Linear β schedule. Call `.make(device)` → `(betas, alphas, alpha_bars, alpha_bars_prev)`. Register the tensors as buffers in your model. |
+| `to_gray(x)` | `[B,3,H,W] → [B,1,H,W]` weighted grayscale. |
+| `sobel_grad(x)` | `[B,1,H,W] → [B,1,H,W]` Sobel gradient magnitude. |
+
+**DDPMUNet and AMP:** `DDPMUNet` wraps every forward in `autocast(enabled=False)` so it always runs fp32. Enabling PyTorch's `GradScaler` on top of this causes the loss scale to keep doubling until it overflows (~56k steps). For any model that uses `DDPMUNet`, you **must** add the model name to the `_ddpm_models` set in `train.py` to suppress AMP:
+
+```python
+# train.py — main()
+_ddpm_models = {"miudiff", "unitddpm", "cyclediffusion", "unsb", "yourmodel"}
+use_amp = args.amp and args.model not in _ddpm_models
+```
+
+**`channel_mult` CLI → config conversion:** Architecture CLI args for diffusion models store `channel_mult` as a comma-separated string (e.g. `"1,2,2,4"`). Convert in `build_model()`:
+
+```python
+channel_mult=tuple(int(x) for x in args.yourmodel_channel_mult.split(","))
+```
+
 ---
 
 ## 5. Registering in `train.py`
@@ -254,6 +288,11 @@ _MODEL_CLS = {
 ```
 Adding to these two dicts is sufficient for `--init_ckpt` checkpoint loading to work
 automatically for standard single-stage models.
+
+> **Multi-stage / complex models** (anything with staged training, custom weight transfer, or
+> diffusion components) should **not** be added to `_CONFIG_CLS`/`_MODEL_CLS`. Handle them
+> directly in `build_model()` with an `if args.model == "mymodel":` block instead — see
+> Section 7.
 
 ### 5.3 Add to `_build_default_gan_config()`
 ```python
@@ -311,8 +350,13 @@ elif args.model == "mymodel":
         y = model.forward_A2B(x)
     else:
         y = model.forward_B2A(x)
-    save_image((y + 1) / 2, f"{args.outdir}/{stem}.tif")
+    save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
 ```
+
+> **Use `save_tile`, not `save_image` directly.** `save_tile` handles denormalisation
+> (`[-1,1] → [0,1]`) and applies Reinhard LAB colour normalisation when `--color_ref` is given.
+> It is defined at the top of `inference.py` — do not call `save_image` directly from the
+> inference loop.
 
 ### 6.4 Register the CLI `--model` choice
 ```python
@@ -324,6 +368,20 @@ parser.add_argument("--model",
 If your model has **inference-time hyperparameters** (e.g. number of diffusion steps, style
 sampling), add model-specific CLI args to the `inference.py` parser the same way MIUDiff does,
 and override the relevant config fields after loading `saved_cfg`.
+
+### 6.5 `strict` flag in `load_model()`
+
+By default `load_model()` uses `strict=True`. Use `strict=False` when:
+- Your model has optional submodules that may not exist in some checkpoints (e.g. a pretrain
+  checkpoint lacks the finetune-only `eps_cond` keys).
+- Your model carries training-only modules (e.g. PCL feature nets) not needed at inference,
+  which would otherwise cause "unexpected key" errors.
+
+Add the model name to the `_non_strict` set:
+```python
+_non_strict = {"miudiff", "unitddpm", "yourmodel"}
+strict = args.model not in _non_strict
+```
 
 ---
 
@@ -350,11 +408,11 @@ and UVCGAN:
 | Convention | Detail |
 |------------|--------|
 | Pixel range during training | `[-1, 1]` (normalized by `datasets/transforms.py`) |
-| Pixel range when saving | `[0, 1]` — always do `(y + 1) / 2` before `save_image` |
+| Pixel range when saving | `[0, 1]` — use `save_tile(y, path, color_ref_stats)` in `inference.py`; never call `save_image` directly from the loop |
 | Spatial resolution | Always 256×256 after `default_train_transform` |
 | Channels | 3-channel RGB throughout |
 | Batch dict keys | `"A"` and `"B"` (unpaired dataset); `"B"` only (target-only dataset) |
-| AMP | All forward passes inside `BaseTrainer` are wrapped in `autocast`. Do not manually cast inside the model. |
+| AMP | `BaseTrainer` wraps forward passes in `autocast`. Standard GAN models benefit from this. **DDPMUNet-based models must disable AMP** — add to `_ddpm_models` in `train.py` (see Section 4.2). |
 
 ---
 
@@ -410,17 +468,27 @@ dataset files — import from there instead.
 
 [ ] train.py
       [ ] Import MyModel, MyModelConfig
-      [ ] Added to _CONFIG_CLS and _MODEL_CLS
-      [ ] Branch in _build_default_gan_config()
-      [ ] Branch in _count_a2b_params()
+      [ ] Standard single-stage model: added to _CONFIG_CLS and _MODEL_CLS
+            + Branch in _build_default_gan_config()
+          Multi-stage / diffusion model: direct if-block in build_model() instead (Section 7)
+      [ ] Branch in _count_a2b_params() — count ONLY inference-path params for A→B
       [ ] "mymodel" added to --model choices
       [ ] Model-specific CLI args added (prefixed --mymodel_*)
+      [ ] Diffusion model: added to _ddpm_models set to disable AMP/GradScaler (Section 4.2)
+      [ ] Multi-stage model: stage-1 pretrain routed to TargetOnlyDataset in main()
 
 [ ] inference.py
       [ ] Import MyModel, MyModelConfig
-      [ ] Branch in load_model()
-      [ ] Branch in inference loop with forward_A2B / forward_B2A
+      [ ] Branch in load_model() — override runtime-only fields (steps, stage) from CLI args
+      [ ] Model with optional submodules: added to _non_strict set (Section 6.5)
+      [ ] Branch in inference loop using save_tile (not save_image) (Section 6.3)
       [ ] "mymodel" added to --model choices
+
+[ ] model_sizes.md
+      [ ] Small / medium / large A→B param configs added
+      [ ] Note explaining which submodules count toward A→B (if not the full model)
+      [ ] Entry in CLI args reference table
+      [ ] Full example command(s) in the examples section
 
 [ ] Smoke test — training
       python train.py --model mymodel --count_params
@@ -441,11 +509,14 @@ dataset files — import from there instead.
 
 ## 12. Reference: Existing Model Summary
 
-| Model | Config class | Generator structure | Discriminator | Special |
-|-------|-------------|---------------------|---------------|---------|
-| CycleGAN | `CycleGANConfig` | `Enc_A→Bn_A→Dec_B`, `Enc_B→Bn_B→Dec_A` | `D_A`, `D_B` | Identity loss, ImagePool |
-| UNIT | `UNITConfig` | Shared `bn_shared` bottleneck, KL on latent | `D_A`, `D_B` | VAE reparameterization |
-| MUNIT | `MUNITConfig` | Content enc + style enc + AdaIN decoder | `D_A`, `D_B` | Style sampling at inference |
-| DCLGAN | `DCLGANConfig` | `Enc_A→Bn_A→Dec_B` + contrastive heads | `D_A`, `D_B` | Dual patch contrastive loss; `G_A2B`/`G_B2A` return `(image, feats)` tuples — use `forward_A2B`/`forward_B2A` for plain tensor access |
-| UVCGAN | `UVCGANConfig` | UNet-ViT hybrid `G_A2B`, `G_B2A` | `D_A`, `D_B` | 2-stage: masked pretrain → cycle finetune |
-| MIUDiff | `MIUDiffConfig` | `eps_uncond` + `eps_cond` (DDPM UNets) | None | 3-stage, diffusion sampling, PCL |
+| Model | Config class | Generator structure | Discriminator | A→B inference params | Special |
+|-------|-------------|---------------------|---------------|----------------------|---------|
+| CycleGAN | `CycleGANConfig` | `Enc_A→Bn_A→Dec_B`, `Enc_B→Bn_B→Dec_A` | `D_A`, `D_B` | `Enc_A + Bn_A + Dec_B` | Identity loss, ImagePool |
+| UNIT | `UNITConfig` | Shared `bn_shared` bottleneck, KL on latent | `D_A`, `D_B` | A-side enc + shared + B-side dec | VAE reparameterization |
+| MUNIT | `MUNITConfig` | Content enc + style enc + AdaIN decoder | `D_A`, `D_B` | `Ec_A + Bn_A + AdaIN_B + Dec_B` | Style sampling at inference |
+| DCLGAN | `DCLGANConfig` | `Enc_A→Bn_A→Dec_B` + contrastive heads | `D_A`, `D_B` | `Enc_A + Bn_A + Dec_B` | Dual patch contrastive loss; `G_A2B`/`G_B2A` return `(image, feats)` tuples — use `forward_A2B`/`forward_B2A` for plain tensor access |
+| UVCGAN | `UVCGANConfig` | UNet-ViT hybrid `G_A2B`, `G_B2A` | `D_A`, `D_B` | `G_A2B` | 2-stage: masked pretrain → cycle finetune |
+| MIUDiff | `MIUDiffConfig` | `eps_uncond` + `eps_cond` (DDPM UNets) | None | `eps_uncond + eps_cond` (both; classifier-free guidance) | 3-stage, diffusion sampling, PCL; AMP disabled |
+| UNIT-DDPM | `UNITDDPMConfig` | `eps_uncond` + `eps_cond` (DDPM UNets) | None | `eps_cond` only (no CFG at inference) | 2-stage; full RGB or gray source conditioning; AMP disabled |
+| CycleDiffusion | `CycleDiffusionConfig` | `eps_A` + `eps_B` (DDPM UNets) | None | `eps_A + eps_B` (both; DDIM invert + decode) | Single training stage; symmetric A↔B; AMP disabled |
+| UNSB | `UNSBConfig` | `z_theta` (6-ch DDPM UNet) | `D_adv` | `z_theta` only (disc is training-only) | SB forward from xA; adversarial + score-matching; AMP disabled |

@@ -18,6 +18,9 @@ from models.munit import MUNIT, MUNITConfig
 from models.dclgan import DCLGAN, DCLGANConfig
 from models.miudiff import MIUDiff, MIUDiffConfig, init_miudiff_from_stage1
 from models.uvcgan import UVCGAN, UVCGANConfig
+from models.unitddpm import UNITDDPM, UNITDDPMConfig
+from models.cyclediffusion import CycleDiffusion, CycleDiffusionConfig
+from models.unsb import UNSB, UNSBConfig
 
 
 _CONFIG_CLS = {
@@ -112,6 +115,60 @@ def build_model(args):
             print(f"Loaded UVCGAN pretrain checkpoint from {uvcgan_ckpt}")
         return model
 
+    # --- UNIT-DDPM ---
+    if args.model == "unitddpm":
+        cfg = UNITDDPMConfig(
+            stage=args.unitddpm_stage,
+            base_channels=args.unitddpm_base_channels,
+            channel_mult=tuple(int(x) for x in args.unitddpm_channel_mult.split(",")),
+            num_res_blocks=args.unitddpm_num_res_blocks,
+            cond_type=args.unitddpm_cond_type,
+            lambda_struct=args.unitddpm_lambda_struct,
+            sample_steps=args.unitddpm_steps,
+        )
+        model = UNITDDPM(cfg)
+        init_ckpt = args.unitddpm_init_ckpt or args.init_ckpt
+        if args.unitddpm_stage == "finetune" and init_ckpt:
+            ckpt = torch.load(init_ckpt, map_location=device)
+            sd = ckpt["model"] if "model" in ckpt else ckpt
+            missing, unexpected = model.load_state_dict(sd, strict=False)
+            print(f"Loaded UNIT-DDPM pretrain checkpoint: {len(missing)} missing, {len(unexpected)} unexpected keys")
+        return model
+
+    # --- CycleDiffusion ---
+    if args.model == "cyclediffusion":
+        cfg = CycleDiffusionConfig(
+            base_channels=args.cd_base_channels,
+            channel_mult=tuple(int(x) for x in args.cd_channel_mult.split(",")),
+            num_res_blocks=args.cd_num_res_blocks,
+            sample_steps=args.cd_steps,
+        )
+        model = CycleDiffusion(cfg)
+        if args.init_ckpt:
+            ckpt = torch.load(args.init_ckpt, map_location=device)
+            sd = ckpt["model"] if "model" in ckpt else ckpt
+            missing, unexpected = model.load_state_dict(sd, strict=False)
+            print(f"Loaded CycleDiffusion checkpoint: {len(missing)} missing, {len(unexpected)} unexpected keys")
+        return model
+
+    # --- UNSB ---
+    if args.model == "unsb":
+        cfg = UNSBConfig(
+            base_channels=args.unsb_base_channels,
+            channel_mult=tuple(int(x) for x in args.unsb_channel_mult.split(",")),
+            num_res_blocks=args.unsb_num_res_blocks,
+            lambda_adv=args.unsb_lambda_adv,
+            lambda_score=args.unsb_lambda_score,
+            sample_steps=args.unsb_steps,
+        )
+        model = UNSB(cfg)
+        if args.init_ckpt:
+            ckpt = torch.load(args.init_ckpt, map_location=device)
+            sd = ckpt["model"] if "model" in ckpt else ckpt
+            missing, unexpected = model.load_state_dict(sd, strict=False)
+            print(f"Loaded UNSB checkpoint: {len(missing)} missing, {len(unexpected)} unexpected keys")
+        return model
+
     raise ValueError(f"Unknown model: {args.model}")
 
 
@@ -184,6 +241,20 @@ def _count_a2b_params(model, model_name, miu_stage="finetune"):
         else:
             # Both UNets active at inference (classifier-free guidance)
             a2b = n(model.eps_uncond) + n(model.eps_cond)
+    elif model_name == "unitddpm":
+        # Finetune: eps_cond only (no classifier-free guidance; eps_uncond not used at inference)
+        # Pretrain: eps_uncond only
+        stage = getattr(model.cfg, "stage", "finetune")
+        if stage == "pretrain":
+            a2b = n(model.eps_uncond)
+        else:
+            a2b = n(model.eps_cond)
+    elif model_name == "cyclediffusion":
+        # A→B needs both eps_A (DDIM inversion) and eps_B (DDIM decode)
+        a2b = n(model.eps_A) + n(model.eps_B)
+    elif model_name == "unsb":
+        # Discriminator is training-only; only z_theta is used at inference
+        a2b = n(model.z_theta)
     else:
         a2b = total
 
@@ -206,7 +277,8 @@ def main():
     parser = argparse.ArgumentParser("Unified I2I Training")
 
     # ---- model ----
-    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff", "uvcgan"], required=True)
+    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff", "uvcgan",
+                                            "unitddpm", "cyclediffusion", "unsb"], required=True)
     parser.add_argument("--count_params", action="store_true",
                         help="Print A→B generator parameter count and exit (no training)")
 
@@ -310,6 +382,41 @@ def main():
     parser.add_argument("--uvcgan_vit_features", type=int, default=192,
                     help="ViT hidden dimension for UVCGAN bottleneck")
 
+    # ---- UNIT-DDPM specific ----
+    parser.add_argument("--unitddpm_stage", choices=["pretrain", "finetune"], default="pretrain",
+                        help="pretrain: unconditional DDPM on domain B; "
+                             "finetune: conditional A→B translation")
+    parser.add_argument("--unitddpm_init_ckpt", type=str, default=None,
+                        help="Stage-1 checkpoint for UNIT-DDPM finetune warm-start")
+    parser.add_argument("--unitddpm_base_channels", type=int, default=64)
+    parser.add_argument("--unitddpm_channel_mult", type=str, default="1,2,2,4")
+    parser.add_argument("--unitddpm_num_res_blocks", type=int, default=2)
+    parser.add_argument("--unitddpm_cond_type", type=str, default="rgb",
+                        help="Source conditioning type for UNIT-DDPM finetune: "
+                             "'rgb' (3ch, full colour), 'gray' (1ch), 'sobel' (1ch gradient)")
+    parser.add_argument("--unitddpm_lambda_struct", type=float, default=0.0,
+                        help="L1 structural loss weight for UNIT-DDPM finetune (0=disabled)")
+    parser.add_argument("--unitddpm_steps", type=int, default=200,
+                        help="DDIM sampling steps for UNIT-DDPM inference")
+
+    # ---- CycleDiffusion specific ----
+    parser.add_argument("--cd_base_channels", type=int, default=64)
+    parser.add_argument("--cd_channel_mult", type=str, default="1,2,2,4")
+    parser.add_argument("--cd_num_res_blocks", type=int, default=2)
+    parser.add_argument("--cd_steps", type=int, default=200,
+                        help="DDIM inversion + decode steps for CycleDiffusion inference")
+
+    # ---- UNSB specific ----
+    parser.add_argument("--unsb_base_channels", type=int, default=64)
+    parser.add_argument("--unsb_channel_mult", type=str, default="1,2,2,4")
+    parser.add_argument("--unsb_num_res_blocks", type=int, default=2)
+    parser.add_argument("--unsb_lambda_adv", type=float, default=0.1,
+                        help="Adversarial loss weight for UNSB generator")
+    parser.add_argument("--unsb_lambda_score", type=float, default=1.0,
+                        help="Score matching (MSE) loss weight for UNSB")
+    parser.add_argument("--unsb_steps", type=int, default=200,
+                        help="DDIM sampling steps for UNSB inference")
+
 
     args = parser.parse_args()
 
@@ -328,7 +435,11 @@ def main():
         parts = args.data_range.split(",")
         data_range = (int(parts[0]), int(parts[1]))
 
-    if args.model == "miudiff" and args.miu_stage == "pretrain":
+    use_target_only = (
+        (args.model == "miudiff" and args.miu_stage == "pretrain")
+        or (args.model == "unitddpm" and args.unitddpm_stage == "pretrain")
+    )
+    if use_target_only:
         dataset = TargetOnlyDataset(root_B=args.dataB, transform=transform, data_range=data_range)
     else:
         dataset = UnpairedDataset(root_A=args.dataA, root_B=args.dataB, transform=transform, data_range=data_range)
@@ -346,13 +457,12 @@ def main():
     # ---- model ----
     model = build_model(args).to(device)
 
-    # MIUDiff runs its UNet inside autocast(enabled=False) — entirely fp32.
-    # Enabling GradScaler on fp32 computations causes the scale to double every
-    # growth_interval steps until it overflows fp32 (~2^128 at step ~55k with the
-    # default growth_interval=500), permanently locking the scale at +inf.
-    use_amp = args.amp and args.model != "miudiff"
-    if args.amp and args.model == "miudiff":
-        print("[MIUDiff] AMP disabled: DDPMUNet runs in fp32 internally; GradScaler would overflow at ~56k steps.")
+    # DDPMUNet-based models run their UNet inside autocast(enabled=False) — entirely fp32.
+    # Enabling GradScaler on fp32 computations causes the scale to overflow at ~56k steps.
+    _ddpm_models = {"miudiff", "unitddpm", "cyclediffusion", "unsb"}
+    use_amp = args.amp and args.model not in _ddpm_models
+    if args.amp and args.model in _ddpm_models:
+        print(f"[{args.model}] AMP disabled: DDPMUNet runs in fp32 internally; GradScaler would overflow at ~56k steps.")
 
     # ---- trainer ----
     trainer = BaseTrainer(
