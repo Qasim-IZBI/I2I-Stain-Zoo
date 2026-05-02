@@ -78,6 +78,7 @@ def build_model(args):
             pcl_proj_dim=args.pcl_proj_dim,
             pcl_temp=args.pcl_temp,
             lambda_mi=args.lambda_mi,
+            lambda_struct=args.miu_lambda_struct,
         )
         model = MIUDiff(cfg)
         init_ckpt = args.miu_init_ckpt or args.init_ckpt
@@ -288,6 +289,11 @@ def main():
     parser.add_argument("--miu_pcl", action="store_true")
     parser.add_argument("--lambda_mi", type=float, default=1.0)
     parser.add_argument("--lambda_pcl", type=float, default=0.1)
+    parser.add_argument("--miu_lambda_struct", type=float, default=0.0,
+                        help="Weight for structural reconstruction loss in MIUDiff finetune. "
+                             "Penalises L1(extract_struct(x0_pred), x_struct) at every timestep, "
+                             "giving eps_cond a direct gradient to use the conditioning input. "
+                             "Recommended starting value: 1.0. 0 disables (default).")
     parser.add_argument("--pcl_n_patches", type=int, default=256)
     parser.add_argument("--pcl_proj_dim", type=int, default=128)
     parser.add_argument("--pcl_temp", type=float, default=0.07)

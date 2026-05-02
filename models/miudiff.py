@@ -518,6 +518,11 @@ class MIUDiffConfig:
     pcl_refine_steps: int = 0   # 0 disables
     pcl_refine_lr: float = 0.05
 
+    # structural reconstruction loss (finetune training only)
+    # L1 between extract_struct(x0_pred) and x_struct at every timestep.
+    # Provides a direct gradient signal to use x_struct; 0 disables.
+    lambda_struct: float = 0.0
+
     # MI estimator learning rate (trained with its own optimizer)
     mi_lr: float = 1e-4
 
@@ -728,27 +733,36 @@ class MIUDiff(nn.Module):
         else:
             loss_mi = loss_eps.new_tensor(0.0)
 
-        # Only eps loss (+ optional PCL) goes through the BaseTrainer's optimizer
+        # Only eps loss (+ optional structural losses) goes through the BaseTrainer's optimizer
         loss = loss_eps
 
-        # Optional: Patch-wise contrastive loss only for late timesteps (t <= t0_prime)
-        loss_pcl = torch.tensor(0.0, device=device)
-        if self.cfg.miu_pcl and self.cfg.lambda_pcl > 0:
-            late_mask = (t_idx <= self.cfg.t0_prime)
-            if late_mask.any():
-                # predict x0 from y_t (one-step clean estimate)
-                a_bar_t = self._a_bar[t_idx].view(-1, 1, 1, 1)
-                x0_pred = (y_t - torch.sqrt(1.0 - a_bar_t) * eps_pred) / torch.sqrt(a_bar_t + 1e-8)
-                x0_pred = x0_pred.clamp(-1, 1)
+        # Compute x0_pred once if needed by either structural loss or PCL.
+        # PCL is applied at ALL timesteps during training (t0_prime is inference-only).
+        loss_struct = torch.tensor(0.0, device=device)
+        loss_pcl    = torch.tensor(0.0, device=device)
 
-                loss_pcl = self.pcl_loss(x_struct[late_mask], x0_pred[late_mask])
+        needs_x0 = (self.cfg.lambda_struct > 0) or (self.cfg.miu_pcl and self.cfg.lambda_pcl > 0)
+        if needs_x0:
+            a_bar_t = self._a_bar[t_idx].view(-1, 1, 1, 1)
+            x0_pred = (y_t - torch.sqrt(1.0 - a_bar_t) * eps_pred) / torch.sqrt(a_bar_t + 1e-8)
+            x0_pred = x0_pred.clamp(-1, 1)
+
+            if self.cfg.lambda_struct > 0:
+                # Direct structural supervision: predicted clean image must match source structure.
+                struct_pred = self._extract_struct(x0_pred)
+                loss_struct = F.l1_loss(struct_pred, x_struct)
+                loss = loss + self.cfg.lambda_struct * loss_struct
+
+            if self.cfg.miu_pcl and self.cfg.lambda_pcl > 0:
+                loss_pcl = self.pcl_loss(x_struct, x0_pred)
                 loss = loss + self.cfg.lambda_pcl * loss_pcl
 
         logs = {
-            "loss_G": float(loss.detach().cpu()),
-            "loss_eps": float(loss_eps.detach().cpu()),
-            "loss_mi": float(loss_mi.detach().cpu()),
-            "loss_pcl": float(loss_pcl.detach().cpu()),
+            "loss_G":      float(loss.detach().cpu()),
+            "loss_eps":    float(loss_eps.detach().cpu()),
+            "loss_mi":     float(loss_mi.detach().cpu()),
+            "loss_struct": float(loss_struct.detach().cpu()),
+            "loss_pcl":    float(loss_pcl.detach().cpu()),
         }
         visuals = {"real_A": xA, "real_B": y0, "noisy_B": y_t}
         return loss, logs, visuals

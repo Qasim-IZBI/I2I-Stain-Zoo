@@ -77,11 +77,21 @@ python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp \
     --miu_init_ckpt ./stage1/checkpoints/step_500000.pt \
     --output ./stage2/
 
+# Stage 2 with structural reconstruction loss (recommended for structure preservation).
+# --miu_lambda_struct adds L1(extract_struct(x0_pred), x_struct) at every timestep,
+# giving eps_cond a direct gradient to follow the HE conditioning input.
+python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp \
+    --miu_stage finetune --miu_lambda_struct 1.0 \
+    --miu_init_ckpt ./stage1/checkpoints/step_500000.pt \
+    --output ./stage2/
+
 # Stage 3 — finetune with patch contrastive loss (PCL) for structural sharpness.
+#            PCL is now applied at ALL timesteps during training (t0_prime is
+#            inference-only). --miu_lambda_struct can be combined with PCL.
 #            --miu_init_ckpt loads the fully-trained stage-2 checkpoint directly
 #            (does NOT re-copy eps_uncond → eps_cond).
 python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp \
-    --miu_stage finetune --miu_pcl --lambda_pcl 0.1 \
+    --miu_stage finetune --miu_pcl --lambda_pcl 0.1 --miu_lambda_struct 1.0 \
     --miu_init_ckpt ./stage2/checkpoints/step_500000.pt \
     --output ./stage3/
 
