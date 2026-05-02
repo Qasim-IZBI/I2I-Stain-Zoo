@@ -158,14 +158,46 @@ python inference.py --model miudiff --miu_stage finetune --direction A2B \
 python inference.py --model miudiff --miu_stage finetune --direction A2B \
     --data path/to/tiles/testA --ckpt stage3.pt --miu_steps 200 \
     --miu_pcl --pcl_refine_steps 3 --outdir ./cond_pcl_out/
+
+# Deterministic output — same input always produces the same tile (all models)
+python inference.py --model miudiff --miu_stage finetune --direction A2B \
+    --data path/to/tiles/testA --ckpt stage3.pt --miu_steps 200 \
+    --seed 42 --outdir ./cond_out/
 ```
 
 **MIUDiff inference notes:**
 - `--miu_stage pretrain` uses only `eps_uncond` (unconditional DDPM on target domain B). No source image is fed into the network; samples are drawn from pure noise. MI guidance and PCL refinement are not applicable and are silently ignored.
 - `--miu_stage finetune` (default) uses `eps_cond` conditioned on the grayscale source image, with optional MI guidance (`--miu_guidance`) and optional PCL latent refinement (`--miu_pcl --pcl_refine_steps`).
 - `--miu_steps` controls the number of DDIM denoising steps for both stages (fewer = faster but lower quality; 200–300 is typical).
+- `--seed INT` fixes the global torch RNG before sampling, making all `torch.randn` calls (initial noise + MI guidance) deterministic. Identical runs produce pixel-identical outputs.
+- `--miu_noise_level FLOAT` (default 1.0) initialises the starting noise from a partially-noised source image (SDEdit-style) instead of pure Gaussian noise. Not recommended for H&E→SR: values below 1.0 cause HE colour bleed into the output. Use `--color_ref` for colour consistency instead.
+- `--miu_cond_type` is not needed at inference — `cond_type` is saved in the checkpoint and restored automatically.
 - Pretrain checkpoints contain random-weight `eps_cond` parameters. Passing `--miu_stage finetune` to a pretrain checkpoint will produce garbage — a warning is printed if this is detected.
 - Finetune checkpoints have a fully-trained `eps_uncond` (updated alongside `eps_cond`). Running `--miu_stage pretrain` on a finetune checkpoint is valid and samples from the updated unconditional model.
+
+**Colour normalisation (all models)**
+
+Applies Reinhard LAB colour transfer to every output tile so its colour statistics
+match a reference target-domain image or dataset. Useful when the model produces
+structurally correct but colour-inconsistent outputs (e.g. MIUDiff colour-mode drift).
+
+```bash
+# Single reference tile
+python inference.py --model miudiff ... \
+    --color_ref path/to/trainB/001/images/0000001.tif --outdir ./out/
+
+# Entire trainB dataset as reference (macro-average of per-tile LAB stats)
+python inference.py --model miudiff ... \
+    --color_ref path/to/trainB/ --outdir ./out/
+
+# Limit reference to a subset of WSIs
+python inference.py --model miudiff ... \
+    --color_ref path/to/trainB/ --color_ref_data_range 1,10 --outdir ./out/
+```
+
+- Works with all 6 models; combine freely with `--seed` and other flags.
+- Directory mode: walks `images/` subdirectories (excludes binary `masks/` tiles); falls back to a flat directory scan if no `images/` subdirs are found.
+- `--color_ref_data_range` uses the same `start,end` format as `--data_range` and is only relevant when `--color_ref` is a directory.
 
 ### Evaluation
 ```bash
