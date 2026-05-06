@@ -17,7 +17,9 @@ module purge
 module load Anaconda3
 
 eval "$(conda shell.bash hook)"
+set +u   # conda activate scripts may reference unset variables (e.g. QT_XCB_GL_INTEGRATION)
 conda activate i2istain
+set -u
 
 echo "Host: $(hostname)"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
