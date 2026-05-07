@@ -121,6 +121,14 @@ def main(out_path: str):
                 if result is None:
                     continue
                 steps, loss = result
+
+                # Deduplicate on (model_size, data_size, step) — model_size and
+                # data_size are fixed here, so dedup on step is sufficient.
+                df_run = pd.DataFrame({"step": steps, "loss": loss})
+                df_run = df_run.drop_duplicates(subset="step", keep="last").reset_index(drop=True)
+                steps = df_run["step"].to_numpy()
+                loss  = df_run["loss"].to_numpy()
+
                 color = COLORS[s_idx]
                 style = STYLES[d_idx]
 
