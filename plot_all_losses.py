@@ -35,6 +35,7 @@ STAGES = {
 }
 
 SMOOTH_WINDOW = 20   # rolling-mean window (set to 1 to disable)
+MAX_STEPS = 1_000_000  # truncate all runs at this step
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +78,8 @@ def load_loss(model: str, datasize: str, size: str):
             continue
         df = df[["global_step", "loss_G"]].dropna()
         df["global_step"] = df["global_step"] + step_offset
+        # drop duplicate steps (keep last value logged for that step)
+        df = df.drop_duplicates(subset="global_step", keep="last")
         step_offset = int(df["global_step"].iloc[-1]) + 1
         frames.append(df)
 
@@ -84,6 +87,11 @@ def load_loss(model: str, datasize: str, size: str):
         return None
 
     combined = pd.concat(frames, ignore_index=True)
+    # drop any cross-stage duplicates and cap at MAX_STEPS
+    combined = combined.drop_duplicates(subset="global_step", keep="last")
+    combined = combined[combined["global_step"] <= MAX_STEPS]
+    if combined.empty:
+        return None
     return combined["global_step"].to_numpy(), combined["loss_G"].to_numpy()
 
 
@@ -139,6 +147,7 @@ def main(out_path: str):
         ax.set_title(model.upper(), fontsize=13, fontweight="bold")
         ax.set_xlabel("Training Steps", fontsize=9)
         ax.set_ylabel("Generator Loss (loss_G)", fontsize=9)
+        ax.set_xlim(0, MAX_STEPS)
         ax.tick_params(labelsize=8)
         ax.grid(True, alpha=0.3, linewidth=0.5)
 
