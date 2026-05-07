@@ -97,6 +97,7 @@ def main(out_path: str):
     fig, axes = plt.subplots(1, 3, figsize=(20, 6))
 
     csv_rows = []
+    missing = {m: [] for m in metrics}   # metric → list of missing config strings
 
     for ax, metric in zip(axes, metrics):
         meta = METRIC_META[metric]
@@ -108,6 +109,7 @@ def main(out_path: str):
                 for m_idx, model in enumerate(MODELS):
                     val = load_metric(model, size, datasize, metric)
                     if val is None:
+                        missing[metric].append(f"{model}/model_{size}/data_{datasize}")
                         continue
                     jitter = _SIZE_OFFSET[s_idx] + _DATA_OFFSET[d_idx]
                     xs.append(m_idx + jitter)
@@ -177,6 +179,25 @@ def main(out_path: str):
     csv_path = os.path.splitext(out_path)[0] + ".csv"
     pd.DataFrame(csv_rows).to_csv(csv_path, index=False)
     print(f"Saved → {csv_path}")
+
+    # ------------------------------------------------------------------
+    # Missing-config summary
+    # ------------------------------------------------------------------
+    total = len(MODELS) * len(SIZES) * len(DATASIZES)
+    print("\n── Missing configs ──────────────────────────────────────")
+    any_missing = False
+    for metric in metrics:
+        n = len(missing[metric])
+        if n == 0:
+            print(f"  {metric:12s}  all {total} configs present ✓")
+        else:
+            any_missing = True
+            print(f"  {metric:12s}  {n}/{total} missing:")
+            for entry in missing[metric]:
+                print(f"               • {entry}")
+    if not any_missing:
+        print("  All metrics complete — nothing missing.")
+    print("─────────────────────────────────────────────────────────\n")
 
     plt.show()
 
