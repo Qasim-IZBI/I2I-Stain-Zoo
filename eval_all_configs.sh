@@ -96,7 +96,7 @@ fi
 
 # 3. Skip if all metric CSVs already exist
 if [ -f "${OUT_DIR}/fid.csv" ] && \
-   [ -f "${OUT_DIR}/ssim.csv" ] && \
+   [ -f "${OUT_DIR}/patch_ssim.csv" ] && \
    [ -f "${OUT_DIR}/lpips.csv" ]; then
     echo "[SKIP] All metric CSVs already present in ${OUT_DIR}. Exiting."
     exit 0
@@ -125,18 +125,20 @@ else
 fi
 
 # -----------------------------
-# SSIM  (paired by filename)
+# Patch-SSIM  (paired by filename, patch-based)
 # -----------------------------
-if [ ! -f "${OUT_DIR}/ssim.csv" ]; then
-    echo "--- Running SSIM ---"
+if [ ! -f "${OUT_DIR}/patch_ssim.csv" ]; then
+    echo "--- Running Patch-SSIM ---"
     run_cmd python "${PROJECT_ROOT}/evaluation.py" \
-        --metric     ssim \
-        --path_real  "${TEST_B}" \
-        --path_fake  "${FAKE_DIR}" \
-        --device     cuda \
-        --save_csv   "${OUT_DIR}/ssim.csv"
+        --metric          patch_ssim \
+        --path_real       "${TEST_B}" \
+        --path_fake       "${FAKE_DIR}" \
+        --patch_size      64 \
+        --patches_per_image 16 \
+        --device          cuda \
+        --save_csv        "${OUT_DIR}/patch_ssim.csv"
 else
-    echo "[SKIP] ssim.csv already exists."
+    echo "[SKIP] patch_ssim.csv already exists."
 fi
 
 # -----------------------------

@@ -66,11 +66,11 @@ def load_metric(model: str, size: str, datasize: str, metric: str):
             warnings.warn(f"Expected 'value' column in {path}")
             return None
         return float(df["value"].iloc[0])
-    elif metric == "ssim":
-        if "ssim" not in df.columns:
-            warnings.warn(f"Expected 'ssim' column in {path}")
+    elif metric == "patch_ssim":
+        if "patch_ssim" not in df.columns:
+            warnings.warn(f"Expected 'patch_ssim' column in {path}")
             return None
-        return float(df["ssim"].mean())
+        return float(df["patch_ssim"].mean())
     elif metric == "lpips":
         if "lpips" not in df.columns:
             warnings.warn(f"Expected 'lpips' column in {path}")
@@ -84,14 +84,14 @@ def load_metric(model: str, size: str, datasize: str, metric: str):
 # ---------------------------------------------------------------------------
 
 METRIC_META = {
-    "fid":   {"label": "FID ↓",         "title": "FID (Fréchet Inception Distance)"},
-    "ssim":  {"label": "SSIM ↑",        "title": "SSIM (mean per image)"},
-    "lpips": {"label": "LPIPS ↓",       "title": "LPIPS (mean per image)"},
+    "fid":        {"label": "FID ↓",              "title": "FID (Fréchet Inception Distance)"},
+    "patch_ssim": {"label": "Patch-SSIM ↑",       "title": "Patch-SSIM (mean, 64×64 patches)"},
+    "lpips":      {"label": "LPIPS ↓",            "title": "LPIPS (mean per image)"},
 }
 
 
 def main(out_path: str):
-    metrics = ["fid", "ssim", "lpips"]
+    metrics = ["fid", "patch_ssim", "lpips"]
     x_positions = np.arange(len(MODELS))
 
     fig, axes = plt.subplots(1, 3, figsize=(20, 6))
