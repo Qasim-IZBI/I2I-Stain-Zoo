@@ -411,7 +411,14 @@ def _resolve_tile_path(row, tile_dir):
     """Return the path to a tile image, checking tile_dir first then image_path."""
     if tile_dir is not None:
         tile_name = row["tile_name"]
+        img_idx = row.get("img_idx", None)
         for ext in (".tif", ".png", ".jpg", ".jpeg", ".bmp", ".webp"):
+            # Nested layout produced by inference.py: tile_dir/001/images/0000001.tif
+            if img_idx is not None and pd.notna(img_idx):
+                candidate = tile_dir / f"{img_idx}" / "images" / f"{tile_name}{ext}"
+                if candidate.exists():
+                    return candidate
+            # Flat layout fallback: tile_dir/0000001.tif
             candidate = tile_dir / f"{tile_name}{ext}"
             if candidate.exists():
                 return candidate
