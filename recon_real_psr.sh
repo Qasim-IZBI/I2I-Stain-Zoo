@@ -49,8 +49,9 @@ TEST_B=/work2/bz66izin-VSproject/VS_Data/eval_imgs/no_overlap/testB/tiles/testB
 RECON_BASE=/work2/bz66izin-VSproject/reconstruction
 OUT_DIR=${RECON_BASE}/real/reconstructed
 
-# Expected number of WSIs (subfolders in testB)
-N_EXPECTED=$(find "${TEST_B}" -maxdepth 1 -mindepth 1 -type d | wc -l)
+RANGE_START=1
+RANGE_END=5
+N_EXPECTED=$(( RANGE_END - RANGE_START + 1 ))
 
 # -----------------------------
 # Pre-flight checks
@@ -76,7 +77,7 @@ mkdir -p "${OUT_DIR}"
 
 echo "Metadata  : ${TEST_B}"
 echo "Output dir: ${OUT_DIR}"
-echo "Expecting : ${N_EXPECTED} WSIs"
+echo "WSI range : ${RANGE_START}–${RANGE_END} (expecting ${N_EXPECTED} WSIs)"
 
 # -----------------------------
 # Reconstruct

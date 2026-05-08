@@ -54,8 +54,9 @@ NNUNET_DATASET=1
 NNUNET_CONFIG=2d
 NNUNET_FOLDS=all
 
-# Expected number of WSIs
-N_EXPECTED=$(find "${RECON_DIR}" -maxdepth 1 -name "*.tif" | wc -l)
+RANGE_START=1
+RANGE_END=5
+N_EXPECTED=$(( RANGE_END - RANGE_START + 1 ))
 
 # -----------------------------
 # Pre-flight checks
@@ -82,7 +83,7 @@ mkdir -p "${OUT_DIR}"
 
 echo "Recon dir : ${RECON_DIR}"
 echo "Output dir: ${OUT_DIR}"
-echo "Expecting : ${N_EXPECTED} WSIs"
+echo "WSI range : ${RANGE_START}–${RANGE_END} (expecting ${N_EXPECTED} WSIs)"
 
 # -----------------------------
 # Segment
