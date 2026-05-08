@@ -209,6 +209,8 @@ def _build_default_gan_config(args):
             ngf=args.dclgan_ngf,
             n_blocks=args.dclgan_n_blocks,
             lambda_dcl=args.lambda_dcl,
+            lambda_cycle=args.dclgan_lambda_cycle,
+            lambda_identity=args.dclgan_lambda_identity,
             n_patches=args.n_patches,
             proj_dim=args.proj_dim,
         )
@@ -338,8 +340,12 @@ def main():
     parser.add_argument("--dclgan_n_blocks", type=int, default=9,
                         help="ResNet blocks in DCLGAN bottleneck")
 
-    # ---- DCLGAN contrastive ----
+    # ---- DCLGAN losses ----
     parser.add_argument("--lambda_dcl", type=float, default=1.0)
+    parser.add_argument("--dclgan_lambda_cycle", type=float, default=0.0,
+                        help="Cycle-consistency weight for DCLGAN (default 0: DCL replaces cycle)")
+    parser.add_argument("--dclgan_lambda_identity", type=float, default=1.0,
+                        help="Identity loss weight for DCLGAN (default 1.0, CUT-style colour anchor)")
     parser.add_argument("--n_patches", type=int, default=256)
     parser.add_argument("--proj_dim", type=int, default=256)
 
