@@ -377,11 +377,8 @@ def reconstruct_wsi(
 
         def finalize(canvas, weight):
             if blend == "average":
-                canvas = np.divide(
-                    canvas, weight,
-                    out=np.zeros_like(canvas),
-                    where=weight > 0
-                )
+                # Divide in-place; areas with weight==0 stay 0 (canvas is zero-initialised)
+                np.divide(canvas, weight, out=canvas, where=weight > 0)
             return canvas
 
         rgb_output = None

@@ -5,7 +5,7 @@
 
 #SBATCH --time=2:00:00
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --partition=paula
 #SBATCH --ntasks=1
 
