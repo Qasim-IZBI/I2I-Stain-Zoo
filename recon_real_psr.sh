@@ -43,7 +43,7 @@ run_cmd() {
 PROJECT_ROOT=I2I-Stain-Zoo
 
 # Real PSR (testB) tiles — original tiles, no --tile_dir override needed
-TEST_B=/work2/bz66izin-VSproject/VS_Data/eval_imgs/no_overlap/testB
+TEST_B=/work2/bz66izin-VSproject/VS_Data/eval_imgs/no_overlap/testB/tiles/testB
 
 # Output
 RECON_BASE=/work2/bz66izin-VSproject/reconstruction
