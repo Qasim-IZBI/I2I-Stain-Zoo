@@ -64,63 +64,60 @@ echo "DATA_SIZE=${DATASIZE}"
 # -----------------------------
 PROJECT_ROOT=I2I-Stain-Zoo
 
-# Inference tiles produced by infer_small_models.sh / infer_all_54.sh
-INFER_BASE=/work2/bz66izin-VSproject/inference
-TILE_DIR=${INFER_BASE}/${MODEL}/results/data_${DATASIZE}/model_${SIZE}/inference
+# Reconstructed WSI TIFs produced by recon_all_configs.sh
+RECON_BASE=/work2/bz66izin-VSproject/reconstruction
+RECON_DIR=${RECON_BASE}/${MODEL}/results/data_${DATASIZE}/model_${SIZE}/reconstructed
 
-# Per-tile PSR mask output (NNN/images/ structure, ready for reconstruct.py)
+# WSI-level PSR mask output (flat directory consumed by compare_psr.py)
 SEG_BASE=/work2/bz66izin-VSproject/psr_masks
-OUT_DIR=${SEG_BASE}/${MODEL}/results/data_${DATASIZE}/model_${SIZE}/tile_masks
+OUT_DIR=${SEG_BASE}/${MODEL}/results/data_${DATASIZE}/model_${SIZE}/psr_masks_wsi
 
 # nnUNet model settings
 NNUNET_RESULTS=/work2/bz66izin-VSproject/nnunet/results
-NNUNET_DATASET=1
+NNUNET_DATASET=214
 NNUNET_CONFIG=2d
 NNUNET_FOLDS="1 2 3 4"
 
-# WSI range used during inference (must match DATA_RANGE in the inference script)
+# Expected number of reconstructed WSIs
 RANGE_START=1
 RANGE_END=5
 N_EXPECTED=$(( RANGE_END - RANGE_START + 1 ))
-DATA_RANGE="${RANGE_START},${RANGE_END}"
 
 # -----------------------------
 # Pre-flight checks
 # -----------------------------
 
-# 1. Inference tiles must exist
-if [ ! -d "${TILE_DIR}" ] || [ -z "$(ls -A "${TILE_DIR}" 2>/dev/null)" ]; then
-    echo "[ERROR] Inference tiles not found or empty: ${TILE_DIR} — skipping."
+# 1. Reconstructed WSIs must exist
+if [ ! -d "${RECON_DIR}" ] || [ -z "$(find "${RECON_DIR}" -maxdepth 1 -name "*.tif" 2>/dev/null | head -1)" ]; then
+    echo "[ERROR] Reconstructed WSIs not found in: ${RECON_DIR} — run recon_all_configs.sh first."
     exit 1
 fi
 
-# 2. Skip if all expected WSI tile-mask folders are already present
+# 2. Skip if all expected WSI masks already present
 if [ -d "${OUT_DIR}" ]; then
-    N_DONE=$(find "${OUT_DIR}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    N_DONE=$(find "${OUT_DIR}" -maxdepth 1 -name "*.tif" | wc -l)
     if [ "${N_DONE}" -ge "${N_EXPECTED}" ]; then
-        echo "[SKIP] ${N_DONE}/${N_EXPECTED} tile-mask folders already present in ${OUT_DIR}. Exiting."
+        echo "[SKIP] ${N_DONE}/${N_EXPECTED} WSI masks already present in ${OUT_DIR}. Exiting."
         exit 0
     fi
     if [ "${N_DONE}" -gt 0 ]; then
-        echo "[WARN] Partial segmentation detected (${N_DONE}/${N_EXPECTED} folders). Re-running."
+        echo "[WARN] Partial segmentation detected (${N_DONE}/${N_EXPECTED} masks). Re-running."
     fi
 fi
 
 mkdir -p "${OUT_DIR}"
 
-echo "Tile dir  : ${TILE_DIR}"
+echo "WSI dir   : ${RECON_DIR}"
 echo "Output dir: ${OUT_DIR}"
-echo "WSI range : ${RANGE_START}–${RANGE_END}"
 
 # -----------------------------
-# Segment tiles directly (no WSI reconstruction needed beforehand)
-# Output: {OUT_DIR}/{NNN}/images/{tile}.tif
-# Next step: reconstruct.py --tile_dir to stitch masks into WSI TIFs
+# Segment reconstructed WSIs directly (WSI mode — no --tile_mode).
+# nnUNet model was trained on full WSIs and needs slide-level context to
+# correctly classify tissue vs. background.
+# Output: flat directory of {stem}.tif mask files consumed by compare_psr.py.
 # -----------------------------
 run_cmd python "${PROJECT_ROOT}/segment_psr.py" \
-    --data             "${TILE_DIR}" \
-    --tile_mode \
-    --data_range       "${DATA_RANGE}" \
+    --data             "${RECON_DIR}" \
     --outdir           "${OUT_DIR}" \
     --nnunet_results   "${NNUNET_RESULTS}" \
     --nnunet_dataset   "${NNUNET_DATASET}" \
@@ -128,4 +125,4 @@ run_cmd python "${PROJECT_ROOT}/segment_psr.py" \
     --nnunet_folds     "${NNUNET_FOLDS}" \
     --device           cuda
 
-echo "Done. Per-tile PSR masks saved to ${OUT_DIR}"
+echo "Done. WSI-level PSR masks saved to ${OUT_DIR}"
