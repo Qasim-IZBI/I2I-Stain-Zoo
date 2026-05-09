@@ -127,15 +127,14 @@ def main():
     wsi_paths = discover_wsi_tifs(args.data)
     print(f"Found {len(wsi_paths)} WSI(s) in {args.data}")
 
-    tmp_input  = Path(tempfile.mkdtemp(prefix="nnunet_in_"))
-    tmp_output = Path(tempfile.mkdtemp(prefix="nnunet_out_"))
+    args.outdir.mkdir(parents=True, exist_ok=True)
+    tmp_input = Path(tempfile.mkdtemp(prefix="nnunet_in_"))
     try:
-        stem_map = build_nnunet_input(wsi_paths, tmp_input)
-        run_nnunet_predict(tmp_input, tmp_output, args)
-        collect_outputs(tmp_output, args.outdir, stem_map)
+        build_nnunet_input(wsi_paths, tmp_input)
+        run_nnunet_predict(tmp_input, args.outdir, args)
+        print(f"Masks saved to {args.outdir}")
     finally:
-        shutil.rmtree(tmp_input,  ignore_errors=True)
-        shutil.rmtree(tmp_output, ignore_errors=True)
+        shutil.rmtree(tmp_input, ignore_errors=True)
 
 
 if __name__ == "__main__":
