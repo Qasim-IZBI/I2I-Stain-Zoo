@@ -607,50 +607,40 @@ Interpretation cheatsheet:
 Runs a nnUNet v2 segmentation model on Sirius Red images to produce tissue and
 PSR-positive area masks. Two modes:
 
+**Tile mode (`--tile_mode`, recommended):** segments inference tiles directly — no WSI
+reconstruction needed beforehand. A background thread streams completed predictions into
+`{outdir}/{NNN}/images/` as nnUNet writes them. Crash-safe: a persistent `_nnunet_raw/`
+staging dir survives job failures and nnUNet automatically skips already-done tiles on
+re-run. Use `reconstruct.py --tile_dir` afterward to stitch tile masks into WSI TIFs.
+
 **WSI mode (default):** takes pre-reconstructed WSI TIFs. Prerequisite: run `reconstruct.py` first.
-**Tile mode (`--tile_mode`):** segments inference tiles directly — no WSI reconstruction needed
-beforehand. Outputs per-tile masks in `{outdir}/{NNN}/images/` structure so that
-`reconstruct.py --tile_dir` can stitch them into WSI-level masks afterward.
 
 ```bash
-# Segment real SR WSIs (WSI mode)
-python segment_psr.py \
-    --data ./reconstructed_real/ \
-    --outdir ./psr_masks_real/ \
-    --nnunet_results /path/to/nnunet/results \
-    --nnunet_dataset 1 \
-    --nnunet_config 2d \
-    --nnunet_folds all
-
-# Segment generated SR — tile mode (no reconstruction step needed first)
-# Step 1: segment tiles directly → per-tile masks
+# Segment inference tiles directly (tile mode — recommended)
+# Step 1: segment tiles → per-tile masks streamed to {NNN}/images/ as nnUNet runs
 python segment_psr.py \
     --data       /path/to/cyclegan/inference/ \
     --tile_mode \
     --data_range 1,5 \
     --outdir     ./psr_tile_masks_cyclegan/ \
     --nnunet_results /path/to/nnunet/results \
-    --nnunet_dataset 1 --nnunet_config 2d
+    --nnunet_dataset 1 --nnunet_config 2d --nnunet_folds "1 2 3 4"
 
-# Step 2: reconstruct tile masks → full WSI masks (for compare_psr.py)
+# Step 2: stitch tile masks → WSI-level mask TIFs (consumed by compare_psr.py)
 python reconstruct.py \
     --metadata /path/to/tiles/testA \
     --tile_dir ./psr_tile_masks_cyclegan/ \
     --output   ./psr_masks_cyclegan/ \
     --mode     rgb
 
-# Segment generated SR WSIs (WSI mode — reconstruct first)
-python reconstruct.py \
-    --metadata /path/to/tiles/testB \
-    --tile_dir /path/to/cyclegan/inference/ \
-    --output ./reconstructed_generated/
+# Segment pre-reconstructed WSIs (WSI mode)
 python segment_psr.py \
-    --data ./reconstructed_generated/ \
-    --outdir ./psr_masks_generated/ \
+    --data   ./reconstructed_wsis/ \
+    --outdir ./psr_masks/ \
     --nnunet_results /path/to/nnunet/results \
     --nnunet_dataset 1 --nnunet_config 2d
 
-# Stream nnUNet output live and use specific folds
+# Stream nnUNet stdout/stderr live and use specific folds
 python segment_psr.py --data ./wsis/ --outdir ./masks/ \
     --nnunet_results /path/to/nnunet/results --nnunet_dataset 1 \
     --nnunet_folds "0 1 2" --verbose
@@ -661,12 +651,54 @@ Output mask TIF label convention:
 - `1` — tissue (Tissue class)
 - `2` — PSR-positive area
 
+`compare_psr.py` reads masks with `tifffile` and takes `[..., 0]` for 3-channel TIFs, so
+WSI masks reconstructed from tile masks (3-channel output of `reconstruct.py --mode rgb`)
+are handled correctly.
+
 Key flags:
 - `--tile_mode` — segment inference tiles directly; `--data` must have `{NNN}/images/` structure
-- `--data_range START,END` — (tile mode) limit to WSI folders 001–005 etc.
+- `--data_range START,END` — (tile mode) limit to WSI folders e.g. `1,5`
 - `--nnunet_results` sets `nnUNet_results`; can be omitted if already set in the environment
 - `--nnunet_trainer` overrides the nnUNet trainer class (uses nnUNet default if omitted)
 - `--device cuda|cpu|mps` (default: cuda)
+
+### PSR Evaluation Pipeline (SLURM)
+Full end-to-end pipeline from inference tiles to PSR distribution comparison.
+Each script has a pre-flight skip guard — safe to re-submit if a job is interrupted.
+
+```bash
+# Generated SR (54-job arrays — 6 models × 3 model sizes × 3 data sizes)
+sbatch infer_small_models.sh          # inference tiles → {inference}/{model}/.../inference/
+sbatch segment_psr_all_configs.sh     # tile-level segmentation → .../tile_masks/{NNN}/images/
+sbatch recon_masks_all_configs.sh     # stitch masks → .../psr_masks_wsi/*.tif
+
+# Real SR testB (single jobs)
+sbatch segment_psr_real.sh            # tile-level segmentation → psr_masks/real/tile_masks/
+sbatch recon_masks_real.sh            # stitch masks → psr_masks/real/psr_masks_wsi/*.tif
+
+# Compare distributions (all generated models vs real)
+python compare_psr.py \
+    --masks_real   /work2/bz66izin-VSproject/psr_masks/real/psr_masks_wsi/ \
+    --masks_generated \
+        /work2/bz66izin-VSproject/psr_masks/cyclegan/results/data_small/model_small/psr_masks_wsi/ \
+        /work2/bz66izin-VSproject/psr_masks/unit/results/data_small/model_small/psr_masks_wsi/ \
+    --labels cyclegan unit \
+    --outdir ./psr_comparison/
+```
+
+Output directory layout under `/work2/bz66izin-VSproject/`:
+```
+inference/{model}/results/data_{d}/model_{s}/
+  inference/              ← translated tiles from infer_small_models.sh
+
+psr_masks/{model}/results/data_{d}/model_{s}/
+  tile_masks/{NNN}/images/  ← per-tile nnUNet predictions (segment_psr_all_configs.sh)
+  psr_masks_wsi/            ← reconstructed WSI masks (recon_masks_all_configs.sh)
+
+psr_masks/real/
+  tile_masks/{NNN}/images/  ← per-tile nnUNet predictions (segment_psr_real.sh)
+  psr_masks_wsi/            ← reconstructed WSI masks (recon_masks_real.sh)
+```
 
 ### PSR Distribution Comparison
 Compares PSR-positive area fraction distributions between real SR and one or more sets of
