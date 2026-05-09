@@ -4,6 +4,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 
@@ -128,36 +130,68 @@ def collect_outputs(tmp_output: Path, outdir: Path, stem_map: dict) -> None:
     print(f"Saved {copied} mask(s) to {outdir}")
 
 
-def collect_tile_outputs(tmp_output: Path, outdir: Path, mapping: dict) -> None:
+def _nnunet_stem(filename: str) -> str:
+    """Strip extension(s) and defensive _0000 suffix from an nnUNet output filename."""
+    stem = filename
+    for suf in (".tif", ".tiff", ".nii.gz", ".nii"):
+        if stem.endswith(suf):
+            stem = stem[:-len(suf)]
+            break
+    if stem.endswith("_0000"):
+        stem = stem[:-5]
+    return stem
+
+
+def collect_tile_outputs(raw_dir: Path, outdir: Path, mapping: dict) -> None:
     """
-    Copy nnUNet tile predictions into {outdir}/{idx}/images/{tile_stem}.tif structure
-    so that reconstruct.py --tile_dir can stitch them back into WSI masks.
+    Copy nnUNet tile predictions from raw_dir into {outdir}/{idx}/images/{tile}.tif.
+    Skips files already present at the destination (idempotent on re-run).
     """
     copied = 0
-    for mask in sorted(tmp_output.iterdir()):
+    for mask in sorted(raw_dir.iterdir()):
         if not mask.is_file():
             continue
-        # Strip file extension(s) to get the nnunet_stem
-        stem = mask.name
-        for suf in (".tif", ".tiff", ".nii.gz", ".nii"):
-            if stem.endswith(suf):
-                stem = stem[:-len(suf)]
-                break
-        # Defensive: nnUNet sometimes preserves _0000 in output name
-        if stem.endswith("_0000"):
-            stem = stem[:-5]
-
+        stem = _nnunet_stem(mask.name)
         if stem not in mapping:
             print(f"[WARN] No mapping found for nnUNet output: {mask.name} (stem={stem!r})")
             continue
-
         idx_str, tile_stem, orig_suffix = mapping[stem]
         out_dir = outdir / idx_str / "images"
         out_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(mask, out_dir / f"{tile_stem}{orig_suffix}")
-        copied += 1
-
+        dest = out_dir / f"{tile_stem}{orig_suffix}"
+        if not dest.exists():
+            shutil.copy2(mask, dest)
+            copied += 1
     print(f"Saved {copied} tile mask(s) to {outdir}")
+
+
+def _stream_tile_outputs(raw_dir: Path, outdir: Path, mapping: dict,
+                         stop: threading.Event) -> None:
+    """
+    Background thread: poll raw_dir every second and copy completed nnUNet
+    predictions into {outdir}/{NNN}/images/ as they appear.
+    Runs until stop is set, then does one final sweep.
+    """
+    moved: set = set()
+    while True:
+        for f in sorted(raw_dir.glob("*")):
+            if f.name in moved or not f.is_file():
+                continue
+            stem = _nnunet_stem(f.name)
+            if stem not in mapping:
+                continue
+            idx_str, tile_stem, orig_suffix = mapping[stem]
+            dest_dir = outdir / idx_str / "images"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / f"{tile_stem}{orig_suffix}"
+            try:
+                shutil.copy2(f, dest)
+                moved.add(f.name)
+            except OSError:
+                pass  # file still being written by nnUNet; retry next cycle
+        if stop.is_set():
+            break
+        time.sleep(1)
 
 
 def main():
@@ -223,15 +257,36 @@ def main():
         n_wsis = len(set(t[1] for t in tiles))
         print(f"Found {len(tiles)} tile(s) across {n_wsis} WSI folder(s) in {args.data}")
 
-        tmp_input  = Path(tempfile.mkdtemp(prefix="nnunet_tiles_in_"))
-        tmp_output = Path(tempfile.mkdtemp(prefix="nnunet_tiles_out_"))
+        # Persistent staging dir: survives crashes so nnUNet can resume (it skips
+        # cases that already have output here) and partial results are never lost.
+        nnunet_raw_dir = args.outdir / "_nnunet_raw"
+        nnunet_raw_dir.mkdir(parents=True, exist_ok=True)
+
+        tmp_input = Path(tempfile.mkdtemp(prefix="nnunet_tiles_in_"))
         try:
             tile_mapping = build_nnunet_input_tiles(tiles, tmp_input)
-            run_nnunet_predict(tmp_input, tmp_output, args)
-            collect_tile_outputs(tmp_output, args.outdir, tile_mapping)
+
+            # Background thread copies completed predictions into {NNN}/images/ as
+            # nnUNet writes them — results appear incrementally during the run.
+            stop_event = threading.Event()
+            collector = threading.Thread(
+                target=_stream_tile_outputs,
+                args=(nnunet_raw_dir, args.outdir, tile_mapping, stop_event),
+                daemon=True,
+            )
+            collector.start()
+            try:
+                run_nnunet_predict(tmp_input, nnunet_raw_dir, args)
+            finally:
+                stop_event.set()
+                collector.join()
         finally:
-            shutil.rmtree(tmp_input,  ignore_errors=True)
-            shutil.rmtree(tmp_output, ignore_errors=True)
+            shutil.rmtree(tmp_input, ignore_errors=True)
+
+        # Final sweep: catch any tiles the background thread may have missed
+        collect_tile_outputs(nnunet_raw_dir, args.outdir, tile_mapping)
+        # Staging dir is no longer needed after all results are in place
+        shutil.rmtree(nnunet_raw_dir, ignore_errors=True)
 
     else:
         wsi_paths = discover_wsi_tifs(args.data)
