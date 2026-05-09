@@ -40,7 +40,7 @@ def run_nnunet_predict(tmp_input: Path, tmp_output: Path, args) -> None:
         "-d", str(args.nnunet_dataset),
         "-c", args.nnunet_config,
         "-f", *args.nnunet_folds.split(),
-        "--device", args.device,
+        "-device", args.device,
     ]
     if args.nnunet_trainer:
         cmd += ["-tr", args.nnunet_trainer]
