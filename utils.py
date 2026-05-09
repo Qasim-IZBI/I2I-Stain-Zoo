@@ -407,9 +407,9 @@ def reconstruct_wsi(
 def _resolve_tile_path(row, tile_dir):
     """Return the path to a tile image, checking tile_dir first then image_path."""
     if tile_dir is not None:
-        tile_name = row["tile_name"]
+        # pandas reads zero-padded strings like "0000001" / "001" as integers; reformat back
+        tile_name = f"{int(row['tile_name']):07d}"
         img_idx = row.get("img_idx", None)
-        # pandas reads zero-padded strings like "001" as integers; reformat to 3-digit string
         img_idx_str = f"{int(img_idx):03d}" if img_idx is not None and pd.notna(img_idx) else None
         for ext in (".tif", ".png", ".jpg", ".jpeg", ".bmp", ".webp"):
             # Nested layout produced by inference.py: tile_dir/001/images/0000001.tif
