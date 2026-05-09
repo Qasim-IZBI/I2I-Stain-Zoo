@@ -76,7 +76,7 @@ OUT_DIR=${SEG_BASE}/${MODEL}/results/data_${DATASIZE}/model_${SIZE}/psr_masks
 NNUNET_RESULTS=/work2/bz66izin-VSproject/nnunet/results
 NNUNET_DATASET=1
 NNUNET_CONFIG=2d
-NNUNET_FOLDS=all
+NNUNET_FOLDS="1 2 3 4"
 
 # WSI range used during reconstruction (must match RANGE_END in recon_all_configs.sh)
 RANGE_START=1
