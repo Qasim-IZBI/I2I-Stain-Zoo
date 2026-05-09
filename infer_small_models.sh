@@ -9,7 +9,7 @@
 #SBATCH --partition=paula
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-14   # 15 jobs = 5 models x 3 data-sizes  (model_small only, no miudiff)
+#SBATCH --array=0-17   # 18 jobs = 6 models x 3 data-sizes  (model_small only, no miudiff)
 
 set -euo pipefail
 
@@ -71,16 +71,16 @@ count_source_tiles() {
 }
 
 # -----------------------------
-# Axes  (model_small only; 5 models without miudiff; 3 data-sizes)
+# Axes  (model_small only; 6 models without miudiff; 3 data-sizes)
 # -----------------------------
-MODELS=("cyclegan" "unit" "munit" "dclgan" "uvcgan")
+MODELS=("cyclegan" "unit" "munit" "dclgan" "uvcgan" "cyclediffusion")
 DATASIZES=("small" "medium" "large")
 
 TASK_ID=${SLURM_ARRAY_TASK_ID}
 
-# Layout: task 0-4 → data_small, 5-9 → data_medium, 10-14 → data_large
-DATA_ID=$(( TASK_ID / 5 ))
-MODEL_ID=$(( TASK_ID % 5 ))
+# Layout: task 0-5 → data_small, 6-11 → data_medium, 12-17 → data_large
+DATA_ID=$(( TASK_ID / 6 ))
+MODEL_ID=$(( TASK_ID % 6 ))
 
 MODEL=${MODELS[$MODEL_ID]}
 DATASIZE=${DATASIZES[$DATA_ID]}
@@ -106,6 +106,9 @@ RANGE_END=5
 
 # Checkpoint step to load (1M)
 TARGET_STEP=1000000
+
+# CycleDiffusion DDIM steps
+CD_STEPS=200
 
 # Source of trained weights (unchanged output tree from training)
 TRAIN_BASE=/work2/bz66izin-VSproject/Outputs_noamp
@@ -180,6 +183,29 @@ case "${MODEL}" in
             --data       "${TEST_A}" \
             --data_range "${DATA_RANGE}" \
             --ckpt       "${CKPT}" \
+            --outdir     "${OUT_DIR}"
+        ;;
+
+    cyclediffusion)
+        MODEL_DIR=${TRAIN_BASE}/cyclediffusion/results/data_${DATASIZE}/model_${SIZE}
+        CKPT="${MODEL_DIR}/checkpoints/step_${TARGET_STEP}.pt"
+        OUT_DIR=${INFER_BASE}/cyclediffusion/results/data_${DATASIZE}/model_${SIZE}/inference
+
+        if [ ! -f "${CKPT}" ]; then
+            echo "[ERROR] Checkpoint not found: ${CKPT} — skipping."
+            exit 1
+        fi
+        echo "Checkpoint: ${CKPT}"
+
+        check_already_done "${OUT_DIR}"
+
+        run_cmd python "${PROJECT_ROOT}/inference.py" \
+            --model      cyclediffusion \
+            --direction  A2B \
+            --data       "${TEST_A}" \
+            --data_range "${DATA_RANGE}" \
+            --ckpt       "${CKPT}" \
+            --cd_steps   "${CD_STEPS}" \
             --outdir     "${OUT_DIR}"
         ;;
 
