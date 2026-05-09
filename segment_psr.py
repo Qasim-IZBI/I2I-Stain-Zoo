@@ -40,6 +40,8 @@ def run_nnunet_predict(tmp_input: Path, tmp_output: Path, args) -> None:
         "-d", str(args.nnunet_dataset),
         "-c", args.nnunet_config,
         "-f", *args.nnunet_folds.split(),
+        "-npp", str(args.npp),
+        "-nps", str(args.nps),
         "-device", args.device,
     ]
     if args.nnunet_trainer:
@@ -107,6 +109,10 @@ def main():
                         help="nnUNet trainer class override (uses nnUNet default if omitted)")
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu", "mps"],
                         help="Compute device [%(default)s]")
+    parser.add_argument("--npp", type=int, default=1,
+                        help="nnUNet preprocessing workers (-npp) [%(default)s]")
+    parser.add_argument("--nps", type=int, default=1,
+                        help="nnUNet segmentation export workers (-nps) [%(default)s]")
     parser.add_argument("--verbose", action="store_true",
                         help="Stream nnUNetv2_predict stdout/stderr live")
     args = parser.parse_args()

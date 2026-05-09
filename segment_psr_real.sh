@@ -5,7 +5,7 @@
 
 #SBATCH --time=4:00:00
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=128G
 #SBATCH --gres=gpu:1
 #SBATCH --partition=paula
 #SBATCH --ntasks=1
