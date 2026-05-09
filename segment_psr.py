@@ -31,7 +31,7 @@ def build_nnunet_input(wsi_paths: list, tmp_dir: Path) -> dict:
 def run_nnunet_predict(tmp_input: Path, tmp_output: Path, args) -> None:
     env = os.environ.copy()
     if args.nnunet_results:
-        env["NNUNET_RESULTS"] = str(args.nnunet_results)
+        env["nnUNet_results"] = str(args.nnunet_results)
 
     cmd = [
         "nnUNetv2_predict",
