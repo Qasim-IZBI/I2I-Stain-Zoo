@@ -604,14 +604,16 @@ Interpretation cheatsheet:
 - Across-tile ρ → catches the case where uncertainty is locally calibrated but flat at tile level (useless for triage).
 
 ### PSR Positive Area Segmentation
-Runs a nnUNet v2 segmentation model on pre-reconstructed Sirius Red WSIs to produce
-per-WSI tissue and PSR-positive area masks. Intended for task-based evaluation:
-compare PSR segmentation results between real SR WSIs and generated SR WSIs.
+Runs a nnUNet v2 segmentation model on Sirius Red images to produce tissue and
+PSR-positive area masks. Two modes:
 
-**Prerequisite:** reconstruct WSI TIFs from tiles first using `reconstruct.py`.
+**WSI mode (default):** takes pre-reconstructed WSI TIFs. Prerequisite: run `reconstruct.py` first.
+**Tile mode (`--tile_mode`):** segments inference tiles directly — no WSI reconstruction needed
+beforehand. Outputs per-tile masks in `{outdir}/{NNN}/images/` structure so that
+`reconstruct.py --tile_dir` can stitch them into WSI-level masks afterward.
 
 ```bash
-# Segment real SR WSIs
+# Segment real SR WSIs (WSI mode)
 python segment_psr.py \
     --data ./reconstructed_real/ \
     --outdir ./psr_masks_real/ \
@@ -620,7 +622,24 @@ python segment_psr.py \
     --nnunet_config 2d \
     --nnunet_folds all
 
-# Segment generated SR WSIs (e.g. from CycleGAN inference)
+# Segment generated SR — tile mode (no reconstruction step needed first)
+# Step 1: segment tiles directly → per-tile masks
+python segment_psr.py \
+    --data       /path/to/cyclegan/inference/ \
+    --tile_mode \
+    --data_range 1,5 \
+    --outdir     ./psr_tile_masks_cyclegan/ \
+    --nnunet_results /path/to/nnunet/results \
+    --nnunet_dataset 1 --nnunet_config 2d
+
+# Step 2: reconstruct tile masks → full WSI masks (for compare_psr.py)
+python reconstruct.py \
+    --metadata /path/to/tiles/testA \
+    --tile_dir ./psr_tile_masks_cyclegan/ \
+    --output   ./psr_masks_cyclegan/ \
+    --mode     rgb
+
+# Segment generated SR WSIs (WSI mode — reconstruct first)
 python reconstruct.py \
     --metadata /path/to/tiles/testB \
     --tile_dir /path/to/cyclegan/inference/ \
@@ -643,7 +662,9 @@ Output mask TIF label convention:
 - `2` — PSR-positive area
 
 Key flags:
-- `--nnunet_results` sets `NNUNET_RESULTS`; can be omitted if already set in the environment
+- `--tile_mode` — segment inference tiles directly; `--data` must have `{NNN}/images/` structure
+- `--data_range START,END` — (tile mode) limit to WSI folders 001–005 etc.
+- `--nnunet_results` sets `nnUNet_results`; can be omitted if already set in the environment
 - `--nnunet_trainer` overrides the nnUNet trainer class (uses nnUNet default if omitted)
 - `--device cuda|cpu|mps` (default: cuda)
 

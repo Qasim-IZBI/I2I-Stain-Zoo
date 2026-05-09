@@ -38,15 +38,15 @@ run_cmd() {
 # -----------------------------
 # Fixed paths
 # -----------------------------
+DATA_DIR=/work2/bz66izin-VSproject/VS_Data/eval_imgs/no_overlap/
 PROJECT_ROOT=I2I-Stain-Zoo
 
-# Reconstructed real PSR WSIs (output of recon_real_psr.sh)
-RECON_BASE=/work2/bz66izin-VSproject/reconstruction
-RECON_DIR=${RECON_BASE}/real/reconstructed
+# Real testB tiles (NNN/images/ structure — no WSI reconstruction needed)
+TEST_B="${DATA_DIR}testB/tiles/testB"
 
-# PSR segmentation output
+# Per-tile PSR mask output (NNN/images/ structure, ready for reconstruct.py)
 SEG_BASE=/work2/bz66izin-VSproject/psr_masks
-OUT_DIR=${SEG_BASE}/real/psr_masks
+OUT_DIR=${SEG_BASE}/real/tile_masks
 
 # nnUNet model settings
 NNUNET_RESULTS=/work2/bz66izin-VSproject/nnunet/results
@@ -57,39 +57,43 @@ NNUNET_FOLDS="1 2 3 4"
 RANGE_START=1
 RANGE_END=5
 N_EXPECTED=$(( RANGE_END - RANGE_START + 1 ))
+DATA_RANGE="${RANGE_START},${RANGE_END}"
 
 # -----------------------------
 # Pre-flight checks
 # -----------------------------
 
-if [ ! -d "${RECON_DIR}" ] || [ -z "$(ls -A "${RECON_DIR}" 2>/dev/null)" ]; then
-    echo "[ERROR] Reconstructed WSIs not found or empty: ${RECON_DIR}"
-    echo "        Run recon_real_psr.sh first."
+if [ ! -d "${TEST_B}" ] || [ -z "$(ls -A "${TEST_B}" 2>/dev/null)" ]; then
+    echo "[ERROR] Real testB tiles not found or empty: ${TEST_B}"
     exit 1
 fi
 
 if [ -d "${OUT_DIR}" ]; then
-    N_DONE=$(find "${OUT_DIR}" -maxdepth 1 -name "*.tif" ! -name "*_mask.tif" | wc -l)
+    N_DONE=$(find "${OUT_DIR}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
     if [ "${N_DONE}" -ge "${N_EXPECTED}" ]; then
-        echo "[SKIP] ${N_DONE}/${N_EXPECTED} PSR masks already present in ${OUT_DIR}. Exiting."
+        echo "[SKIP] ${N_DONE}/${N_EXPECTED} tile-mask folders already present in ${OUT_DIR}. Exiting."
         exit 0
     fi
     if [ "${N_DONE}" -gt 0 ]; then
-        echo "[WARN] Partial segmentation detected (${N_DONE}/${N_EXPECTED} masks). Re-running."
+        echo "[WARN] Partial segmentation detected (${N_DONE}/${N_EXPECTED} folders). Re-running."
     fi
 fi
 
 mkdir -p "${OUT_DIR}"
 
-echo "Recon dir : ${RECON_DIR}"
+echo "Tile dir  : ${TEST_B}"
 echo "Output dir: ${OUT_DIR}"
-echo "WSI range : ${RANGE_START}–${RANGE_END} (expecting ${N_EXPECTED} WSIs)"
+echo "WSI range : ${RANGE_START}–${RANGE_END}"
 
 # -----------------------------
-# Segment
+# Segment tiles directly (no WSI reconstruction needed beforehand)
+# Output: {OUT_DIR}/{NNN}/images/{tile}.tif
+# Next step: reconstruct.py --tile_dir to stitch masks into WSI TIFs
 # -----------------------------
 run_cmd python "${PROJECT_ROOT}/segment_psr.py" \
-    --data             "${RECON_DIR}" \
+    --data             "${TEST_B}" \
+    --tile_mode \
+    --data_range       "${DATA_RANGE}" \
     --outdir           "${OUT_DIR}" \
     --nnunet_results   "${NNUNET_RESULTS}" \
     --nnunet_dataset   "${NNUNET_DATASET}" \
@@ -97,4 +101,4 @@ run_cmd python "${PROJECT_ROOT}/segment_psr.py" \
     --nnunet_folds     "${NNUNET_FOLDS}" \
     --device           cuda
 
-echo "Done. Real PSR masks saved to ${OUT_DIR}"
+echo "Done. Real PSR tile masks saved to ${OUT_DIR}"
