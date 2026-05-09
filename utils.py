@@ -359,6 +359,8 @@ def reconstruct_wsi(
                 if needs_resize:
                     rgb_pil = rgb_pil.resize((tile_size, tile_size), Image.LANCZOS)
                 rgb_tile = np.array(rgb_pil)
+                if rgb_tile.ndim == 2:
+                    rgb_tile = rgb_tile[:, :, np.newaxis]  # (H,W) → (H,W,1) for grayscale/mask tiles
                 rgb_canvas[y:y+tile_size, x:x+tile_size] += rgb_tile
                 rgb_weight[y:y+tile_size, x:x+tile_size] += 1
 
