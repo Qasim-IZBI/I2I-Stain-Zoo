@@ -604,27 +604,33 @@ Interpretation cheatsheet:
 - Across-tile ρ → catches the case where uncertainty is locally calibrated but flat at tile level (useless for triage).
 
 ### PSR Positive Area Segmentation
-Runs a nnUNet v2 segmentation model on Sirius Red images to produce tissue and
-PSR-positive area masks. Two modes:
+Runs a nnUNet v2 segmentation model (Dataset214_SR, patch size 512×512, trained on
+full WSIs) on Sirius Red images to produce tissue and PSR-positive area masks. Two modes:
 
-**Tile mode (`--tile_mode`, recommended):** segments inference tiles directly — no WSI
-reconstruction needed beforehand. A background thread streams completed predictions into
-`{outdir}/{NNN}/images/` as nnUNet writes them. Crash-safe: a persistent `_nnunet_raw/`
-staging dir survives job failures and nnUNet automatically skips already-done tiles on
-re-run. Use `reconstruct.py --tile_dir` afterward to stitch tile masks into WSI TIFs.
+**Tile mode (`--tile_mode`, recommended):** segments inference tiles directly. Use
+`--pad_border 256` to pad each tile with white pixels before nnUNet — the model was
+trained on full WSIs and needs to see tissue against glass background to correctly
+classify the tissue class; without padding all-tissue tiles produce near-absent tissue
+segmentation. The prediction is cropped back to the original tile size automatically.
+A background thread streams completed predictions into `{outdir}/{NNN}/images/` as
+nnUNet writes them. Crash-safe: a persistent `_nnunet_raw/` staging dir survives job
+failures and nnUNet automatically skips already-done tiles on re-run. Use
+`reconstruct.py --tile_dir` afterward to stitch tile masks into WSI TIFs.
 
-**WSI mode (default):** takes pre-reconstructed WSI TIFs. Prerequisite: run `reconstruct.py` first.
+**WSI mode (default):** takes pre-reconstructed WSI TIFs. Not recommended — the model
+was trained on ~14k×15k slides and WSI-mode inference takes 7+ hours per job.
 
 ```bash
-# Segment inference tiles directly (tile mode — recommended)
+# Segment inference tiles (tile mode — recommended)
 # Step 1: segment tiles → per-tile masks streamed to {NNN}/images/ as nnUNet runs
 python segment_psr.py \
     --data       /path/to/cyclegan/inference/ \
     --tile_mode \
     --data_range 1,5 \
+    --pad_border 256 \
     --outdir     ./psr_tile_masks_cyclegan/ \
     --nnunet_results /path/to/nnunet/results \
-    --nnunet_dataset 1 --nnunet_config 2d --nnunet_folds "1 2 3 4"
+    --nnunet_dataset 214 --nnunet_config 2d --nnunet_folds "1 2 3 4"
 
 # Step 2: stitch tile masks → WSI-level mask TIFs (consumed by compare_psr.py)
 python reconstruct.py \
@@ -633,17 +639,11 @@ python reconstruct.py \
     --output   ./psr_masks_cyclegan/ \
     --mode     rgb
 
-# Segment pre-reconstructed WSIs (WSI mode)
-python segment_psr.py \
-    --data   ./reconstructed_wsis/ \
-    --outdir ./psr_masks/ \
-    --nnunet_results /path/to/nnunet/results \
-    --nnunet_dataset 1 --nnunet_config 2d
-
-# Stream nnUNet stdout/stderr live and use specific folds
-python segment_psr.py --data ./wsis/ --outdir ./masks/ \
-    --nnunet_results /path/to/nnunet/results --nnunet_dataset 1 \
-    --nnunet_folds "0 1 2" --verbose
+# Stream nnUNet stdout/stderr live
+python segment_psr.py --data ./inference/ --outdir ./masks/ \
+    --tile_mode --pad_border 256 \
+    --nnunet_results /path/to/nnunet/results --nnunet_dataset 214 \
+    --nnunet_folds "1 2 3 4" --verbose
 ```
 
 Output mask TIF label convention:
@@ -657,6 +657,7 @@ are handled correctly.
 
 Key flags:
 - `--tile_mode` — segment inference tiles directly; `--data` must have `{NNN}/images/` structure
+- `--pad_border N` — (tile mode) pad each tile with N white pixels before nnUNet and crop after; use 256 to fix tissue class detection on all-tissue tiles
 - `--data_range START,END` — (tile mode) limit to WSI folders e.g. `1,5`
 - `--nnunet_results` sets `nnUNet_results`; can be omitted if already set in the environment
 - `--nnunet_trainer` overrides the nnUNet trainer class (uses nnUNet default if omitted)
@@ -665,15 +666,16 @@ Key flags:
 ### PSR Evaluation Pipeline (SLURM)
 Full end-to-end pipeline from inference tiles to PSR distribution comparison.
 Each script has a pre-flight skip guard — safe to re-submit if a job is interrupted.
+Segmentation uses tile mode with `--pad_border 256` (Dataset214_SR, folds 1–4).
 
 ```bash
 # Generated SR (54-job arrays — 6 models × 3 model sizes × 3 data sizes)
 sbatch infer_small_models.sh          # inference tiles → {inference}/{model}/.../inference/
-sbatch segment_psr_all_configs.sh     # tile-level segmentation → .../tile_masks/{NNN}/images/
+sbatch segment_psr_all_configs.sh     # tile segmentation (padded) → .../tile_masks/{NNN}/images/
 sbatch recon_masks_all_configs.sh     # stitch masks → .../psr_masks_wsi/*.tif
 
 # Real SR testB (single jobs)
-sbatch segment_psr_real.sh            # tile-level segmentation → psr_masks/real/tile_masks/
+sbatch segment_psr_real.sh            # tile segmentation (padded) → psr_masks/real/tile_masks/
 sbatch recon_masks_real.sh            # stitch masks → psr_masks/real/psr_masks_wsi/*.tif
 
 # Compare distributions (all generated models vs real)
