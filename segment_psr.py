@@ -8,6 +8,9 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
+import tifffile
+
 
 def discover_wsi_tifs(data_dir: Path) -> list:
     tifs = sorted(data_dir.glob("*.tif")) + sorted(data_dir.glob("*.tiff"))
@@ -53,22 +56,44 @@ def build_nnunet_input(wsi_paths: list, tmp_dir: Path) -> dict:
     return mapping
 
 
-def build_nnunet_input_tiles(tiles: list, tmp_dir: Path) -> dict:
+def build_nnunet_input_tiles(tiles: list, tmp_dir: Path, pad_border: int = 0) -> dict:
     """
     Stage tiles into nnUNet input format with unique names {idx}_{tile_stem}_0000.tif.
-    Returns mapping: nnunet_stem → (idx_str, tile_stem, suffix).
+    Returns mapping: nnunet_stem → (idx_str, tile_stem, suffix, orig_h, orig_w).
+    When pad_border > 0, each tile is padded with white pixels on all sides so that
+    nnUNet sees tissue against background — orig_h/orig_w record the unpadded size
+    so the prediction can be cropped back.
     """
     mapping = {}
     for tile_path, idx_str, tile_stem in tiles:
         nnunet_stem = f"{idx_str}_{tile_stem}"
         link_name = f"{nnunet_stem}_0000{tile_path.suffix}"
         link = tmp_dir / link_name
-        try:
-            link.symlink_to(tile_path.resolve())
-        except OSError:
-            shutil.copy2(tile_path, link)
-        mapping[nnunet_stem] = (idx_str, tile_stem, tile_path.suffix)
+        if pad_border > 0:
+            img = tifffile.imread(tile_path)
+            orig_h, orig_w = img.shape[:2]
+            pad_width = ([(pad_border, pad_border), (pad_border, pad_border), (0, 0)]
+                         if img.ndim == 3 else pad_border)
+            padded = np.pad(img, pad_width, constant_values=255)
+            tifffile.imwrite(link, padded)
+        else:
+            orig_h, orig_w = None, None
+            try:
+                link.symlink_to(tile_path.resolve())
+            except OSError:
+                shutil.copy2(tile_path, link)
+        mapping[nnunet_stem] = (idx_str, tile_stem, tile_path.suffix, orig_h, orig_w)
     return mapping
+
+
+def _save_prediction(src: Path, dest: Path, pad_border: int, orig_h, orig_w) -> None:
+    """Write nnUNet prediction to dest, cropping the pad border if pad_border > 0."""
+    if pad_border > 0 and orig_h is not None:
+        pred = tifffile.imread(src)
+        cropped = pred[pad_border:pad_border + orig_h, pad_border:pad_border + orig_w]
+        tifffile.imwrite(dest, cropped)
+    else:
+        shutil.copy2(src, dest)
 
 
 def run_nnunet_predict(tmp_input: Path, tmp_output: Path, args) -> None:
@@ -142,10 +167,12 @@ def _nnunet_stem(filename: str) -> str:
     return stem
 
 
-def collect_tile_outputs(raw_dir: Path, outdir: Path, mapping: dict) -> None:
+def collect_tile_outputs(raw_dir: Path, outdir: Path, mapping: dict,
+                         pad_border: int = 0) -> None:
     """
     Copy nnUNet tile predictions from raw_dir into {outdir}/{idx}/images/{tile}.tif.
     Skips files already present at the destination (idempotent on re-run).
+    If pad_border > 0, crops the prediction back to the original tile size.
     """
     copied = 0
     for mask in sorted(raw_dir.iterdir()):
@@ -155,22 +182,23 @@ def collect_tile_outputs(raw_dir: Path, outdir: Path, mapping: dict) -> None:
         if stem not in mapping:
             print(f"[WARN] No mapping found for nnUNet output: {mask.name} (stem={stem!r})")
             continue
-        idx_str, tile_stem, orig_suffix = mapping[stem]
+        idx_str, tile_stem, orig_suffix, orig_h, orig_w = mapping[stem]
         out_dir = outdir / idx_str / "images"
         out_dir.mkdir(parents=True, exist_ok=True)
         dest = out_dir / f"{tile_stem}{orig_suffix}"
         if not dest.exists():
-            shutil.copy2(mask, dest)
+            _save_prediction(mask, dest, pad_border, orig_h, orig_w)
             copied += 1
     print(f"Saved {copied} tile mask(s) to {outdir}")
 
 
 def _stream_tile_outputs(raw_dir: Path, outdir: Path, mapping: dict,
-                         stop: threading.Event) -> None:
+                         stop: threading.Event, pad_border: int = 0) -> None:
     """
     Background thread: poll raw_dir every second and copy completed nnUNet
     predictions into {outdir}/{NNN}/images/ as they appear.
     Runs until stop is set, then does one final sweep.
+    If pad_border > 0, crops each prediction back to the original tile size.
     """
     moved: set = set()
     while True:
@@ -180,12 +208,12 @@ def _stream_tile_outputs(raw_dir: Path, outdir: Path, mapping: dict,
             stem = _nnunet_stem(f.name)
             if stem not in mapping:
                 continue
-            idx_str, tile_stem, orig_suffix = mapping[stem]
+            idx_str, tile_stem, orig_suffix, orig_h, orig_w = mapping[stem]
             dest_dir = outdir / idx_str / "images"
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest = dest_dir / f"{tile_stem}{orig_suffix}"
             try:
-                shutil.copy2(f, dest)
+                _save_prediction(f, dest, pad_border, orig_h, orig_w)
                 moved.add(f.name)
             except OSError:
                 pass  # file still being written by nnUNet; retry next cycle
@@ -229,6 +257,12 @@ def main():
                         help="nnUNet preprocessing workers (-npp) [%(default)s]")
     parser.add_argument("--nps", type=int, default=1,
                         help="nnUNet segmentation export workers (-nps) [%(default)s]")
+    parser.add_argument("--pad_border", type=int, default=0,
+                        help="(tile_mode) Pad each tile with this many white pixels on all sides "
+                             "before nnUNet inference, then crop the prediction back to the "
+                             "original tile size. Gives the model tissue/background context it "
+                             "needs to correctly classify the tissue class. Recommended: 256 "
+                             "[%(default)s]")
     parser.add_argument("--verbose", action="store_true",
                         help="Stream nnUNetv2_predict stdout/stderr live")
     args = parser.parse_args()
@@ -262,16 +296,19 @@ def main():
         nnunet_raw_dir = args.outdir / "_nnunet_raw"
         nnunet_raw_dir.mkdir(parents=True, exist_ok=True)
 
+        if args.pad_border > 0:
+            print(f"Padding each tile with {args.pad_border}px white border before nnUNet inference.")
+
         tmp_input = Path(tempfile.mkdtemp(prefix="nnunet_tiles_in_"))
         try:
-            tile_mapping = build_nnunet_input_tiles(tiles, tmp_input)
+            tile_mapping = build_nnunet_input_tiles(tiles, tmp_input, args.pad_border)
 
             # Background thread copies completed predictions into {NNN}/images/ as
             # nnUNet writes them — results appear incrementally during the run.
             stop_event = threading.Event()
             collector = threading.Thread(
                 target=_stream_tile_outputs,
-                args=(nnunet_raw_dir, args.outdir, tile_mapping, stop_event),
+                args=(nnunet_raw_dir, args.outdir, tile_mapping, stop_event, args.pad_border),
                 daemon=True,
             )
             collector.start()
@@ -284,7 +321,7 @@ def main():
             shutil.rmtree(tmp_input, ignore_errors=True)
 
         # Final sweep: catch any tiles the background thread may have missed
-        collect_tile_outputs(nnunet_raw_dir, args.outdir, tile_mapping)
+        collect_tile_outputs(nnunet_raw_dir, args.outdir, tile_mapping, args.pad_border)
         # Staging dir is no longer needed after all results are in place
         shutil.rmtree(nnunet_raw_dir, ignore_errors=True)
 
