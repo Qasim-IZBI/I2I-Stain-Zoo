@@ -34,6 +34,12 @@ STAGES = {
     "uvcgan":  [1, 2],
 }
 
+# Optional per-stage step cap: truncate a stage's CSV before concatenation
+# e.g. uvcgan stage 1 pretrain ran longer but we only want to show 250k
+STAGE_MAX_STEPS: dict[str, dict[int, int]] = {
+    "uvcgan": {1: 250_000},
+}
+
 SMOOTH_WINDOW = 20   # rolling-mean window (set to 1 to disable)
 MAX_STEPS = 750_000  # truncate all runs at this step
 
@@ -64,7 +70,7 @@ def load_loss(model: str, datasize: str, size: str):
     frames = []
     step_offset = 0
 
-    for path in paths:
+    for stage_num, path in zip(STAGES.get(model, [None]), paths):
         if not os.path.exists(path):
             warnings.warn(f"Missing: {path}")
             continue
@@ -77,6 +83,10 @@ def load_loss(model: str, datasize: str, size: str):
             warnings.warn(f"Expected columns missing in {path}")
             continue
         df = df[["global_step", "loss_G"]].dropna()
+        # per-stage step cap (e.g. uvcgan stage 1 → 250k)
+        stage_cap = STAGE_MAX_STEPS.get(model, {}).get(stage_num)
+        if stage_cap is not None:
+            df = df[df["global_step"] <= stage_cap]
         df["global_step"] = df["global_step"] + step_offset
         # drop duplicate steps (keep last value logged for that step)
         df = df.drop_duplicates(subset="global_step", keep="last")
