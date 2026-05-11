@@ -398,7 +398,8 @@ def main():
                         for k in range(args.num_samples):
                             s = torch.randn(1, model.cfg.style_dim, device=device)
                             y = model.decode_B(c, s)
-                            save_tile(y, f"{args.outdir}/{stem}_{k}.tif", color_ref_stats)
+                            suffix = f"_{k}" if args.num_samples > 1 else ""
+                            save_tile(y, f"{args.outdir}/{stem}{suffix}.tif", color_ref_stats)
                 else:
                     c, _ = model.encode_B(x)
                     if args.style_image:
@@ -411,7 +412,8 @@ def main():
                         for k in range(args.num_samples):
                             s = torch.randn(1, model.cfg.style_dim, device=device)
                             y = model.decode_A(c, s)
-                            save_tile(y, f"{args.outdir}/{stem}_{k}.tif", color_ref_stats)
+                            suffix = f"_{k}" if args.num_samples > 1 else ""
+                            save_tile(y, f"{args.outdir}/{stem}{suffix}.tif", color_ref_stats)
 
             elif args.model == "dclgan":
                 if args.direction == "A2B":
