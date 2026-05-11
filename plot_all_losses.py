@@ -21,7 +21,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 BASE = "/work2/bz66izin-VSproject/Outputs_noamp"
 
-MODELS = ["cyclegan", "unit", "munit", "dclgan", "miudiff", "uvcgan"]
+MODELS = ["cyclegan", "unit", "munit", "dclgan_org", "uvcgan", "cyclediffusion"]
 SIZES = ["small", "medium", "large"]      # model sizes  → color
 DATASIZES = ["small", "medium", "large"]  # data sizes   → linestyle
 
@@ -35,7 +35,7 @@ STAGES = {
 }
 
 SMOOTH_WINDOW = 20   # rolling-mean window (set to 1 to disable)
-MAX_STEPS = 1_000_000  # truncate all runs at this step
+MAX_STEPS = 750_000  # truncate all runs at this step
 
 
 # ---------------------------------------------------------------------------
