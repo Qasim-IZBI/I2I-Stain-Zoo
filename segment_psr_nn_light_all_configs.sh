@@ -5,7 +5,7 @@
 
 #SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem=256G
 #SBATCH --gres=gpu:1
 #SBATCH --partition=clara
 #SBATCH --exclude=clara[02,04-08]
@@ -119,6 +119,8 @@ run_cmd nnUNetv2_predict \
     -f 0 \
     -tr nnUNetTrainer \
     -c 2d \
-    -p nnUNetPlans
+    -p nnUNetPlans \
+    -npp 1 \
+    -nps 1
 
 echo "Done. WSI PSR masks (nn_light) saved to ${OUT_DIR}"
