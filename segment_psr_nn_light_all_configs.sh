@@ -6,9 +6,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
-#SBATCH --gres=gpu:1
-#SBATCH --partition=clara
-#SBATCH --exclude=clara[02,04-08]
+#SBATCH --partition=paula
 #SBATCH --ntasks=1
 #SBATCH --array=0-53   # 54 jobs = 6 models x 3 model-sizes x 3 data-sizes
 
@@ -18,7 +16,6 @@ set -x
 mkdir -p logs_seg_nn_light
 
 echo "Host: $(hostname)"
-echo "GPU: ${CUDA_VISIBLE_DEVICES:-not set}"
 
 module purge
 module load Anaconda3
@@ -121,6 +118,7 @@ run_cmd nnUNetv2_predict \
     -c 2d \
     -p nnUNetPlans \
     -npp 1 \
-    -nps 1
+    -nps 1 \
+    --device cpu
 
 echo "Done. WSI PSR masks (nn_light) saved to ${OUT_DIR}"
