@@ -119,6 +119,6 @@ run_cmd nnUNetv2_predict \
     -p nnUNetPlans \
     -npp 1 \
     -nps 1 \
-    --device cpu
+    -device cpu
 
 echo "Done. WSI PSR masks (nn_light) saved to ${OUT_DIR}"
