@@ -81,7 +81,7 @@ def _metric_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
     models  = [m for m in MODELS if m in df["model"].values]
     combos  = [(m, sv) for m in models for sv in MODEL_SIZES]
     n       = len(combos)
-    offsets = {c: (i - (n - 1) / 2) * (0.7 / n) for i, c in enumerate(combos)}
+    offsets = {c: (i - (n - 1) / 2) * (0.5 / n) for i, c in enumerate(combos)}
 
     for model, style_val in combos:
         mdf = df[(df["model"] == model) & (df[style_col] == style_val)].dropna(
@@ -92,13 +92,14 @@ def _metric_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
         off = offsets[(model, style_val)]
         xs  = mdf["_x"] + off
         ys  = mdf["mae_paired"]
-        err = mdf["mae_paired_std"].fillna(0)
+        std_col = "mae_paired_std"
+        err = mdf[std_col].fillna(0) if std_col in mdf.columns else 0
         ax.errorbar(xs, ys, yerr=err,
                     color=SIZE_COLORS[style_val],
                     marker=model_markers[model],
                     linestyle="none", markersize=6,
                     markeredgecolor="black", markeredgewidth=0.5,
-                    elinewidth=0.8, capsize=3, alpha=0.85)
+                    ecolor="black", elinewidth=1.5, capsize=5, alpha=0.85)
 
     # star = best config per model
     for _, brow in best.iterrows():
