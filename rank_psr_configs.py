@@ -81,7 +81,7 @@ def _metric_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
     models  = [m for m in MODELS if m in df["model"].values]
     combos  = [(m, sv) for m in models for sv in MODEL_SIZES]
     n       = len(combos)
-    offsets = {c: (i - (n - 1) / 2) * (0.5 / n) for i, c in enumerate(combos)}
+    offsets = {c: (i - (n - 1) / 2) * (0.2 / n) for i, c in enumerate(combos)}
 
     for model, style_val in combos:
         mdf = df[(df["model"] == model) & (df[style_col] == style_val)].dropna(
