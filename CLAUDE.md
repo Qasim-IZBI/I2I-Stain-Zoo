@@ -766,6 +766,7 @@ Outputs in `--outdir`:
 Key flags:
 - `--label_tissue INT` / `--label_psr INT` — nnUNet label indices (default: 1 / 2)
 - `--n_bootstrap INT` — bootstrap iterations for Wasserstein CI (default: 1000)
+- `--strip_prefix` — strip the first `_`-delimited token before stem matching (e.g. `SR_slide.tif` and `HE_slide.tif` both become `slide`); use when real and generated masks have different filename prefixes
 
 Pairwise metrics reported (each generated condition vs. real SR):
 

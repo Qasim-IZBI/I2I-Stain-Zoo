@@ -21,14 +21,22 @@ def compute_psr_fraction(mask_path: Path, label_tissue: int, label_psr: int):
     return psr / denom
 
 
-def load_condition(mask_dir: Path, label_tissue: int, label_psr: int) -> list:
+def normalize_stem(stem: str, strip_prefix: bool) -> str:
+    if not strip_prefix:
+        return stem
+    parts = stem.split("_", 1)
+    return parts[1] if len(parts) > 1 else stem
+
+
+def load_condition(mask_dir: Path, label_tissue: int, label_psr: int,
+                   strip_prefix: bool = False) -> list:
     records = []
     for p in sorted(list(mask_dir.glob("*.tif")) + list(mask_dir.glob("*.tiff"))):
         frac = compute_psr_fraction(p, label_tissue, label_psr)
         if frac is None:
             print(f"[WARN] No tissue pixels in {p.name} — skipping.")
             continue
-        records.append((p.stem, frac))
+        records.append((normalize_stem(p.stem, strip_prefix), frac))
     return records
 
 
@@ -140,6 +148,11 @@ def main():
                         help="nnUNet label index for PSR-positive class [%(default)s]")
     parser.add_argument("--n_bootstrap", type=int, default=1000,
                         help="Bootstrap iterations for Wasserstein-1 CI [%(default)s]")
+    parser.add_argument("--strip_prefix", action="store_true",
+                        help="Strip the first '_'-delimited token from filenames before "
+                             "matching (e.g. SR_slide.tif and HE_slide.tif both become "
+                             "'slide' for pairing). Use when real and generated masks have "
+                             "different prefixes.")
     args = parser.parse_args()
 
     if args.labels is not None and len(args.labels) != len(args.masks_generated):
@@ -149,7 +162,8 @@ def main():
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     # ---- load real SR ----
-    real_records = load_condition(args.masks_real, args.label_tissue, args.label_psr)
+    real_records = load_condition(args.masks_real, args.label_tissue, args.label_psr,
+                                  args.strip_prefix)
     if not real_records:
         raise RuntimeError(f"No valid mask TIFs found in {args.masks_real}")
     real_fracs = np.array([r[1] for r in real_records])
@@ -162,7 +176,8 @@ def main():
     gen_records    = {}
     gen_dicts      = {}
     for label, mask_dir in zip(labels, args.masks_generated):
-        records = load_condition(mask_dir, args.label_tissue, args.label_psr)
+        records = load_condition(mask_dir, args.label_tissue, args.label_psr,
+                                  args.strip_prefix)
         if not records:
             print(f"[WARN] No valid masks in {mask_dir} — skipping '{label}'")
             continue
