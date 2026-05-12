@@ -784,6 +784,26 @@ Pairwise metrics reported (each generated condition vs. real SR):
 - Mean difference (generated − real): positive = over-estimates PSR
 - Std ratio (generated / real): <1 = collapsed variance (mode failure)
 
+### Rank PSR Configs — Best Config per Model Family
+Reads the `summary.json` files produced by `compare_psr_all_configs.sh` (one per model)
+and identifies the best model-size / data-size combination within each model family.
+Ranking criterion: highest Spearman ρ, tiebreak lowest MAE.
+
+```bash
+python rank_psr_configs.py \
+    --indir /work2/bz66izin-VSproject/psr_comparison/ \
+    --outdir ./psr_best_config/
+```
+
+Outputs in `--outdir`:
+- `best_per_model.csv` — one row per model: best config + Spearman ρ, MAE, Pearson r, n_matched
+- `all_configs.csv` — all 54 configs with paired metrics (for inspection)
+- `best_per_model.png` — 2×3 scatter grid: one panel per model, Spearman ρ (y) vs MAE (x),
+  all 9 configs as blue dots annotated with config labels, best config highlighted in red
+
+`--indir` must contain one subdirectory per model (cyclegan/, unit/, etc.), each holding
+a `summary.json` from `compare_psr.py`. Missing model directories are warned and skipped.
+
 ### Cross-stain Consistency
 Measures spatial agreement between acellular eosinophilic regions in the H&E input
 (collagen proxy, via colour deconvolution) and PSR-positive regions in the generated SR
