@@ -308,6 +308,8 @@ def main():
                         help="Log losses every this many steps")
     parser.add_argument("--init_ckpt", type=str, default=None,
                     help="Pretrained checkpoint to initialise model weights")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Global random seed for reproducibility (sets torch, numpy, python random)")
 
     # ---- CycleGAN architecture ----
     parser.add_argument("--cyclegan_ngf", type=int, default=64,
@@ -425,6 +427,13 @@ def main():
 
 
     args = parser.parse_args()
+
+    if args.seed is not None:
+        import random, numpy as np
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
 
     device = get_device()
 

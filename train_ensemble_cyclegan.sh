@@ -12,7 +12,7 @@
 #SBATCH --ntasks=1
 #SBATCH --array=0-4   # 5 ensemble members
 
-set -euo pipefail
+set -eo pipefail
 
 module purge
 module load Anaconda3
@@ -71,7 +71,7 @@ run_cmd() {
 
 run_cmd python "${PROJECT_ROOT}/train.py" \
     --model cyclegan \
-    --step 750000 \
+    --steps 750000 \
     --cyclegan_ngf "${NGF}" \
     --cyclegan_n_blocks "${NBLOCKS}" \
     --dataA "${DATA_A}" \
