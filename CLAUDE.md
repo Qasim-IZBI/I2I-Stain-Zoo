@@ -702,6 +702,40 @@ psr_masks/real/
   psr_masks_wsi/            ← reconstructed WSI masks (recon_masks_real.sh)
 ```
 
+### Apply HE Tissue Mask to PSR Masks
+Removes spurious nnUNet predictions in background regions of translated SR images by
+zeroing out any PSR mask pixel that falls outside the HE tissue boundary. The model
+was trained on full WSIs with a white glass background; translated tiles lack that
+context, causing over-estimated tissue/PSR+ signal in background areas.
+
+```bash
+# Directory mode — files matched by stem name
+python apply_he_mask.py \
+    --psr_masks  ./psr_masks_wsi/ \
+    --he_masks   ./he_tissue_masks/ \
+    --outdir     ./psr_masks_cleaned/
+
+# Single-file pair
+python apply_he_mask.py \
+    --psr_masks  ./psr_masks_wsi/slide_001.tif \
+    --he_masks   ./he_tissue_masks/slide_001.tif \
+    --outdir     ./psr_masks_cleaned/
+```
+
+Output masks keep the original label convention (0=background, 1=tissue, 2=PSR+) inside
+the HE tissue boundary; all pixels outside are forced to 0. Pass `--outdir` output to
+`compare_psr.py` or `cross_stain_consistency.py` as usual.
+
+Key flags:
+- `--psr_masks` — directory of PSR mask TIFs or a single TIF
+- `--he_masks` — directory of HE tissue mask TIFs (matched by stem) or a single TIF
+- `--outdir` — output directory for cleaned masks
+
+Notes:
+- Multi-channel TIFs are handled via `[..., 0]` slice (first channel used)
+- If HE and PSR masks differ in spatial size, the HE mask is resized with nearest-neighbour interpolation
+- PSR files with no matching HE mask are warned and skipped; a summary count is printed
+
 ### PSR Distribution Comparison
 Compares PSR-positive area fraction distributions between real SR and one or more sets of
 generated SR masks (output of `segment_psr.py`). Computes Wasserstein-1 distance with
