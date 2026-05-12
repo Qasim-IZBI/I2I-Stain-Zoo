@@ -10,9 +10,9 @@ Outputs
 best_per_model.csv   — one row per model: best config + its paired metrics
 all_configs.csv      — all configs × models with paired metrics (for inspection)
 best_per_model.png   — 2×2 line+marker grid: rows = metric (Pearson r / MAE),
-                       cols = x-axis (data size / model size); colour = model family,
-                       line style + marker = complementary size axis,
-                       star = best config per model family
+                       cols = x-axis (data size / model size); colour = complementary
+                       size axis, marker = model family, fixed x-offset per
+                       (model, size) combo to prevent overlap, star = best config
 """
 
 import argparse
@@ -58,10 +58,10 @@ def pick_best(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-DATASIZES    = ["small", "medium", "large"]
-MODEL_SIZES  = ["small", "medium", "large"]
-SIZE_MARKERS = {"small": "o", "medium": "s", "large": "^"}
-SIZE_STYLES  = {"small": "-", "medium": "--", "large": ":"}
+DATASIZES     = ["small", "medium", "large"]
+MODEL_SIZES   = ["small", "medium", "large"]
+SIZE_COLORS   = {"small": "#1f77b4", "medium": "#ff7f0e", "large": "#2ca02c"}
+MODEL_MARKERS = ["o", "s", "^", "D", "v", "P"]
 
 
 def _parse_config(config: str):
@@ -72,32 +72,42 @@ def _parse_config(config: str):
 
 def _metric_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
                   metric: str, x_col: str, style_col: str,
-                  model_colors: dict, xlabel: str, ylabel: str) -> None:
-    """Draw one metric panel. x_col varies along x; style_col drives line+marker style."""
-    x_pos = {s: i for i, s in enumerate(MODEL_SIZES)}
+                  model_markers: dict, xlabel: str, ylabel: str) -> None:
+    """Draw one metric panel.
+    x_col varies along x; style_col is the complementary size axis (drives colour).
+    Each (model, style_val) combination gets a fixed x-offset so lines don't overlap."""
+    x_pos    = {s: i for i, s in enumerate(MODEL_SIZES)}
+    models   = [m for m in MODELS if m in df["model"].values]
+    combos   = [(m, sv) for m in models for sv in MODEL_SIZES]
+    n        = len(combos)
+    offsets  = {c: (i - (n - 1) / 2) * (0.7 / n) for i, c in enumerate(combos)}
 
-    for model in [m for m in MODELS if m in df["model"].values]:
-        mdf = df[df["model"] == model].dropna(subset=[metric])
-        for style_val in MODEL_SIZES:
-            sub = mdf[mdf[style_col] == style_val].copy()
-            if sub.empty:
-                continue
-            sub = sub.assign(_x=sub[x_col].map(x_pos)).sort_values("_x")
-            ax.plot(sub["_x"], sub[metric],
-                    color=model_colors[model],
-                    linestyle=SIZE_STYLES[style_val],
-                    marker=SIZE_MARKERS[style_val],
-                    linewidth=1.0, markersize=7, alpha=0.85)
+    for model, style_val in combos:
+        mdf = df[(df["model"] == model) & (df[style_col] == style_val)].dropna(
+            subset=[metric])
+        if mdf.empty:
+            continue
+        mdf = mdf.assign(_x=mdf[x_col].map(x_pos)).sort_values("_x")
+        off = offsets[(model, style_val)]
+        ax.plot(mdf["_x"] + off, mdf[metric],
+                color=SIZE_COLORS[style_val],
+                marker=model_markers[model],
+                linestyle="-", linewidth=0.9, markersize=6,
+                markeredgecolor="black", markeredgewidth=0.5,
+                alpha=0.85)
 
     # star = best config per model
     for _, brow in best.iterrows():
-        xi = x_pos.get(brow[x_col])
+        xi  = x_pos.get(brow[x_col])
         val = brow.get(metric)
-        if xi is not None and val is not None and not pd.isna(val):
-            ax.scatter([xi], [val],
-                       color=model_colors.get(brow["model"], "gray"),
-                       marker="*", s=220, edgecolors="black",
-                       linewidths=0.8, zorder=5)
+        sv  = brow.get(style_col)
+        if xi is None or val is None or pd.isna(val):
+            continue
+        off = offsets.get((brow["model"], sv), 0)
+        ax.scatter([xi + off], [val],
+                   color=SIZE_COLORS.get(sv, "gray"),
+                   marker="*", s=220, edgecolors="black",
+                   linewidths=0.8, zorder=5)
 
     ax.set_xticks(list(x_pos.values()))
     ax.set_xticklabels(list(x_pos.keys()), fontsize=9)
@@ -113,8 +123,8 @@ def plot_grid(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
-    models       = [m for m in MODELS if m in df["model"].values]
-    model_colors = {m: plt.cm.tab10.colors[i] for i, m in enumerate(models)}
+    models        = [m for m in MODELS if m in df["model"].values]
+    model_markers = {m: MODEL_MARKERS[i] for i, m in enumerate(models)}
 
     df = df.copy()
     df[["model_size", "data_size"]] = df["config"].apply(
@@ -130,50 +140,51 @@ def plot_grid(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
     # row 0 — Pearson r
     _metric_panel(axes[0, 0], df, best, "pearson_r",
                   x_col="data_size",  style_col="model_size",
-                  model_colors=model_colors,
+                  model_markers=model_markers,
                   xlabel="Data size", ylabel="Pearson r")
-    axes[0, 0].set_title("Pearson r  vs  data size\n(line style = model size)", fontsize=9)
+    axes[0, 0].set_title("Pearson r  vs  data size\n(colour = model size)", fontsize=9)
 
     _metric_panel(axes[0, 1], df, best, "pearson_r",
                   x_col="model_size", style_col="data_size",
-                  model_colors=model_colors,
+                  model_markers=model_markers,
                   xlabel="Model size", ylabel="Pearson r")
-    axes[0, 1].set_title("Pearson r  vs  model size\n(line style = data size)", fontsize=9)
+    axes[0, 1].set_title("Pearson r  vs  model size\n(colour = data size)", fontsize=9)
 
     # row 1 — MAE
     _metric_panel(axes[1, 0], df, best, "mae_paired",
                   x_col="data_size",  style_col="model_size",
-                  model_colors=model_colors,
+                  model_markers=model_markers,
                   xlabel="Data size", ylabel="MAE (paired)")
-    axes[1, 0].set_title("MAE  vs  data size\n(line style = model size)", fontsize=9)
+    axes[1, 0].set_title("MAE  vs  data size\n(colour = model size)", fontsize=9)
 
     _metric_panel(axes[1, 1], df, best, "mae_paired",
                   x_col="model_size", style_col="data_size",
-                  model_colors=model_colors,
+                  model_markers=model_markers,
                   xlabel="Model size", ylabel="MAE (paired)")
-    axes[1, 1].set_title("MAE  vs  model size\n(line style = data size)", fontsize=9)
+    axes[1, 1].set_title("MAE  vs  model size\n(colour = data size)", fontsize=9)
 
     # ---- legend (outside, right side) ----
-    color_handles = [Patch(facecolor=model_colors[m], edgecolor="black",
-                           linewidth=0.7, label=m)
-                     for m in models]
-    style_handles = [Line2D([0], [0], color="gray",
-                            linestyle=SIZE_STYLES[s], marker=SIZE_MARKERS[s],
-                            markersize=7, label=s)
-                     for s in MODEL_SIZES]
-    star_handle   = [Line2D([0], [0], marker="*", color="w",
-                            markerfacecolor="gray", markeredgecolor="black",
-                            markersize=12, label="best config")]
+    color_handles  = [Patch(facecolor=SIZE_COLORS[s], edgecolor="black",
+                            linewidth=0.7, label=s)
+                      for s in MODEL_SIZES]
+    marker_handles = [Line2D([0], [0], color="gray",
+                             marker=model_markers[m], markersize=7,
+                             markeredgecolor="black", markeredgewidth=0.5,
+                             linestyle="-", label=m)
+                      for m in models]
+    star_handle    = [Line2D([0], [0], marker="*", color="w",
+                             markerfacecolor="gray", markeredgecolor="black",
+                             markersize=12, label="best config")]
 
     fig.legend(handles=color_handles + [Line2D([], [], linestyle="none")] +
-               style_handles + star_handle,
-               fontsize=8, loc="center right", bbox_to_anchor=(1.13, 0.5),
-               title="Model family  |  Size  |  Best", title_fontsize=8,
-               frameon=True)
+               marker_handles + star_handle,
+               fontsize=8, loc="center right", bbox_to_anchor=(1.15, 0.5),
+               title="Size (colour)  |  Model (marker)  |  Best",
+               title_fontsize=8, frameon=True)
 
     fig.suptitle(
-        "PSR paired metrics — colour = model family   "
-        "line style/marker = complementary size axis   star = best config per model",
+        "PSR paired metrics — colour = complementary size axis   "
+        "marker = model family   star = best config per model",
         fontsize=9,
     )
     fig.tight_layout()
