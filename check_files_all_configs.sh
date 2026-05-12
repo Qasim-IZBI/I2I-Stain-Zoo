@@ -84,6 +84,7 @@ echo "Generated : ${GEN_DIR}"
 
 # check_files.py exits 1 if any files are missing — propagated via set -e
 run_cmd python "${PROJECT_ROOT}/check_files.py" \
-    --dirA "${REAL_DIR}" \
-    --dirB "${GEN_DIR}" \
-    --ext  .tif
+    --dirA         "${REAL_DIR}" \
+    --dirB         "${GEN_DIR}" \
+    --ext          .tif \
+    --strip_prefix
