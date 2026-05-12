@@ -802,9 +802,9 @@ sbatch rank_psr_configs.sh
 Outputs in `--outdir`:
 - `best_per_model.csv` — one row per model: best config + Spearman ρ, MAE, Pearson r, n_matched
 - `all_configs.csv` — all 54 configs with paired metrics (for inspection)
-- `best_per_model.png` — 2×3 scatter grid: top row = one panel per data size, bottom row = one panel per
-  model size; Pearson r (y) vs MAE (x); colour = model family, marker = complementary size axis
-  (○ small, □ medium, △ large), star = best config per model family
+- `best_per_model.png` — 2×2 line plot: rows = metric (Pearson r / MAE), cols = x-axis dimension
+  (data size / model size); colour = model family, line style + marker = complementary size axis
+  (solid-○ small, dashed-□ medium, dotted-△ large), star = best config per model family
 
 `--indir` must contain one subdirectory per model (cyclegan/, unit/, etc.), each holding
 a `summary.json` from `compare_psr.py`. Missing model directories are warned and skipped.
