@@ -88,47 +88,57 @@ def plot_paired_scatter(real_dict: dict, gen_dicts: dict, outpath: Path) -> None
     print(f"Saved paired scatter → {outpath}")
 
 
-def plot_paired_metrics(pairwise: dict, outpath: Path) -> None:
+def plot_paired_metrics(pairwise: dict, paired_arrays: dict, outpath: Path) -> None:
     labels = list(pairwise.keys())
     colors = list(plt.cm.tab10.colors[:len(labels)])
     x      = np.arange(len(labels))
+    rng    = np.random.default_rng(42)
 
-    metrics = [
-        ("pearson_r",                          "Pearson r",          (-1, 1),  0.0),
-        ("spearman_rho",                        "Spearman ρ",         (-1, 1),  0.0),
-        ("mae_paired",                          "MAE (paired)",       (0, None), None),
-        ("mean_paired_diff_generated_minus_real","Mean paired diff\n(generated − real)", (None, None), 0.0),
-    ]
+    fig, axes = plt.subplots(2, 2, figsize=(max(6, len(labels) * 1.4), 7))
 
-    fig, axes = plt.subplots(2, 2, figsize=(max(6, len(labels) * 1.2), 7))
+    # ---- top row: Pearson r and Spearman rho — single point per condition ----
+    for ax, (key, title) in zip(axes[0], [
+        ("pearson_r",    "Pearson r"),
+        ("spearman_rho", "Spearman ρ"),
+    ]):
+        for xi, (label, color) in enumerate(zip(labels, colors)):
+            val = pairwise[label].get(key)
+            if val is not None:
+                ax.scatter([xi], [val], color=color, s=80,
+                           edgecolors="black", linewidths=0.8, zorder=3)
+            else:
+                ax.text(xi, 0, "n/a", ha="center", va="center",
+                        fontsize=7, color="gray")
+        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax.set_ylim(-1, 1)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
+        ax.set_title(title, fontsize=9)
+        ax.set_ylabel(title, fontsize=8)
 
-    for ax, (key, title, ylim, hline) in zip(axes.flat, metrics):
-        vals = [pairwise[l].get(key) for l in labels]
-        has_val = [v is not None for v in vals]
-
-        bar_vals   = [v if v is not None else 0.0 for v in vals]
-        bar_colors = [c if h else "#cccccc" for c, h in zip(colors, has_val)]
-
-        bars = ax.bar(x, bar_vals, color=bar_colors, edgecolor="black",
-                      linewidth=0.7, width=0.6)
-
-        # mark bars with no data
-        for bar, h in zip(bars, has_val):
-            if not h:
-                ax.text(bar.get_x() + bar.get_width() / 2,
-                        bar.get_height() + 0.002, "n/a",
-                        ha="center", va="bottom", fontsize=7, color="gray")
-
+    # ---- bottom row: MAE and mean diff — per-WSI scatter + mean ± std ----
+    for ax, (arr_key, title, hline) in zip(axes[1], [
+        ("abs_diffs",    "MAE (per WSI)",                   None),
+        ("signed_diffs", "Paired diff\n(generated − real)", 0.0),
+    ]):
+        for xi, (label, color) in enumerate(zip(labels, colors)):
+            arrs = paired_arrays.get(label)
+            if arrs is None:
+                ax.text(xi, 0, "n/a", ha="center", va="center",
+                        fontsize=7, color="gray")
+                continue
+            vals   = arrs[arr_key]
+            jitter = rng.uniform(-0.15, 0.15, size=len(vals))
+            ax.scatter(xi + jitter, vals, color=color, s=30, alpha=0.55,
+                       edgecolors="none", zorder=2)
+            mean = float(vals.mean())
+            std  = float(vals.std(ddof=1)) if len(vals) > 1 else 0.0
+            ax.errorbar(xi, mean, yerr=std, fmt="o", color=color,
+                        markeredgecolor="black", markeredgewidth=0.8,
+                        ecolor="black", elinewidth=1.5, capsize=5,
+                        markersize=8, zorder=4)
         if hline is not None:
             ax.axhline(hline, color="gray", linestyle="--", linewidth=0.8)
-
-        ymin, ymax = ylim
-        current_ymin, current_ymax = ax.get_ylim()
-        if ymin is not None:
-            ax.set_ylim(bottom=min(ymin, current_ymin))
-        if ymax is not None:
-            ax.set_ylim(top=max(ymax, current_ymax))
-
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
         ax.set_title(title, fontsize=9)
@@ -261,7 +271,8 @@ def main():
             "max":    float(fracs.max()),
         }
 
-    pairwise = {}
+    pairwise      = {}
+    paired_arrays = {}
     for label, fracs in conditions.items():
         if label == "real":
             continue
@@ -285,8 +296,11 @@ def main():
             gen_m  = np.array([gen_dict[s]  for s in common_stems])
             r,   r_p   = pearsonr(real_m, gen_m)
             rho, rho_p = spearmanr(real_m, gen_m)
-            mae_paired       = float(np.mean(np.abs(gen_m - real_m)))
-            mean_paired_diff = float(np.mean(gen_m - real_m))
+            abs_diffs    = np.abs(gen_m - real_m)
+            signed_diffs = gen_m - real_m
+            mae_paired       = float(abs_diffs.mean())
+            mean_paired_diff = float(signed_diffs.mean())
+            paired_arrays[label] = {"abs_diffs": abs_diffs, "signed_diffs": signed_diffs}
         else:
             r = r_p = rho = rho_p = mae_paired = mean_paired_diff = None
 
@@ -319,7 +333,8 @@ def main():
     if gen_dicts:
         plot_paired_scatter(real_dict, gen_dicts, outpath=args.outdir / "paired_scatter.png")
     if pairwise:
-        plot_paired_metrics(pairwise, outpath=args.outdir / "paired_metrics.png")
+        plot_paired_metrics(pairwise, paired_arrays,
+                            outpath=args.outdir / "paired_metrics.png")
 
 
 if __name__ == "__main__":
