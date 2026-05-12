@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tifffile
-from scipy.stats import ks_2samp, wasserstein_distance
+from scipy.stats import ks_2samp, wasserstein_distance, pearsonr, spearmanr
 
 
 def compute_psr_fraction(mask_path: Path, label_tissue: int, label_psr: int):
@@ -42,6 +42,42 @@ def bootstrap_wasserstein(a: np.ndarray, b: np.ndarray, n: int = 1000, seed: int
         sb = rng.choice(b, size=len(b), replace=True)
         stats.append(wasserstein_distance(sa, sb))
     return np.percentile(stats, [2.5, 50, 97.5])
+
+
+def plot_paired_scatter(real_dict: dict, gen_dicts: dict, outpath: Path) -> None:
+    labels = list(gen_dicts.keys())
+    ncols  = max(1, len(labels))
+    fig, axes = plt.subplots(1, ncols, figsize=(4 * ncols, 4), squeeze=False)
+
+    for ax, label in zip(axes[0], labels):
+        gen_dict = gen_dicts[label]
+        common   = sorted(set(real_dict) & set(gen_dict))
+        if len(common) < 2:
+            ax.set_title(f"{label}\n(too few matched WSIs)")
+            continue
+        rx = np.array([real_dict[s] for s in common])
+        gy = np.array([gen_dict[s]  for s in common])
+
+        r,   _   = pearsonr(rx, gy)
+        rho, _   = spearmanr(rx, gy)
+
+        ax.scatter(rx, gy, s=60, edgecolors="black", linewidths=0.7,
+                   color=plt.cm.tab10.colors[list(gen_dicts).index(label)])
+        lim = (0.0, max(rx.max(), gy.max()) * 1.05)
+        ax.plot(lim, lim, "--", color="gray", linewidth=0.9, label="y = x")
+        ax.set_xlim(*lim)
+        ax.set_ylim(*lim)
+        ax.set_xlabel("Real PSR fraction")
+        ax.set_ylabel("Generated PSR fraction")
+        ax.set_title(f"{label}\nr={r:.2f}  ρ={rho:.2f}  n={len(common)}")
+        ax.legend(fontsize=7)
+
+    fig.suptitle("Paired PSR fractions: real vs. generated (matched by WSI stem)",
+                 fontsize=9)
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+    print(f"Saved paired scatter → {outpath}")
 
 
 def plot_comparison(conditions: dict, real_label: str, outpath: Path) -> None:
@@ -117,12 +153,14 @@ def main():
     if not real_records:
         raise RuntimeError(f"No valid mask TIFs found in {args.masks_real}")
     real_fracs = np.array([r[1] for r in real_records])
+    real_dict  = {s: f for s, f in real_records}
     print(f"Real SR : {len(real_fracs)} WSI(s)  mean={real_fracs.mean():.4f}  "
           f"std={real_fracs.std(ddof=1) if len(real_fracs) > 1 else 0:.4f}")
 
     # ---- load generated conditions ----
     conditions     = {"real": real_fracs}
     gen_records    = {}
+    gen_dicts      = {}
     for label, mask_dir in zip(labels, args.masks_generated):
         records = load_condition(mask_dir, args.label_tissue, args.label_psr)
         if not records:
@@ -131,6 +169,7 @@ def main():
         fracs = np.array([r[1] for r in records])
         conditions[label] = fracs
         gen_records[label] = records
+        gen_dicts[label]   = {s: f for s, f in records}
         print(f"{label:15s}: {len(fracs)} WSI(s)  mean={fracs.mean():.4f}  "
               f"std={fracs.std(ddof=1) if len(fracs) > 1 else 0:.4f}")
 
@@ -158,21 +197,47 @@ def main():
     for label, fracs in conditions.items():
         if label == "real":
             continue
-        w1       = float(wasserstein_distance(real_fracs, fracs))
-        ci       = bootstrap_wasserstein(real_fracs, fracs, n=args.n_bootstrap)
+        # distribution-level metrics (unpaired)
+        w1            = float(wasserstein_distance(real_fracs, fracs))
+        ci            = bootstrap_wasserstein(real_fracs, fracs, n=args.n_bootstrap)
         ks_stat, ks_p = ks_2samp(real_fracs, fracs)
-        mean_diff    = float(fracs.mean() - real_fracs.mean())
-        real_std = real_fracs.std(ddof=1) if len(real_fracs) > 1 else 0
-        std_ratio = float(fracs.std(ddof=1) / real_std) if real_std > 0 and len(fracs) > 1 else None
+        mean_diff     = float(fracs.mean() - real_fracs.mean())
+        real_std      = real_fracs.std(ddof=1) if len(real_fracs) > 1 else 0
+        std_ratio     = float(fracs.std(ddof=1) / real_std) if real_std > 0 and len(fracs) > 1 else None
+
+        # paired metrics (matched by WSI stem)
+        gen_dict     = gen_dicts[label]
+        common_stems = sorted(set(real_dict) & set(gen_dict))
+        n_matched    = len(common_stems)
+        if n_matched < len(real_dict) or n_matched < len(fracs):
+            print(f"[INFO] {label}: {n_matched}/{len(real_dict)} real / "
+                  f"{len(fracs)} generated WSIs matched by stem.")
+        if n_matched >= 3:
+            real_m = np.array([real_dict[s] for s in common_stems])
+            gen_m  = np.array([gen_dict[s]  for s in common_stems])
+            r,   r_p   = pearsonr(real_m, gen_m)
+            rho, rho_p = spearmanr(real_m, gen_m)
+            mae_paired       = float(np.mean(np.abs(gen_m - real_m)))
+            mean_paired_diff = float(np.mean(gen_m - real_m))
+        else:
+            r = r_p = rho = rho_p = mae_paired = mean_paired_diff = None
+
         pairwise[label] = {
-            "wasserstein_1":                      w1,
-            "wasserstein_bootstrap_95ci":         {"low": float(ci[0]),
-                                                   "median": float(ci[1]),
-                                                   "high": float(ci[2])},
-            "ks_statistic":                       float(ks_stat),
-            "ks_pvalue":                          float(ks_p),
-            "mean_diff_generated_minus_real":     mean_diff,
-            "std_ratio_generated_over_real":      std_ratio,
+            "wasserstein_1":                          w1,
+            "wasserstein_bootstrap_95ci":             {"low": float(ci[0]),
+                                                       "median": float(ci[1]),
+                                                       "high": float(ci[2])},
+            "ks_statistic":                           float(ks_stat),
+            "ks_pvalue":                              float(ks_p),
+            "mean_diff_generated_minus_real":         mean_diff,
+            "std_ratio_generated_over_real":          std_ratio,
+            "n_matched":                              n_matched,
+            "pearson_r":                              float(r)   if r   is not None else None,
+            "pearson_pvalue":                         float(r_p) if r_p is not None else None,
+            "spearman_rho":                           float(rho)   if rho   is not None else None,
+            "spearman_pvalue":                        float(rho_p) if rho_p is not None else None,
+            "mae_paired":                             mae_paired,
+            "mean_paired_diff_generated_minus_real":  mean_paired_diff,
         }
 
     json_path = args.outdir / "summary.json"
@@ -183,6 +248,8 @@ def main():
 
     # ---- plot ----
     plot_comparison(conditions, real_label="real", outpath=args.outdir / "comparison.png")
+    if gen_dicts:
+        plot_paired_scatter(real_dict, gen_dicts, outpath=args.outdir / "paired_scatter.png")
 
 
 if __name__ == "__main__":

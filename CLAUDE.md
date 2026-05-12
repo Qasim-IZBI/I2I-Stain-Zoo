@@ -738,8 +738,8 @@ Notes:
 
 ### PSR Distribution Comparison
 Compares PSR-positive area fraction distributions between real SR and one or more sets of
-generated SR masks (output of `segment_psr.py`). Computes Wasserstein-1 distance with
-bootstrap 95% CI, KS test, mean difference, and std ratio — all vs. real SR as reference.
+generated SR masks (output of `segment_psr.py`). Reports both **paired** metrics (matched
+by WSI stem, primary) and **distributional** metrics (unpaired, secondary) vs. real SR.
 
 ```bash
 # Compare one generated condition against real SR
@@ -761,12 +761,22 @@ Outputs in `--outdir`:
 - `per_wsi.csv` — one row per WSI: wsi stem, condition, psr_fraction
 - `summary.json` — per-condition stats (mean, std, median, min, max) and pairwise metrics vs real
 - `comparison.png` — box + individual data point plot, one column per condition
+- `paired_scatter.png` — one subplot per generated condition: real PSR fraction (x) vs. generated (y), one dot per matched WSI stem, annotated with Pearson r and Spearman ρ
 
 Key flags:
 - `--label_tissue INT` / `--label_psr INT` — nnUNet label indices (default: 1 / 2)
 - `--n_bootstrap INT` — bootstrap iterations for Wasserstein CI (default: 1000)
 
 Pairwise metrics reported (each generated condition vs. real SR):
+
+**Paired metrics** (WSIs matched by stem — primary comparison since testA/testB are serially sectioned from the same tissue blocks):
+- `n_matched` — number of WSIs matched by stem between real and generated
+- `pearson_r` / `pearson_pvalue` — linear correlation of matched PSR fractions
+- `spearman_rho` / `spearman_pvalue` — rank correlation of matched PSR fractions
+- `mae_paired` — mean absolute error per matched WSI
+- `mean_paired_diff_generated_minus_real` — signed bias; positive = model over-estimates PSR
+
+**Distributional metrics** (unpaired — secondary, captures variance collapse and global shift):
 - Wasserstein-1 distance + bootstrap 95% CI (WSI-level resampling)
 - KS test statistic and p-value
 - Mean difference (generated − real): positive = over-estimates PSR
