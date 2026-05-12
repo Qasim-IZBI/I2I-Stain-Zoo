@@ -47,8 +47,8 @@ def load_all(indir: Path, models: list = None) -> pd.DataFrame:
 
 def pick_best(df: pd.DataFrame) -> pd.DataFrame:
     return (
-        df.dropna(subset=["spearman_rho"])
-          .sort_values(["spearman_rho", "mae_paired"], ascending=[False, True])
+        df.dropna(subset=["pearson_r"])
+          .sort_values(["pearson_r", "mae_paired"], ascending=[False, True])
           .groupby("model", sort=False)
           .first()
           .reset_index()
@@ -94,8 +94,8 @@ def plot_grid(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
         ax.set_visible(False)
 
     fig.suptitle(
-        "Best config per model family — Spearman ρ (↑) vs MAE (←)\n"
-        "Red = winner (highest ρ, tiebreak: lowest MAE)",
+        "Best config per model family — Pearson r (↑) vs MAE (←)\n"
+        "Red = winner (highest r, tiebreak: lowest MAE)",
         fontsize=10,
     )
     fig.tight_layout()
@@ -138,8 +138,8 @@ def main():
     df.to_csv(args.outdir / "all_configs.csv", index=False)
     best.to_csv(args.outdir / "best_per_model.csv", index=False)
 
-    cols = ["model", "config", "spearman_rho", "mae_paired", "pearson_r", "n_matched"]
-    print("\nBest config per model family (ranked by Spearman ρ, tiebreak MAE):")
+    cols = ["model", "config", "pearson_r", "mae_paired", "spearman_rho", "n_matched"]
+    print("\nBest config per model family (ranked by Pearson r, tiebreak MAE):")
     print(best[cols].to_string(index=False))
 
     plot_grid(df, best, args.outdir / "best_per_model.png")
