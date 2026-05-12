@@ -9,7 +9,8 @@ Outputs
 -------
 best_per_model.csv   — one row per model: best config + its paired metrics
 all_configs.csv      — all configs × models with paired metrics (for inspection)
-best_per_model.png   — 2×3 scatter grid: Spearman ρ vs MAE, best config in red
+best_per_model.png   — 1×3 scatter grid (one panel per data size): Pearson r vs MAE,
+                       colour = model family, marker = model size, star = best config
 """
 
 import argparse
@@ -55,47 +56,79 @@ def pick_best(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+DATASIZES   = ["small", "medium", "large"]
+MODEL_SIZES = ["small", "medium", "large"]
+SIZE_MARKERS = {"small": "o", "medium": "s", "large": "^"}
+
+
+def _parse_config(config: str):
+    """Return (model_size, data_size) from 'small_model/medium_data'."""
+    left, right = config.split("/")
+    return left.replace("_model", ""), right.replace("_data", "")
+
+
 def plot_grid(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
-    models  = [m for m in MODELS if m in df["model"].values]
-    ncols   = 3
-    nrows   = int(np.ceil(len(models) / ncols))
-    fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(5 * ncols, 4 * nrows),
-                             squeeze=False)
+    models       = [m for m in MODELS if m in df["model"].values]
+    model_colors = {m: plt.cm.tab10.colors[i] for i, m in enumerate(models)}
 
-    for ax, model in zip(axes.flat, models):
-        sub      = df[df["model"] == model].copy()
-        best_row = best[best["model"] == model]
+    df = df.copy()
+    df[["model_size", "data_size"]] = df["config"].apply(
+        lambda c: pd.Series(_parse_config(c))
+    )
 
-        valid = sub.dropna(subset=["spearman_rho", "mae_paired"])
-        ax.scatter(valid["mae_paired"], valid["spearman_rho"],
-                   color="steelblue", s=60, edgecolors="black",
-                   linewidths=0.7, zorder=2)
+    best = best.copy()
+    best[["model_size", "data_size"]] = best["config"].apply(
+        lambda c: pd.Series(_parse_config(c))
+    )
 
-        for _, row in valid.iterrows():
-            ax.annotate(row["config"],
-                        (row["mae_paired"], row["spearman_rho"]),
-                        fontsize=6, ha="left", va="bottom",
-                        xytext=(4, 3), textcoords="offset points", color="#333333")
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
 
-        if not best_row.empty:
-            ax.scatter(best_row["mae_paired"], best_row["spearman_rho"],
-                       color="red", s=140, edgecolors="black",
-                       linewidths=1.0, zorder=3,
-                       label=f"best: {best_row['config'].values[0]}")
-            ax.legend(fontsize=7, loc="lower right")
+    for ax, ds in zip(axes, DATASIZES):
+        sub = df[df["data_size"] == ds].dropna(subset=["pearson_r", "mae_paired"])
+
+        for ms in MODEL_SIZES:
+            for _, row in sub[sub["model_size"] == ms].iterrows():
+                ax.scatter(row["mae_paired"], row["pearson_r"],
+                           color=model_colors[row["model"]],
+                           marker=SIZE_MARKERS[ms],
+                           s=80, edgecolors="black", linewidths=0.7, zorder=2)
+
+        # star = best config per model if it falls in this data size
+        best_ds = best[best["data_size"] == ds]
+        for _, brow in best_ds.iterrows():
+            ax.scatter(brow["mae_paired"], brow["pearson_r"],
+                       color=model_colors[brow["model"]],
+                       marker="*", s=260,
+                       edgecolors="black", linewidths=0.8, zorder=4)
 
         ax.axhline(0, color="gray", linestyle="--", linewidth=0.7)
-        ax.set_xlabel("MAE (paired)", fontsize=8)
-        ax.set_ylabel("Spearman ρ", fontsize=8)
-        ax.set_title(model, fontsize=10, fontweight="bold")
+        ax.set_xlabel("MAE (paired)", fontsize=9)
+        ax.set_title(f"data size: {ds}", fontsize=10, fontweight="bold")
 
-    for ax in axes.flat[len(models):]:
-        ax.set_visible(False)
+    axes[0].set_ylabel("Pearson r", fontsize=9)
+
+    # ---- legends ----
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    color_handles = [Patch(facecolor=model_colors[m], edgecolor="black",
+                           linewidth=0.7, label=m)
+                     for m in models]
+    marker_handles = [Line2D([0], [0], marker=SIZE_MARKERS[ms], color="w",
+                             markerfacecolor="gray", markeredgecolor="black",
+                             markersize=8, label=f"{ms} model")
+                      for ms in MODEL_SIZES]
+    star_handle = [Line2D([0], [0], marker="*", color="w",
+                          markerfacecolor="gray", markeredgecolor="black",
+                          markersize=12, label="best config")]
+
+    axes[-1].legend(handles=color_handles + marker_handles + star_handle,
+                    fontsize=7, loc="lower right", title="model / size / best",
+                    title_fontsize=7)
 
     fig.suptitle(
-        "Best config per model family — Pearson r (↑) vs MAE (←)\n"
-        "Red = winner (highest r, tiebreak: lowest MAE)",
+        "PSR configs by data size — Pearson r (↑) vs MAE (←)\n"
+        "Star = best config per model family (highest r, tiebreak: lowest MAE)",
         fontsize=10,
     )
     fig.tight_layout()
