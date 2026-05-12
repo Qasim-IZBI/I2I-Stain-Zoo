@@ -787,7 +787,7 @@ Pairwise metrics reported (each generated condition vs. real SR):
 ### Rank PSR Configs — Best Config per Model Family
 Reads the `summary.json` files produced by `compare_psr_all_configs.sh` (one per model)
 and identifies the best model-size / data-size combination within each model family.
-Ranking criterion: highest Pearson r, tiebreak lowest MAE.
+Ranking criterion: lowest MAE, tiebreak highest Pearson r.
 
 ```bash
 # Direct invocation
@@ -802,9 +802,9 @@ sbatch rank_psr_configs.sh
 Outputs in `--outdir`:
 - `best_per_model.csv` — one row per model: best config + Spearman ρ, MAE, Pearson r, n_matched
 - `all_configs.csv` — all 54 configs with paired metrics (for inspection)
-- `best_per_model.png` — 2×2 line plot: rows = metric (Pearson r / MAE), cols = x-axis dimension
-  (data size / model size); colour = model family, line style + marker = complementary size axis
-  (solid-○ small, dashed-□ medium, dotted-△ large), star = best config per model family
+- `best_per_model.png` — 1×2 line plot: MAE ±1 std (y) vs data size / model size (x);
+  colour = complementary size axis, marker = model family, fixed x-offset per (model, size) combo,
+  star = best config per model family (lowest MAE)
 
 `--indir` must contain one subdirectory per model (cyclegan/, unit/, etc.), each holding
 a `summary.json` from `compare_psr.py`. Missing model directories are warned and skipped.

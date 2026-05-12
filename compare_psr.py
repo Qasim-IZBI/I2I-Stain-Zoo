@@ -299,6 +299,7 @@ def main():
             abs_diffs    = np.abs(gen_m - real_m)
             signed_diffs = gen_m - real_m
             mae_paired       = float(abs_diffs.mean())
+            mae_paired_std   = float(abs_diffs.std(ddof=1)) if len(abs_diffs) > 1 else 0.0
             mean_paired_diff = float(signed_diffs.mean())
             paired_arrays[label] = {"abs_diffs": abs_diffs, "signed_diffs": signed_diffs}
         else:
@@ -319,6 +320,7 @@ def main():
             "spearman_rho":                           float(rho)   if rho   is not None else None,
             "spearman_pvalue":                        float(rho_p) if rho_p is not None else None,
             "mae_paired":                             mae_paired,
+            "mae_paired_std":                         mae_paired_std,
             "mean_paired_diff_generated_minus_real":  mean_paired_diff,
         }
 
