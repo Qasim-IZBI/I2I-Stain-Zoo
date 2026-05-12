@@ -23,9 +23,9 @@ import pandas as pd
 MODELS = ["cyclegan", "unit", "munit", "dclgan", "uvcgan", "cyclediffusion"]
 
 
-def load_all(indir: Path) -> pd.DataFrame:
+def load_all(indir: Path, models: list = None) -> pd.DataFrame:
     rows = []
-    for model in MODELS:
+    for model in (models if models is not None else MODELS):
         json_path = indir / model / "summary.json"
         if not json_path.exists():
             print(f"[WARN] Missing: {json_path}")
@@ -119,10 +119,17 @@ def main():
         "--outdir", type=Path, default=Path("psr_best_config"),
         help="Output directory for CSVs and plot [%(default)s]",
     )
+    parser.add_argument(
+        "--models", type=str, nargs="+", default=None,
+        metavar="MODEL",
+        help="Restrict to these model(s) (default: all six). "
+             "Used by the SLURM array script to process one model per task.",
+    )
     args = parser.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
 
-    df   = load_all(args.indir)
+    models_to_run = args.models if args.models else MODELS
+    df = load_all(args.indir, models=models_to_run)
     if df.empty:
         raise RuntimeError(f"No summary.json files found under {args.indir}")
 

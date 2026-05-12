@@ -795,7 +795,7 @@ python rank_psr_configs.py \
     --indir /work2/bz66izin-VSproject/psr_comparison/ \
     --outdir ./psr_best_config/
 
-# SLURM (single job — reads all 6 models in one pass)
+# SLURM array (6 jobs — one per model, output under psr_best_config/{model}/)
 sbatch rank_psr_configs.sh
 ```
 
