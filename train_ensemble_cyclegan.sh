@@ -6,7 +6,8 @@
 #SBATCH --time=48:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --partition=paula
+#SBATCH --partition=clara
+#SBATCH --exclude=clara[02,04-08]
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
 #SBATCH --array=0-4   # 5 ensemble members
@@ -40,13 +41,13 @@ DATA_A="${DATA_DIR}/QP_HE/tiles/trainA/"
 DATA_B="${DATA_DIR}/QP_SR/tiles/trainB/"
 
 # large data size — folders 001–028
-DATA_RANGE="1,28"
+DATA_RANGE="1,30"
 
 # medium CycleGAN: ngf=128, n_blocks=10 (matches train_all_54.sh)
 NGF=128
 NBLOCKS=10
 
-OUTPUT_DIR=/work2/bz66izin-VSproject/ensemble/cyclegan/data_large/model_medium/model_${MEMBER}
+OUTPUT_DIR=/work2/bz66izin-VSproject/ensemble/cyclegan/data_large/model_medium/models/model_${MEMBER}
 
 echo "TASK_ID=${SLURM_ARRAY_TASK_ID}  MEMBER=${MEMBER}  SEED=${SEED}"
 echo "Output : ${OUTPUT_DIR}"
@@ -54,8 +55,8 @@ echo "Output : ${OUTPUT_DIR}"
 # -----------------------------
 # Pre-flight
 # -----------------------------
-if [ -f "${OUTPUT_DIR}/checkpoints/step_5000000.pt" ]; then
-    echo "[SKIP] step_5000000.pt already present — member ${MEMBER} is done."
+if [ -f "${OUTPUT_DIR}/checkpoints/step_750000.pt" ]; then
+    echo "[SKIP] step_750000.pt already present — member ${MEMBER} is done."
     exit 0
 fi
 
@@ -70,13 +71,13 @@ run_cmd() {
 
 run_cmd python "${PROJECT_ROOT}/train.py" \
     --model cyclegan \
+    --step 750000 \
     --cyclegan_ngf "${NGF}" \
     --cyclegan_n_blocks "${NBLOCKS}" \
     --dataA "${DATA_A}" \
     --dataB "${DATA_B}" \
     --data_range "${DATA_RANGE}" \
     --seed "${SEED}" \
-    --output "${OUTPUT_DIR}" \
-    --amp
+    --output "${OUTPUT_DIR}"
 
 echo "Done. Member ${MEMBER} saved to ${OUTPUT_DIR}"

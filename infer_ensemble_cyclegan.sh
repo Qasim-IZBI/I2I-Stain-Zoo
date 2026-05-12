@@ -32,13 +32,14 @@ mkdir -p logs_ensemble
 # Config
 # -----------------------------
 MEMBER=$(printf "%02d" $((SLURM_ARRAY_TASK_ID + 1)))   # 01 … 05
+DATA_RANGE="1,5"   # testA has 5 folders (001–005) — use all for inference
 
 PROJECT_ROOT=I2I-Stain-Zoo
 DATA_DIR=/work2/bz66izin-VSproject/VS_Data
-TEST_A="${DATA_DIR}/QP_HE/tiles/testA"
+TEST_A="/work2/bz66izin-VSproject/VS_Data/eval_imgs/no_overlap/testA/tiles/testA"
 
 ENSEMBLE_ROOT=/work2/bz66izin-VSproject/ensemble/cyclegan/data_large/model_medium
-CKPT="${ENSEMBLE_ROOT}/model_${MEMBER}/checkpoints/step_5000000.pt"
+CKPT="${ENSEMBLE_ROOT}/models/model_${MEMBER}/checkpoints/step_750000.pt"
 OUTDIR="${ENSEMBLE_ROOT}/inference/model_${MEMBER}"
 
 echo "TASK_ID=${SLURM_ARRAY_TASK_ID}  MEMBER=${MEMBER}"
@@ -73,6 +74,7 @@ run_cmd python "${PROJECT_ROOT}/inference.py" \
     --direction A2B \
     --data "${TEST_A}" \
     --ckpt "${CKPT}" \
+    --data_range "${DATA_RANGE}" \
     --outdir "${OUTDIR}"
 
 echo "Done. Inference for member ${MEMBER} saved to ${OUTDIR}"
