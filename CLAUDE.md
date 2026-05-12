@@ -790,9 +790,13 @@ and identifies the best model-size / data-size combination within each model fam
 Ranking criterion: highest Spearman ρ, tiebreak lowest MAE.
 
 ```bash
+# Direct invocation
 python rank_psr_configs.py \
     --indir /work2/bz66izin-VSproject/psr_comparison/ \
     --outdir ./psr_best_config/
+
+# SLURM (single job — reads all 6 models in one pass)
+sbatch rank_psr_configs.sh
 ```
 
 Outputs in `--outdir`:
