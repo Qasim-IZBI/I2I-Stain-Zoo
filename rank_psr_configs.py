@@ -2,8 +2,10 @@
 rank_psr_configs.py — find the best model size / data size config per model family.
 
 Reads summary.json files produced by compare_psr_all_configs.sh (one per model),
-ranks the 9 configs (3 model sizes × 3 data sizes) by MAE ascending,
+ranks the 3 large-data-size configs (small/medium/large model) by MAE ascending,
 tiebreak Pearson r descending, and reports the winner per model.
+Only large data size is considered — intended for uncertainty analysis where
+the largest available dataset is used.
 
 Outputs
 -------
@@ -50,8 +52,13 @@ def load_all(indir: Path, models: list = None) -> pd.DataFrame:
 
 
 def pick_best(df: pd.DataFrame) -> pd.DataFrame:
+    parsed = df["config"].apply(lambda c: pd.Series(_parse_config(c)))
+    parsed.columns = ["model_size", "data_size"]
+    df = df.copy()
+    df[["model_size", "data_size"]] = parsed
     return (
-        df.dropna(subset=["mae_paired"])
+        df[df["data_size"] == "large"]
+          .dropna(subset=["mae_paired"])
           .sort_values(["mae_paired", "pearson_r"], ascending=[True, False])
           .groupby("model", sort=False)
           .first()
@@ -216,7 +223,7 @@ def main():
     best.to_csv(args.outdir / "best_per_model.csv", index=False)
 
     cols = ["model", "config", "mae_paired", "mae_paired_std", "pearson_r", "n_matched"]
-    print("\nBest config per model family (ranked by MAE, tiebreak Pearson r):")
+    print("\nBest config per model family — large data size only, ranked by MAE (tiebreak Pearson r):")
     print(best[cols].to_string(index=False))
 
     plot_grid(df, best, args.outdir / "best_per_model.png")
