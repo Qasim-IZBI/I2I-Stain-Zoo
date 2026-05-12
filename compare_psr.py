@@ -88,6 +88,59 @@ def plot_paired_scatter(real_dict: dict, gen_dicts: dict, outpath: Path) -> None
     print(f"Saved paired scatter → {outpath}")
 
 
+def plot_paired_metrics(pairwise: dict, outpath: Path) -> None:
+    labels = list(pairwise.keys())
+    colors = list(plt.cm.tab10.colors[:len(labels)])
+    x      = np.arange(len(labels))
+
+    metrics = [
+        ("pearson_r",                          "Pearson r",          (-1, 1),  0.0),
+        ("spearman_rho",                        "Spearman ρ",         (-1, 1),  0.0),
+        ("mae_paired",                          "MAE (paired)",       (0, None), None),
+        ("mean_paired_diff_generated_minus_real","Mean paired diff\n(generated − real)", (None, None), 0.0),
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(max(6, len(labels) * 1.2), 7))
+
+    for ax, (key, title, ylim, hline) in zip(axes.flat, metrics):
+        vals = [pairwise[l].get(key) for l in labels]
+        has_val = [v is not None for v in vals]
+
+        bar_vals   = [v if v is not None else 0.0 for v in vals]
+        bar_colors = [c if h else "#cccccc" for c, h in zip(colors, has_val)]
+
+        bars = ax.bar(x, bar_vals, color=bar_colors, edgecolor="black",
+                      linewidth=0.7, width=0.6)
+
+        # mark bars with no data
+        for bar, h in zip(bars, has_val):
+            if not h:
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.002, "n/a",
+                        ha="center", va="bottom", fontsize=7, color="gray")
+
+        if hline is not None:
+            ax.axhline(hline, color="gray", linestyle="--", linewidth=0.8)
+
+        ymin, ymax = ylim
+        current_ymin, current_ymax = ax.get_ylim()
+        if ymin is not None:
+            ax.set_ylim(bottom=min(ymin, current_ymin))
+        if ymax is not None:
+            ax.set_ylim(top=max(ymax, current_ymax))
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
+        ax.set_title(title, fontsize=9)
+        ax.set_ylabel(title, fontsize=8)
+
+    fig.suptitle("Paired WSI metrics: generated vs. real SR (matched by stem)", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+    print(f"Saved paired metrics → {outpath}")
+
+
 def plot_comparison(conditions: dict, real_label: str, outpath: Path) -> None:
     labels = [real_label] + [k for k in conditions if k != real_label]
     fracs  = [conditions[k] for k in labels]
@@ -265,6 +318,8 @@ def main():
     plot_comparison(conditions, real_label="real", outpath=args.outdir / "comparison.png")
     if gen_dicts:
         plot_paired_scatter(real_dict, gen_dicts, outpath=args.outdir / "paired_scatter.png")
+    if pairwise:
+        plot_paired_metrics(pairwise, outpath=args.outdir / "paired_metrics.png")
 
 
 if __name__ == "__main__":

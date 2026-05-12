@@ -762,6 +762,7 @@ Outputs in `--outdir`:
 - `summary.json` — per-condition stats (mean, std, median, min, max) and pairwise metrics vs real
 - `comparison.png` — box + individual data point plot, one column per condition
 - `paired_scatter.png` — one subplot per generated condition: real PSR fraction (x) vs. generated (y), one dot per matched WSI stem, annotated with Pearson r and Spearman ρ
+- `paired_metrics.png` — 2×2 bar chart: Pearson r, Spearman ρ, MAE, and mean paired diff across all conditions; grey bars indicate conditions with fewer than 3 matched WSIs
 
 Key flags:
 - `--label_tissue INT` / `--label_psr INT` — nnUNet label indices (default: 1 / 2)
