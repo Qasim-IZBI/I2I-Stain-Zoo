@@ -110,6 +110,7 @@ run_cmd python "${PROJECT_ROOT}/compare_psr.py" \
     --masks_real       "${REAL_DIR}" \
     --masks_generated  "${MASKS_ARGS[@]}" \
     --labels           "${LABEL_ARGS[@]}" \
-    --outdir           "${OUT_DIR}"
+    --outdir           "${OUT_DIR}" \
+    --strip_prefix
 
 echo "Done. PSR comparison for '${MODEL}' saved to ${OUT_DIR}"
