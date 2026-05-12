@@ -92,9 +92,11 @@ def _metric_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
         off = offsets[(model, style_val)]
         xs  = mdf["_x"] + off
         ys  = mdf["mae_paired"]
-        std_col = "mae_paired_std"
-        err = mdf[std_col].fillna(0) if std_col in mdf.columns else 0
-        ax.errorbar(xs, ys, yerr=err,
+        std_col  = "mae_paired_std"
+        err      = mdf[std_col].fillna(0).values if std_col in mdf.columns else np.zeros(len(ys))
+        lower    = np.minimum(err, ys.values)   # clip so bar never goes below 0
+        upper    = err
+        ax.errorbar(xs, ys, yerr=[lower, upper],
                     color=SIZE_COLORS[style_val],
                     marker=model_markers[model],
                     linestyle="none", markersize=6,
