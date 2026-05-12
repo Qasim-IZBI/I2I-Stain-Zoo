@@ -71,6 +71,7 @@ def plot_comparison(conditions: dict, real_label: str, outpath: Path) -> None:
 
     ax.set_xticks(range(1, len(labels) + 1))
     ax.set_xticklabels(labels, rotation=20, ha="right")
+    ax.set_ylim(0.0, 0.4)
     ax.set_ylabel("PSR-positive area fraction\n(PSR pixels / (Tissue + PSR pixels))")
     ax.set_title("Task-based evaluation: PSR segmentation — real vs. generated SR")
     ax.legend(fontsize=8)
