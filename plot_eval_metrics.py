@@ -12,6 +12,11 @@ rank_psr_configs.py:
   x = model family   colour = data size   marker = model size
   9 configs per model family
 
+When --metadata_dir is supplied (path to the tiled testB root containing
+per-WSI tiles_metadata.csv files), LPIPS and patch-SSIM error bars show
+±1 std across WSI-level means and individual WSI points are overlaid as
+semi-transparent dots. FID never has an error bar (distribution-level scalar).
+
 Outputs
 -------
 all_configs.csv  — all (model, config) × metric values for inspection
@@ -22,6 +27,8 @@ lpips.png        — LPIPS panel only
 """
 
 import argparse
+import os
+import warnings
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -44,7 +51,7 @@ METRICS = {
         "higher_better": False,
         "ylabel":        "FID ↓",
         "title":         "FID (Inception)",
-        "has_std":       False,   # distribution-level scalar — no per-image variance
+        "has_std":       False,   # distribution-level scalar — no error bar
     },
     "patch_ssim": {
         "filenames":     ["patch_ssim.csv"],
@@ -82,23 +89,77 @@ def _find_csv(indir: Path, model: str, model_size: str, data_size: str,
     return None
 
 
-def _read_csv(csv_path: Path, value_col: str, has_std: bool) -> tuple[float, float]:
-    """Return (mean, std). MEAN summary row excluded for per-image CSVs; std=0 for FID."""
+def _read_csv(csv_path: Path, value_col: str, has_std: bool,
+              stem_to_wsi: dict | None = None) -> tuple[float, float, list]:
+    """Return (mean, std, wsi_values).
+
+    When stem_to_wsi is provided and has_std is True, tiles are grouped by WSI:
+    mean and std are computed over per-WSI means, and wsi_values holds those means.
+    Without stem_to_wsi, wsi_values is [] and std is tile-level (or 0 for FID).
+    """
     df = pd.read_csv(csv_path, dtype=str)
     if "filename" in df.columns:
-        data = df[df["filename"] != "MEAN"][value_col].astype(float)
-        mean = float(data.mean())
-        std  = float(data.std(ddof=1)) if (has_std and len(data) > 1) else 0.0
-    else:
-        mean = float(df[value_col].iloc[0])
-        std  = 0.0
-    return mean, std
+        data = df[df["filename"] != "MEAN"].copy()
+        data[value_col] = data[value_col].astype(float)
+
+        if stem_to_wsi is not None and has_std:
+            data["stem"] = data["filename"].apply(lambda f: os.path.splitext(f)[0])
+            data["wsi"]  = data["stem"].map(stem_to_wsi)
+            wsi_means = data.dropna(subset=["wsi"]).groupby("wsi")[value_col].mean()
+            if wsi_means.empty:
+                vals = data[value_col]
+                return float(vals.mean()), float(vals.std(ddof=1)) if len(vals) > 1 else 0.0, []
+            mean = float(wsi_means.mean())
+            std  = float(wsi_means.std(ddof=1)) if len(wsi_means) > 1 else 0.0
+            return mean, std, wsi_means.tolist()
+
+        vals = data[value_col]
+        mean = float(vals.mean())
+        std  = float(vals.std(ddof=1)) if (has_std and len(vals) > 1) else 0.0
+        return mean, std, []
+
+    mean = float(df[value_col].iloc[0])
+    return mean, 0.0, []
+
+
+def build_stem_to_wsi(metadata_dir: Path) -> dict[str, str]:
+    """Build tile_name → source_file map from per-WSI tiles_metadata.csv files."""
+    csvs = sorted(metadata_dir.glob("*/tiles_metadata.csv"))
+    if not csvs:
+        if metadata_dir.is_file():
+            csvs = [metadata_dir]
+        else:
+            raise FileNotFoundError(
+                f"No tiles_metadata.csv files found under {metadata_dir}"
+            )
+    df = pd.concat([pd.read_csv(p) for p in csvs], ignore_index=True)
+    counts = df.groupby("tile_name")["source_file"].nunique()
+    colliding = set(counts[counts > 1].index)
+    if colliding:
+        warnings.warn(
+            f"{len(colliding)} tile_name(s) appear in multiple WSIs in tiles_metadata "
+            f"— those tiles are excluded from WSI-level aggregation. "
+            f"Examples: {sorted(colliding)[:3]}"
+        )
+    keep = df[~df["tile_name"].isin(colliding)]
+    return dict(zip(keep["tile_name"].astype(str), keep["source_file"].astype(str)))
 
 
 # ── data loading ──────────────────────────────────────────────────────────────
 
-def load_all(indir: Path) -> pd.DataFrame:
+def load_all(indir: Path,
+             stem_to_wsi: dict | None = None) -> tuple[pd.DataFrame, dict]:
+    """Load all metric CSVs.
+
+    Returns
+    -------
+    df       : one row per (model, model_size, data_size) with mean/std columns
+    wsi_data : dict mapping (model, model_size, data_size, metric) → list[float]
+               of per-WSI means; empty dict when stem_to_wsi is None
+    """
     rows = []
+    wsi_data: dict = {}
+
     for model in MODELS:
         for model_size in MODEL_SIZES:
             for data_size in DATASIZES:
@@ -113,9 +174,13 @@ def load_all(indir: Path) -> pd.DataFrame:
                         row[f"{metric}_std"] = None
                         continue
                     try:
-                        mean, std = _read_csv(p, mcfg["value_col"], mcfg["has_std"])
+                        mean, std, wsi_vals = _read_csv(
+                            p, mcfg["value_col"], mcfg["has_std"], stem_to_wsi
+                        )
                         row[metric] = mean
                         row[f"{metric}_std"] = std
+                        if wsi_vals:
+                            wsi_data[(model, model_size, data_size, metric)] = wsi_vals
                         found_any = True
                     except Exception as e:
                         print(f"[WARN] {p}: {e}")
@@ -125,12 +190,14 @@ def load_all(indir: Path) -> pd.DataFrame:
                     rows.append(row)
                 else:
                     print(f"[WARN] No CSVs found: {model}/{config}")
-    return pd.DataFrame(rows)
+
+    return pd.DataFrame(rows), wsi_data
 
 
 # ── plotting ──────────────────────────────────────────────────────────────────
 
-def _metric_panel(ax, df: pd.DataFrame, metric: str, mcfg: dict) -> None:
+def _metric_panel(ax, df: pd.DataFrame, metric: str, mcfg: dict,
+                  wsi_data: dict | None = None) -> None:
     models  = [m for m in MODELS if m in df["model"].values]
     x_pos   = {m: i for i, m in enumerate(models)}
     combos  = [(ms, ds) for ds in DATASIZES for ms in MODEL_SIZES]
@@ -141,6 +208,7 @@ def _metric_panel(ax, df: pd.DataFrame, metric: str, mcfg: dict) -> None:
         for data_size in DATASIZES:
             off = offsets[(model_size, data_size)]
             xs, ys, lowers, uppers = [], [], [], []
+
             for model in models:
                 row = df[
                     (df["model"] == model) &
@@ -149,15 +217,33 @@ def _metric_panel(ax, df: pd.DataFrame, metric: str, mcfg: dict) -> None:
                 ].dropna(subset=[metric])
                 if row.empty:
                     continue
+
                 val     = float(row[metric].iloc[0])
                 std_raw = row[f"{metric}_std"].iloc[0]
                 std     = float(std_raw) if (std_raw is not None and not np.isnan(float(std_raw))) else 0.0
-                xs.append(x_pos[model] + off)
+
+                x = x_pos[model] + off
+
+                # per-WSI scatter points (behind the errorbar)
+                if wsi_data is not None and mcfg["has_std"]:
+                    wsi_vals = wsi_data.get((model, model_size, data_size, metric), [])
+                    if wsi_vals:
+                        ax.scatter(
+                            [x] * len(wsi_vals), wsi_vals,
+                            color=DATA_SIZE_COLORS[data_size],
+                            marker=MODEL_SIZE_MARKERS[model_size],
+                            s=18, alpha=0.35, linewidths=0, zorder=2,
+                        )
+
+                xs.append(x)
                 ys.append(val)
                 lowers.append(min(std, val))   # clip so bar never crosses 0
                 uppers.append(std)
+
             if not xs:
                 continue
+
+            # FID has has_std=False → std=0 → no visible error bar
             ax.errorbar(
                 xs, ys, yerr=[lowers, uppers],
                 color=DATA_SIZE_COLORS[data_size],
@@ -165,6 +251,7 @@ def _metric_panel(ax, df: pd.DataFrame, metric: str, mcfg: dict) -> None:
                 marker=MODEL_SIZE_MARKERS[model_size], markersize=6,
                 markeredgecolor="black", markeredgewidth=0.5,
                 ecolor="gray", elinewidth=1, capsize=3, alpha=0.85,
+                zorder=3,
             )
 
     ax.set_xticks(list(x_pos.values()))
@@ -190,10 +277,11 @@ def _legend_handles() -> list:
     return color_handles + marker_handles
 
 
-def plot_single(df: pd.DataFrame, metric: str, outpath: Path) -> None:
+def plot_single(df: pd.DataFrame, metric: str, outpath: Path,
+                wsi_data: dict | None = None) -> None:
     mcfg = METRICS[metric]
     fig, ax = plt.subplots(figsize=(7, 5))
-    _metric_panel(ax, df, metric, mcfg)
+    _metric_panel(ax, df, metric, mcfg, wsi_data=wsi_data)
     ax.legend(
         handles=_legend_handles(),
         fontsize=8, loc="upper right",
@@ -211,13 +299,13 @@ def plot_single(df: pd.DataFrame, metric: str, outpath: Path) -> None:
     print(f"Saved plot → {outpath}")
 
 
-def plot_all(df: pd.DataFrame, outpath: Path) -> None:
+def plot_all(df: pd.DataFrame, outpath: Path,
+             wsi_data: dict | None = None) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 
     for ax, (metric, mcfg) in zip(axes, METRICS.items()):
-        _metric_panel(ax, df, metric, mcfg)
+        _metric_panel(ax, df, metric, mcfg, wsi_data=wsi_data)
 
-    # shared legend (right side)
     fig.legend(
         handles=_legend_handles(),
         fontsize=8, loc="center right", bbox_to_anchor=(1.02, 0.5),
@@ -250,18 +338,31 @@ def main():
         "--outdir", type=Path, default=Path("eval_plots"),
         help="Output directory for CSVs and figure [%(default)s]",
     )
+    parser.add_argument(
+        "--metadata_dir", type=Path, default=None,
+        help="Tiled testB root containing per-WSI tiles_metadata.csv files "
+             "(e.g. path/to/tiles/testB). When supplied, LPIPS and patch-SSIM "
+             "error bars show ±1 std across WSI-level means and individual WSI "
+             "values are overlaid as semi-transparent points. FID is unaffected.",
+    )
     args = parser.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
 
-    df = load_all(args.indir)
+    stem_to_wsi = None
+    if args.metadata_dir is not None:
+        print(f"Building tile→WSI map from {args.metadata_dir} ...")
+        stem_to_wsi = build_stem_to_wsi(args.metadata_dir)
+        print(f"  {len(stem_to_wsi)} tiles mapped to WSIs.")
+
+    df, wsi_data = load_all(args.indir, stem_to_wsi=stem_to_wsi)
     if df.empty:
         raise RuntimeError(f"No metric CSVs found under {args.indir}")
 
     df.to_csv(args.outdir / "all_configs.csv", index=False)
 
-    plot_all(df, args.outdir / "metrics.png")
+    plot_all(df, args.outdir / "metrics.png", wsi_data=wsi_data)
     for metric in METRICS:
-        plot_single(df, metric, args.outdir / f"{metric}.png")
+        plot_single(df, metric, args.outdir / f"{metric}.png", wsi_data=wsi_data)
 
 
 if __name__ == "__main__":
