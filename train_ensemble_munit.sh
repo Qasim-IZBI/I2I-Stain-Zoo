@@ -12,7 +12,7 @@
 #SBATCH --ntasks=1
 #SBATCH --array=0-4   # 5 ensemble members
 
-set -euo pipefail
+set -eo pipefail
 
 module purge
 module load Anaconda3
