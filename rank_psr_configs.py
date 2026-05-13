@@ -12,7 +12,7 @@ Outputs
 best_per_model.csv   — one row per model: best config + its paired metrics
 all_configs.csv      — all configs × models with paired metrics (for inspection)
 best_per_model.png   — single grouped-scatter panel: x = model family,
-                       9 configs per group (colour = model size, marker = data size),
+                       9 configs per group (colour = data size, marker = model size),
                        horizontal offset separates configs, no cross-model lines,
                        star = best config per model (lowest MAE)
 """
@@ -68,9 +68,9 @@ def pick_best(df: pd.DataFrame) -> pd.DataFrame:
 
 DATASIZES        = ["small", "medium", "large"]
 MODEL_SIZES      = ["small", "medium", "large"]
-SIZE_COLORS      = {"small": "#1f77b4", "medium": "#ff7f0e", "large": "#2ca02c"}
-DATA_SIZE_MARKERS = {"small": "o", "medium": "s", "large": "^"}
-MODEL_MARKERS     = ["o", "s", "^", "D", "v", "P"]
+DATA_SIZE_COLORS  = {"small": "#1f77b4", "medium": "#ff7f0e", "large": "#2ca02c"}
+MODEL_SIZE_MARKERS = {"small": "o", "medium": "s", "large": "^"}
+MODEL_MARKERS      = ["o", "s", "^", "D", "v", "P"]
 
 
 def _parse_config(config: str):
@@ -80,7 +80,7 @@ def _parse_config(config: str):
 
 
 def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
-    """Single-panel grouped scatter: x = model family, 9 configs per group (colour = model size, marker = data size)."""
+    """Single-panel grouped scatter: x = model family, 9 configs per group (colour = data size, marker = model size)."""
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
@@ -130,9 +130,9 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
                 continue
             ax.errorbar(
                 xs, ys, yerr=[lowers, uppers],
-                color=SIZE_COLORS[model_size],
+                color=DATA_SIZE_COLORS[data_size],
                 linestyle="none",
-                marker=DATA_SIZE_MARKERS[data_size], markersize=6,
+                marker=MODEL_SIZE_MARKERS[model_size], markersize=6,
                 markeredgecolor="black", markeredgewidth=0.5,
                 ecolor="gray", elinewidth=1, capsize=3, alpha=0.85,
             )
@@ -150,7 +150,7 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
         off = offsets.get((model_size, data_size), 0)
         ax.scatter(
             [x_pos[model] + off], [mae],
-            color=SIZE_COLORS.get(model_size, "gray"),
+            color=DATA_SIZE_COLORS.get(data_size, "gray"),
             marker="*", s=260, edgecolors="black", linewidths=0.8, zorder=5,
         )
 
@@ -161,16 +161,16 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
 
     # ---- legend ----
     color_handles = [
-        Patch(facecolor=SIZE_COLORS[s], edgecolor="black", linewidth=0.7,
-              label=f"{s} model")
-        for s in MODEL_SIZES
+        Patch(facecolor=DATA_SIZE_COLORS[s], edgecolor="black", linewidth=0.7,
+              label=f"{s} data")
+        for s in DATASIZES
     ]
     marker_handles = [
-        Line2D([0], [0], color="black", marker=DATA_SIZE_MARKERS[s],
+        Line2D([0], [0], color="black", marker=MODEL_SIZE_MARKERS[s],
                linestyle="none", markersize=7,
                markeredgecolor="black", markeredgewidth=0.5,
-               label=f"{s} data")
-        for s in DATASIZES
+               label=f"{s} model")
+        for s in MODEL_SIZES
     ]
     star_handle = [
         Line2D([0], [0], marker="*", color="w",
@@ -180,13 +180,13 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
     ax.legend(
         handles=color_handles + marker_handles + star_handle,
         fontsize=8, loc="upper right",
-        title="Colour = model size  |  Marker = data size",
+        title="Colour = data size  |  Marker = model size",
         title_fontsize=7.5, frameon=True,
     )
 
     ax.set_title(
         "PSR MAE (paired, ±1 std) — 9 configs per model family   "
-        "colour = model size   marker = data size   star = best config",
+        "colour = data size   marker = model size   star = best config",
         fontsize=9,
     )
     fig.tight_layout()
