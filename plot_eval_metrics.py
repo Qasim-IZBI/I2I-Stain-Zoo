@@ -14,8 +14,11 @@ rank_psr_configs.py:
 
 Outputs
 -------
-all_configs.csv — all (model, config) × metric values for inspection
-metrics.png     — 1×3 grouped-scatter figure
+all_configs.csv  — all (model, config) × metric values for inspection
+metrics.png      — 1×3 combined grouped-scatter figure
+fid.png          — FID panel only
+patch_ssim.png   — Patch-SSIM panel only
+lpips.png        — LPIPS panel only
 """
 
 import argparse
@@ -171,13 +174,7 @@ def _metric_panel(ax, df: pd.DataFrame, metric: str, mcfg: dict) -> None:
     ax.set_ylim(bottom=0)
 
 
-def plot_all(df: pd.DataFrame, outpath: Path) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-
-    for ax, (metric, mcfg) in zip(axes, METRICS.items()):
-        _metric_panel(ax, df, metric, mcfg)
-
-    # shared legend (right side)
+def _legend_handles() -> list:
     color_handles = [
         Patch(facecolor=DATA_SIZE_COLORS[s], edgecolor="black", linewidth=0.7,
               label=f"{s} data")
@@ -190,8 +187,39 @@ def plot_all(df: pd.DataFrame, outpath: Path) -> None:
                label=f"{s} model")
         for s in MODEL_SIZES
     ]
+    return color_handles + marker_handles
+
+
+def plot_single(df: pd.DataFrame, metric: str, outpath: Path) -> None:
+    mcfg = METRICS[metric]
+    fig, ax = plt.subplots(figsize=(7, 5))
+    _metric_panel(ax, df, metric, mcfg)
+    ax.legend(
+        handles=_legend_handles(),
+        fontsize=8, loc="upper right",
+        title="Colour = data size  |  Marker = model size",
+        title_fontsize=7.5, frameon=True,
+    )
+    ax.set_title(
+        f"{mcfg['title']} — 9 configs per model family   "
+        "colour = data size   marker = model size",
+        fontsize=9,
+    )
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved plot → {outpath}")
+
+
+def plot_all(df: pd.DataFrame, outpath: Path) -> None:
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+    for ax, (metric, mcfg) in zip(axes, METRICS.items()):
+        _metric_panel(ax, df, metric, mcfg)
+
+    # shared legend (right side)
     fig.legend(
-        handles=color_handles + marker_handles,
+        handles=_legend_handles(),
         fontsize=8, loc="center right", bbox_to_anchor=(1.02, 0.5),
         title="Colour = data size  |  Marker = model size",
         title_fontsize=7.5, frameon=True,
@@ -232,6 +260,8 @@ def main():
     df.to_csv(args.outdir / "all_configs.csv", index=False)
 
     plot_all(df, args.outdir / "metrics.png")
+    for metric in METRICS:
+        plot_single(df, metric, args.outdir / f"{metric}.png")
 
 
 if __name__ == "__main__":
