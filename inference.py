@@ -251,6 +251,10 @@ def main():
                              "001/images/ through 006/images/ under --data")
     parser.add_argument("--ckpt", type=str, required=True)
     parser.add_argument("--outdir", type=str, default="results")
+    parser.add_argument("--resume", action="store_true",
+                        help="Skip tiles whose output already exists; re-process the "
+                             "most recently written tile (guards against partial writes "
+                             "on interruption).")
 
     # Colour normalisation (all models)
     parser.add_argument("--color_ref", type=str, default=None,
@@ -347,6 +351,24 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
 
+    # ---- Resume: collect already-completed output tiles ----
+    resume_skip = set()   # absolute paths to skip
+    resume_last = None    # absolute path of last tile (re-processed even if it exists)
+    if args.resume:
+        all_tifs = []
+        for root, _, files in os.walk(args.outdir):
+            for f in files:
+                if f.lower().endswith('.tif'):
+                    all_tifs.append(os.path.abspath(os.path.join(root, f)))
+        if all_tifs:
+            resume_last = max(all_tifs, key=os.path.getmtime)
+            resume_skip = set(all_tifs) - {resume_last}
+            print(f"[resume] {len(all_tifs)} existing tiles found. "
+                  f"Skipping {len(resume_skip)}, re-processing last: "
+                  f"{os.path.relpath(resume_last, args.outdir)}")
+        else:
+            print("[resume] No existing output tiles found; starting from the beginning.")
+
     # ---- MIUDiff pretrain, count-based (no dataset) ----
     if uncond_count_mode:
         if args.miu_guidance != 1.0:
@@ -370,6 +392,19 @@ def main():
             rel  = os.path.relpath(path[0], args.data)
             stem = os.path.splitext(rel)[0]   # e.g. "001/images/0000001"
             os.makedirs(os.path.join(args.outdir, os.path.dirname(stem)), exist_ok=True)
+
+            if resume_skip:
+                # Determine the primary output path for this tile so we can skip it.
+                if args.model == "miudiff" and args.miu_stage == "pretrain":
+                    _out = os.path.abspath(f"{args.outdir}/{stem}_uncond.tif")
+                elif args.model == "unitddpm" and args.unitddpm_stage == "pretrain":
+                    _out = os.path.abspath(f"{args.outdir}/{stem}_uncond.tif")
+                elif args.model == "munit" and args.num_samples > 1:
+                    _out = os.path.abspath(f"{args.outdir}/{stem}_0.tif")
+                else:
+                    _out = os.path.abspath(f"{args.outdir}/{stem}.tif")
+                if _out in resume_skip:
+                    continue
 
             if args.model == "cyclegan":
                 if args.direction == "A2B":
