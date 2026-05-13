@@ -1068,7 +1068,7 @@ def main():
         print(f"N_pairs={len(per_image)}, patch_size={args.patch_size}, patches_per_image={args.patches_per_image}")
 
         if args.save_csv:
-            rows = [{"filename": os.path.basename(p[0]), "patch_ssim": f"{s:.6f}"} for p, s in zip(pairs, per_image)]
+            rows = [{"filename": os.path.relpath(p[0], args.path_real), "patch_ssim": f"{s:.6f}"} for p, s in zip(pairs, per_image)]
             rows.append({"filename": "MEAN", "patch_ssim": f"{mean_pssim:.6f}"})
             _save_csv(args.save_csv, ["filename", "patch_ssim"], rows)
 
@@ -1083,7 +1083,7 @@ def main():
         print(f"N_pairs={len(per_image)}, image_size={args.ssim_image_size}")
 
         if args.save_csv:
-            rows = [{"filename": os.path.basename(p[0]), "lpips": f"{s:.6f}"} for p, s in zip(pairs, per_image)]
+            rows = [{"filename": os.path.relpath(p[0], args.path_real), "lpips": f"{s:.6f}"} for p, s in zip(pairs, per_image)]
             rows.append({"filename": "MEAN", "lpips": f"{mean_lpips:.6f}"})
             _save_csv(args.save_csv, ["filename", "lpips"], rows)
 

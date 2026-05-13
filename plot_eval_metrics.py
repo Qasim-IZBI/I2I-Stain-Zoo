@@ -12,10 +12,12 @@ rank_psr_configs.py:
   x = model family   colour = data size   marker = model size
   9 configs per model family
 
-When --metadata_dir is supplied (path to the tiled testB root containing
-per-WSI tiles_metadata.csv files), LPIPS and patch-SSIM error bars show
-±1 std across WSI-level means and individual WSI points are overlaid as
-semi-transparent dots. FID never has an error bar (distribution-level scalar).
+For patch-SSIM and LPIPS, when the metric CSV filenames are relative paths
+(e.g. 001/images/0000001.tif — written by evaluation.py ≥ this version),
+tiles are grouped by WSI folder (first path component). Error bars then show
+±1 std across WSI-level means, and individual WSI points are overlaid as
+semi-transparent markers. Old CSVs with bare basenames fall back to tile-level
+std with no scatter. FID never has an error bar (distribution-level scalar).
 
 Outputs
 -------
@@ -27,8 +29,6 @@ lpips.png        — LPIPS panel only
 """
 
 import argparse
-import os
-import warnings
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -89,29 +89,33 @@ def _find_csv(indir: Path, model: str, model_size: str, data_size: str,
     return None
 
 
-def _read_csv(csv_path: Path, value_col: str, has_std: bool,
-              stem_to_wsi: dict | None = None) -> tuple[float, float, list]:
+def _read_csv(csv_path: Path, value_col: str, has_std: bool) -> tuple[float, float, list]:
     """Return (mean, std, wsi_values).
 
-    When stem_to_wsi is provided and has_std is True, tiles are grouped by WSI:
-    mean and std are computed over per-WSI means, and wsi_values holds those means.
-    Without stem_to_wsi, wsi_values is [] and std is tile-level (or 0 for FID).
+    When filenames contain path separators (new format: relative paths written
+    by evaluation.py), tiles are grouped by the first path component (WSI folder).
+    mean and std are then WSI-level; wsi_values holds the per-WSI means.
+
+    Old CSVs with bare basenames fall back to tile-level std; wsi_values = [].
+    FID CSVs have no filename column; std = 0, wsi_values = [].
     """
     df = pd.read_csv(csv_path, dtype=str)
     if "filename" in df.columns:
         data = df[df["filename"] != "MEAN"].copy()
         data[value_col] = data[value_col].astype(float)
 
-        if stem_to_wsi is not None and has_std:
-            data["stem"] = data["filename"].apply(lambda f: os.path.splitext(f)[0])
-            data["wsi"]  = data["stem"].map(stem_to_wsi)
-            wsi_means = data.dropna(subset=["wsi"]).groupby("wsi")[value_col].mean()
-            if wsi_means.empty:
-                vals = data[value_col]
-                return float(vals.mean()), float(vals.std(ddof=1)) if len(vals) > 1 else 0.0, []
-            mean = float(wsi_means.mean())
-            std  = float(wsi_means.std(ddof=1)) if len(wsi_means) > 1 else 0.0
-            return mean, std, wsi_means.tolist()
+        if has_std:
+            # Detect new relative-path format by presence of "/" in any filename
+            has_relpath = data["filename"].str.contains("/", regex=False).any()
+            if has_relpath:
+                # Group by WSI folder (first path component, e.g. "001")
+                data["wsi"] = data["filename"].apply(
+                    lambda f: str(f).split("/")[0]
+                )
+                wsi_means = data.groupby("wsi")[value_col].mean()
+                mean = float(wsi_means.mean())
+                std  = float(wsi_means.std(ddof=1)) if len(wsi_means) > 1 else 0.0
+                return mean, std, wsi_means.tolist()
 
         vals = data[value_col]
         mean = float(vals.mean())
@@ -122,40 +126,16 @@ def _read_csv(csv_path: Path, value_col: str, has_std: bool,
     return mean, 0.0, []
 
 
-def build_stem_to_wsi(metadata_dir: Path) -> dict[str, str]:
-    """Build tile_name → source_file map from per-WSI tiles_metadata.csv files."""
-    csvs = sorted(metadata_dir.glob("*/tiles_metadata.csv"))
-    if not csvs:
-        if metadata_dir.is_file():
-            csvs = [metadata_dir]
-        else:
-            raise FileNotFoundError(
-                f"No tiles_metadata.csv files found under {metadata_dir}"
-            )
-    df = pd.concat([pd.read_csv(p) for p in csvs], ignore_index=True)
-    counts = df.groupby("tile_name")["source_file"].nunique()
-    colliding = set(counts[counts > 1].index)
-    if colliding:
-        warnings.warn(
-            f"{len(colliding)} tile_name(s) appear in multiple WSIs in tiles_metadata "
-            f"— those tiles are excluded from WSI-level aggregation. "
-            f"Examples: {sorted(colliding)[:3]}"
-        )
-    keep = df[~df["tile_name"].isin(colliding)]
-    return dict(zip(keep["tile_name"].astype(str), keep["source_file"].astype(str)))
-
-
 # ── data loading ──────────────────────────────────────────────────────────────
 
-def load_all(indir: Path,
-             stem_to_wsi: dict | None = None) -> tuple[pd.DataFrame, dict]:
+def load_all(indir: Path) -> tuple[pd.DataFrame, dict]:
     """Load all metric CSVs.
 
     Returns
     -------
     df       : one row per (model, model_size, data_size) with mean/std columns
     wsi_data : dict mapping (model, model_size, data_size, metric) → list[float]
-               of per-WSI means; empty dict when stem_to_wsi is None
+               of per-WSI means; populated when CSVs contain relative paths
     """
     rows = []
     wsi_data: dict = {}
@@ -175,7 +155,7 @@ def load_all(indir: Path,
                         continue
                     try:
                         mean, std, wsi_vals = _read_csv(
-                            p, mcfg["value_col"], mcfg["has_std"], stem_to_wsi
+                            p, mcfg["value_col"], mcfg["has_std"]
                         )
                         row[metric] = mean
                         row[f"{metric}_std"] = std
@@ -338,25 +318,18 @@ def main():
         "--outdir", type=Path, default=Path("eval_plots"),
         help="Output directory for CSVs and figure [%(default)s]",
     )
-    parser.add_argument(
-        "--metadata_dir", type=Path, default=None,
-        help="Tiled testB root containing per-WSI tiles_metadata.csv files "
-             "(e.g. path/to/tiles/testB). When supplied, LPIPS and patch-SSIM "
-             "error bars show ±1 std across WSI-level means and individual WSI "
-             "values are overlaid as semi-transparent points. FID is unaffected.",
-    )
     args = parser.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
 
-    stem_to_wsi = None
-    if args.metadata_dir is not None:
-        print(f"Building tile→WSI map from {args.metadata_dir} ...")
-        stem_to_wsi = build_stem_to_wsi(args.metadata_dir)
-        print(f"  {len(stem_to_wsi)} tiles mapped to WSIs.")
-
-    df, wsi_data = load_all(args.indir, stem_to_wsi=stem_to_wsi)
+    df, wsi_data = load_all(args.indir)
     if df.empty:
         raise RuntimeError(f"No metric CSVs found under {args.indir}")
+
+    if wsi_data:
+        n = len(wsi_data)
+        print(f"WSI-level aggregation active for {n} (model, config, metric) combinations.")
+    else:
+        print("No relative-path filenames detected — using tile-level std (re-run eval to get WSI scatter).")
 
     df.to_csv(args.outdir / "all_configs.csv", index=False)
 
