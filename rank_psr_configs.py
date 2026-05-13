@@ -98,7 +98,7 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
     x_pos = {m: i for i, m in enumerate(models)}
 
     # Horizontal offset for each of the 9 (model_size, data_size) combos
-    combos  = [(ms, ds) for ms in MODEL_SIZES for ds in DATASIZES]
+    combos  = [(ms, ds) for ds in DATASIZES for ms in MODEL_SIZES]
     spacing = 0.08
     offsets = {c: (i - (len(combos) - 1) / 2) * spacing
                for i, c in enumerate(combos)}
