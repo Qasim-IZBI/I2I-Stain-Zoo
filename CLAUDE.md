@@ -802,8 +802,8 @@ sbatch rank_psr_configs.sh
 Outputs in `--outdir`:
 - `best_per_model.csv` — one row per model: best config + Spearman ρ, MAE, Pearson r, n_matched
 - `all_configs.csv` — all 54 configs with paired metrics (for inspection)
-- `best_per_model.png` — 1×2 line plot: MAE ±1 std (y) vs data size / model size (x);
-  colour = complementary size axis, marker = model family, fixed x-offset per (model, size) combo,
+- `best_per_model.png` — single panel: x = model family, y = MAE ±1 std;
+  colour = model size (blue/orange/green), line style = data size (solid/dashed/dotted),
   star = best config per model family (lowest MAE)
 
 `--indir` must contain one subdirectory per model (cyclegan/, unit/, etc.), each holding

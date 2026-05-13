@@ -11,9 +11,8 @@ Outputs
 -------
 best_per_model.csv   — one row per model: best config + its paired metrics
 all_configs.csv      — all configs × models with paired metrics (for inspection)
-best_per_model.png   — 1×2 line+marker grid: cols = x-axis (data size / model size);
-                       MAE ±1 std error bars, colour = complementary size axis,
-                       marker = model family, fixed x-offset per (model, size) combo,
+best_per_model.png   — single panel: x = model family, y = MAE ±1 std error bars,
+                       colour = model size, line style = data size,
                        star = best config per model (lowest MAE)
 """
 
@@ -66,10 +65,11 @@ def pick_best(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-DATASIZES     = ["small", "medium", "large"]
-MODEL_SIZES   = ["small", "medium", "large"]
-SIZE_COLORS   = {"small": "#1f77b4", "medium": "#ff7f0e", "large": "#2ca02c"}
-MODEL_MARKERS = ["o", "s", "^", "D", "v", "P"]
+DATASIZES        = ["small", "medium", "large"]
+MODEL_SIZES      = ["small", "medium", "large"]
+SIZE_COLORS      = {"small": "#1f77b4", "medium": "#ff7f0e", "large": "#2ca02c"}
+DATA_SIZE_STYLES = {"small": "-",      "medium": "--",       "large": ":"}
+MODEL_MARKERS    = ["o", "s", "^", "D", "v", "P"]
 
 
 def _parse_config(config: str):
@@ -78,64 +78,12 @@ def _parse_config(config: str):
     return left.replace("_model", ""), right.replace("_data", "")
 
 
-def _metric_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
-                  x_col: str, style_col: str,
-                  model_markers: dict, xlabel: str) -> None:
-    """Draw one MAE panel with ±1 std error bars.
-    x_col varies along x; style_col is the complementary size axis (drives colour).
-    Each (model, style_val) combination gets a fixed x-offset so lines don't overlap."""
-    x_pos   = {s: i for i, s in enumerate(MODEL_SIZES)}
-    models  = [m for m in MODELS if m in df["model"].values]
-    combos  = [(m, sv) for m in models for sv in MODEL_SIZES]
-    n       = len(combos)
-    offsets = {c: (i - (n - 1) / 2) * (0.2 / n) for i, c in enumerate(combos)}
-
-    for model, style_val in combos:
-        mdf = df[(df["model"] == model) & (df[style_col] == style_val)].dropna(
-            subset=["mae_paired"])
-        if mdf.empty:
-            continue
-        mdf = mdf.assign(_x=mdf[x_col].map(x_pos)).sort_values("_x")
-        off = offsets[(model, style_val)]
-        xs  = mdf["_x"] + off
-        ys  = mdf["mae_paired"]
-        std_col  = "mae_paired_std"
-        err      = mdf[std_col].fillna(0).values if std_col in mdf.columns else np.zeros(len(ys))
-        lower    = np.minimum(err, ys.values)   # clip so bar never goes below 0
-        upper    = err
-        ax.errorbar(xs, ys, yerr=[lower, upper],
-                    color=SIZE_COLORS[style_val],
-                    marker=model_markers[model],
-                    linestyle="none", markersize=6,
-                    markeredgecolor="black", markeredgewidth=0.5,
-                    ecolor="black", elinewidth=1.5, capsize=5, alpha=0.85)
-
-    # star = best config per model
-    for _, brow in best.iterrows():
-        xi  = x_pos.get(brow[x_col])
-        val = brow.get("mae_paired")
-        sv  = brow.get(style_col)
-        if xi is None or val is None or pd.isna(val):
-            continue
-        off = offsets.get((brow["model"], sv), 0)
-        ax.scatter([xi + off], [val],
-                   color=SIZE_COLORS.get(sv, "gray"),
-                   marker="*", s=220, edgecolors="black",
-                   linewidths=0.8, zorder=5)
-
-    ax.set_xticks(list(x_pos.values()))
-    ax.set_xticklabels(list(x_pos.keys()), fontsize=9)
-    ax.set_xlabel(xlabel, fontsize=9)
-    ax.set_ylabel("MAE (paired) ± std", fontsize=9)
-    ax.set_ylim(bottom=0)
-
-
-def plot_grid(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
+def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
+    """Single-panel MAE plot: x = model family, colour = model size, style = data size."""
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
-    models        = [m for m in MODELS if m in df["model"].values]
-    model_markers = {m: MODEL_MARKERS[i] for i, m in enumerate(models)}
+    models = [m for m in MODELS if m in df["model"].values]
 
     df = df.copy()
     df[["model_size", "data_size"]] = df["config"].apply(
@@ -146,40 +94,87 @@ def plot_grid(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
         lambda c: pd.Series(_parse_config(c))
     )
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    x_pos = {m: i for i, m in enumerate(models)}
 
-    _metric_panel(axes[0], df, best,
-                  x_col="data_size",  style_col="model_size",
-                  model_markers=model_markers, xlabel="Data size")
-    axes[0].set_title("MAE  vs  data size\n(colour = model size)", fontsize=9)
+    fig, ax = plt.subplots(figsize=(10, 5))
 
-    _metric_panel(axes[1], df, best,
-                  x_col="model_size", style_col="data_size",
-                  model_markers=model_markers, xlabel="Model size")
-    axes[1].set_title("MAE  vs  model size\n(colour = data size)", fontsize=9)
+    # 9 lines: 3 model sizes × 3 data sizes
+    for model_size in MODEL_SIZES:
+        for data_size in DATASIZES:
+            xs, ys, lowers, uppers = [], [], [], []
+            for model in models:
+                row = df[
+                    (df["model"] == model) &
+                    (df["model_size"] == model_size) &
+                    (df["data_size"] == data_size)
+                ].dropna(subset=["mae_paired"])
+                if row.empty:
+                    continue
+                mae = row["mae_paired"].iloc[0]
+                std = row["mae_paired_std"].iloc[0] if "mae_paired_std" in row.columns else 0
+                if std is None or (isinstance(std, float) and np.isnan(std)):
+                    std = 0
+                xs.append(x_pos[model])
+                ys.append(mae)
+                lowers.append(min(float(std), float(mae)))  # clip so bar never goes below 0
+                uppers.append(float(std))
+            if not xs:
+                continue
+            ax.errorbar(
+                xs, ys, yerr=[lowers, uppers],
+                color=SIZE_COLORS[model_size],
+                linestyle=DATA_SIZE_STYLES[data_size],
+                marker="o", markersize=5,
+                markeredgecolor="black", markeredgewidth=0.5,
+                ecolor="gray", elinewidth=1, capsize=3, alpha=0.85,
+            )
 
-    # ---- legend (outside, right side) ----
-    color_handles  = [Patch(facecolor=SIZE_COLORS[s], edgecolor="black",
-                            linewidth=0.7, label=s)
-                      for s in MODEL_SIZES]
-    marker_handles = [Line2D([0], [0], color="gray",
-                             marker=model_markers[m], markersize=7,
-                             markeredgecolor="black", markeredgewidth=0.5,
-                             linestyle="-", label=m)
-                      for m in models]
-    star_handle    = [Line2D([0], [0], marker="*", color="w",
-                             markerfacecolor="gray", markeredgecolor="black",
-                             markersize=12, label="best config")]
+    # star = best config per model
+    for _, brow in best.iterrows():
+        model = brow["model"]
+        if model not in x_pos:
+            continue
+        mae = brow.get("mae_paired")
+        model_size = brow.get("model_size")
+        if mae is None or pd.isna(mae) or model_size is None:
+            continue
+        ax.scatter(
+            [x_pos[model]], [mae],
+            color=SIZE_COLORS.get(model_size, "gray"),
+            marker="*", s=260, edgecolors="black", linewidths=0.8, zorder=5,
+        )
 
-    fig.legend(handles=color_handles + [Line2D([], [], linestyle="none")] +
-               marker_handles + star_handle,
-               fontsize=8, loc="center right", bbox_to_anchor=(1.15, 0.5),
-               title="Size (colour)  |  Model (marker)  |  Best",
-               title_fontsize=8, frameon=True)
+    ax.set_xticks(list(x_pos.values()))
+    ax.set_xticklabels(list(x_pos.keys()), fontsize=9)
+    ax.set_ylabel("MAE (paired) ± std", fontsize=9)
+    ax.set_ylim(bottom=0)
 
-    fig.suptitle(
-        "PSR MAE (paired, ±1 std) — colour = complementary size axis   "
-        "marker = model family   star = best config per model (lowest MAE)",
+    # ---- legend ----
+    color_handles = [
+        Patch(facecolor=SIZE_COLORS[s], edgecolor="black", linewidth=0.7,
+              label=f"{s} model")
+        for s in MODEL_SIZES
+    ]
+    style_handles = [
+        Line2D([0], [0], color="black", linestyle=DATA_SIZE_STYLES[s],
+               linewidth=1.5, label=f"{s} data")
+        for s in DATASIZES
+    ]
+    star_handle = [
+        Line2D([0], [0], marker="*", color="w",
+               markerfacecolor="gray", markeredgecolor="black",
+               markersize=12, label="best config (lowest MAE)")
+    ]
+    ax.legend(
+        handles=color_handles + style_handles + star_handle,
+        fontsize=8, loc="upper right",
+        title="Colour = model size  |  Style = data size",
+        title_fontsize=7.5, frameon=True,
+    )
+
+    ax.set_title(
+        "PSR MAE (paired, ±1 std) — colour = model size   style = data size   "
+        "star = best config per model",
         fontsize=9,
     )
     fig.tight_layout()
@@ -226,7 +221,7 @@ def main():
     print("\nBest config per model family — large data size only, ranked by MAE (tiebreak Pearson r):")
     print(best[cols].to_string(index=False))
 
-    plot_grid(df, best, args.outdir / "best_per_model.png")
+    plot_merged(df, best, args.outdir / "best_per_model.png")
 
 
 if __name__ == "__main__":
