@@ -165,8 +165,13 @@ def compute_activations(
     transform,
     batch_size: int = 32,
     num_workers: int = 4,
+    tissue_stems: Optional[set] = None,
 ) -> np.ndarray:
     paths = list_images(folder)
+    if tissue_stems is not None:
+        paths = [p for p in paths
+                 if os.path.splitext(os.path.basename(p))[0] in tissue_stems]
+        print(f"[tissue filter] FID: {len(paths)} images from {folder}")
     ds = ImageFolderList(paths, transform)
     dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
@@ -253,8 +258,12 @@ def compute_ssim_map(
     return ssim_map.mean(dim=1, keepdim=True)  # average over channels -> [B, 1, H, W]
 
 
-def list_paired_images(path_real: str, path_fake: str) -> List[Tuple[str, str]]:
-    """Match images by filename between two folders."""
+def list_paired_images(
+    path_real: str,
+    path_fake: str,
+    tissue_stems: Optional[set] = None,
+) -> List[Tuple[str, str]]:
+    """Match images by filename between two folders, optionally filtered by tissue stems."""
     real_map = {}
     for p in list_images(path_real):
         real_map[os.path.basename(p)] = p
@@ -268,19 +277,93 @@ def list_paired_images(path_real: str, path_fake: str) -> List[Tuple[str, str]]:
             f"No matching filenames between {path_real} and {path_fake}. "
             "SSIM requires paired images with the same filenames."
         )
-    return [(real_map[k], fake_map[k]) for k in common]
+    pairs = [(real_map[k], fake_map[k]) for k in common]
+    if tissue_stems is not None:
+        pairs = [(r, f) for r, f in pairs
+                 if os.path.splitext(os.path.basename(r))[0] in tissue_stems]
+        if not pairs:
+            raise FileNotFoundError(
+                "No pairs remain after tissue filtering. "
+                "Lower --min_tissue_fraction or check --mask_dir."
+            )
+    return pairs
+
+
+def _load_mask_fraction(mask_path: str) -> float:
+    """Return tissue fraction (non-zero pixels / total pixels) for a mask file."""
+    import tifffile
+    arr = tifffile.imread(mask_path)
+    if arr.ndim > 2:
+        arr = arr[..., 0]
+    return float(np.count_nonzero(arr)) / float(arr.size)
+
+
+def _auto_mask_path(img_path: str) -> Optional[str]:
+    """Auto-detect mask by replacing the 'images' dir component with 'masks'."""
+    parts = img_path.replace("\\", "/").split("/")
+    try:
+        idx = len(parts) - 1 - parts[::-1].index("images")
+        parts[idx] = "masks"
+        candidate = "/".join(parts)
+        return candidate if os.path.isfile(candidate) else None
+    except ValueError:
+        return None
+
+
+def build_tissue_filter(
+    real_paths: List[str],
+    mask_dir: Optional[str] = None,
+    min_fraction: float = 0.0,
+) -> Optional[set]:
+    """Return a set of stems passing the tissue fraction threshold, or None (no filter).
+
+    Mask discovery:
+      mask_dir given → walk recursively, match by stem (basename without ext).
+      mask_dir=None  → auto-detect from tile structure (images/ → masks/ sibling).
+    Tiles with no matching mask are always included (backward compatible).
+    """
+    if min_fraction == 0.0 and mask_dir is None:
+        return None
+
+    mask_by_stem: dict = {}
+    if mask_dir:
+        for mp in list_images(mask_dir):
+            mask_by_stem[os.path.splitext(os.path.basename(mp))[0]] = mp
+
+    passing: set = set()
+    n_found = n_pass = n_low = n_no_mask = 0
+    for p in real_paths:
+        stem = os.path.splitext(os.path.basename(p))[0]
+        mp = mask_by_stem.get(stem) if mask_dir else _auto_mask_path(p)
+        if mp is None:
+            passing.add(stem)
+            n_no_mask += 1
+            continue
+        n_found += 1
+        frac = _load_mask_fraction(mp)
+        if frac >= min_fraction:
+            passing.add(stem)
+            n_pass += 1
+        else:
+            n_low += 1
+
+    print(f"[tissue filter] {len(real_paths)} images — "
+          f"{n_found} masks found, {n_pass} pass (≥{min_fraction:.2f}), "
+          f"{n_low} below threshold, {n_no_mask} no mask (included)")
+    return passing
 
 
 def compute_ssim(
     path_real: str,
     path_fake: str,
     image_size: int = 256,
+    tissue_stems: Optional[set] = None,
 ) -> Tuple[float, List[float]]:
     """
     Compute vanilla SSIM between paired images (matched by filename).
     Returns (mean_ssim, list of per-image ssim values).
     """
-    pairs = list_paired_images(path_real, path_fake)
+    pairs = list_paired_images(path_real, path_fake, tissue_stems=tissue_stems)
     tfm = transforms.Compose([
         transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BILINEAR),
         transforms.ToTensor(),  # [0, 1]
@@ -303,6 +386,7 @@ def compute_patch_ssim(
     patch_size: int = 64,
     patches_per_image: int = 16,
     seed: int = 42,
+    tissue_stems: Optional[set] = None,
 ) -> Tuple[float, List[float]]:
     """
     Compute patch-based SSIM: extract random patches from paired images,
@@ -310,7 +394,7 @@ def compute_patch_ssim(
     Returns (mean_patch_ssim, list of per-image mean patch ssim values).
     """
     rng = np.random.RandomState(seed)
-    pairs = list_paired_images(path_real, path_fake)
+    pairs = list_paired_images(path_real, path_fake, tissue_stems=tissue_stems)
     tfm = transforms.Compose([
         transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BILINEAR),
         transforms.ToTensor(),
@@ -385,13 +469,14 @@ def compute_lpips(
     path_fake: str,
     device: torch.device,
     image_size: int = 256,
+    tissue_stems: Optional[set] = None,
 ) -> Tuple[float, List[float]]:
     """
     Compute LPIPS (Learned Perceptual Image Patch Similarity) between paired images
     using VGG16 features. Lower = more similar.
     Returns (mean_lpips, list of per-image lpips values).
     """
-    pairs = list_paired_images(path_real, path_fake)
+    pairs = list_paired_images(path_real, path_fake, tissue_stems=tissue_stems)
     vgg = _VGGFeatures().to(device).eval()
 
     # ImageNet normalization (LPIPS expects [0,1] input, normalized to ImageNet stats)
@@ -615,6 +700,7 @@ def compute_judge_regen_error(
     image_size: int = 256,
     overlay_dir: Optional[str] = None,
     save_error_npy: bool = False,
+    tissue_stems: Optional[set] = None,
 ) -> Tuple[float, List[Tuple[str, float]]]:
     """
     Compute per-tile error |A − judge(B')| using an external judge model.
@@ -646,6 +732,9 @@ def compute_judge_regen_error(
     ])
 
     pairs = list_paired_images_by_relpath(path_A, path_B_generated)
+    if tissue_stems is not None:
+        pairs = [(a, b, s) for a, b, s in pairs
+                 if os.path.splitext(os.path.basename(a))[0] in tissue_stems]
     print(f"[judge_regen_error] {len(pairs)} paired tiles "
           f"(judge={judge_model_name}, direction={judge_direction})")
 
@@ -728,6 +817,7 @@ def compute_regen_error(
     image_size: int = 256,
     overlay_dir: Optional[str] = None,
     save_error_npy: bool = False,
+    tissue_stems: Optional[set] = None,
 ) -> Tuple[float, List[Tuple[str, float]]]:
     """
     Compute per-image cycle reconstruction MAE: A → B' → A', error = |A − A'|.
@@ -750,6 +840,9 @@ def compute_regen_error(
     ])
 
     paths = list_images(path_A)
+    if tissue_stems is not None:
+        paths = [p for p in paths
+                 if os.path.splitext(os.path.basename(p))[0] in tissue_stems]
 
     # --- Pass 1: compute all error maps ---
     stems: List[str] = []
@@ -901,11 +994,28 @@ def main():
                     help="Direction the judge applies to the pre-translated tiles "
                          "(default B2A: judge inverts B' → A_judge to compare against A)")
 
+    # Tissue filtering
+    ap.add_argument("--mask_dir", type=str, default=None,
+                    help="Root directory of tissue masks (walked recursively; matched by stem). "
+                         "If omitted, masks are auto-detected from the tile structure by "
+                         "replacing the 'images' path component with 'masks'.")
+    ap.add_argument("--min_tissue_fraction", type=float, default=0.0,
+                    help="Minimum tissue fraction [0–1] to include a tile (default 0 = all tiles). "
+                         "Set >0 to skip background tiles (e.g. 0.1 = ≥10%% tissue required). "
+                         "Masks are auto-detected from tile structure or via --mask_dir.")
+
     # Output
     ap.add_argument("--save_csv", type=str, default=None,
                     help="Save results to a CSV file (summary + per-image scores when available)")
 
     args = ap.parse_args()
+
+    # Build tissue filter once; None means disabled (all tiles included)
+    tissue_stems = None
+    if args.min_tissue_fraction > 0 or args.mask_dir:
+        tissue_stems = build_tissue_filter(
+            list_images(args.path_real), args.mask_dir, args.min_tissue_fraction
+        )
 
     if args.metric == "fid":
         device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
@@ -917,8 +1027,8 @@ def main():
             extractor = DINOv2FeatureExtractor(model_name=args.dino_model).to(device).eval()
             tfm = dino_transform(image_size=args.dino_image_size)
 
-        acts_real = compute_activations(args.path_real, extractor, device, tfm, args.batch_size, args.num_workers)
-        acts_fake = compute_activations(args.path_fake, extractor, device, tfm, args.batch_size, args.num_workers)
+        acts_real = compute_activations(args.path_real, extractor, device, tfm, args.batch_size, args.num_workers, tissue_stems=tissue_stems)
+        acts_fake = compute_activations(args.path_fake, extractor, device, tfm, args.batch_size, args.num_workers, tissue_stems=tissue_stems)
 
         mu_r, sig_r = compute_stats(acts_real)
         mu_f, sig_f = compute_stats(acts_fake)
@@ -935,8 +1045,8 @@ def main():
                         "n_real": acts_real.shape[0], "n_fake": acts_fake.shape[0]}])
 
     elif args.metric == "ssim":
-        mean_ssim, per_image = compute_ssim(args.path_real, args.path_fake, image_size=args.ssim_image_size)
-        pairs = list_paired_images(args.path_real, args.path_fake)
+        mean_ssim, per_image = compute_ssim(args.path_real, args.path_fake, image_size=args.ssim_image_size, tissue_stems=tissue_stems)
+        pairs = list_paired_images(args.path_real, args.path_fake, tissue_stems=tissue_stems)
         print(f"SSIM (real={args.path_real} vs fake={args.path_fake}): {mean_ssim:.4f}")
         print(f"N_pairs={len(per_image)}, image_size={args.ssim_image_size}")
 
@@ -951,8 +1061,9 @@ def main():
             image_size=args.ssim_image_size,
             patch_size=args.patch_size,
             patches_per_image=args.patches_per_image,
+            tissue_stems=tissue_stems,
         )
-        pairs = list_paired_images(args.path_real, args.path_fake)
+        pairs = list_paired_images(args.path_real, args.path_fake, tissue_stems=tissue_stems)
         print(f"Patch-SSIM (real={args.path_real} vs fake={args.path_fake}): {mean_pssim:.4f}")
         print(f"N_pairs={len(per_image)}, patch_size={args.patch_size}, patches_per_image={args.patches_per_image}")
 
@@ -965,8 +1076,9 @@ def main():
         device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
         mean_lpips, per_image = compute_lpips(
             args.path_real, args.path_fake, device, image_size=args.ssim_image_size,
+            tissue_stems=tissue_stems,
         )
-        pairs = list_paired_images(args.path_real, args.path_fake)
+        pairs = list_paired_images(args.path_real, args.path_fake, tissue_stems=tissue_stems)
         print(f"LPIPS (real={args.path_real} vs fake={args.path_fake}): {mean_lpips:.4f}")
         print(f"N_pairs={len(per_image)}, image_size={args.ssim_image_size}")
 
@@ -994,6 +1106,7 @@ def main():
             image_size=args.ssim_image_size,
             overlay_dir=args.overlay_dir,
             save_error_npy=args.save_error_npy,
+            tissue_stems=tissue_stems,
         )
         print(f"Regen Error MAE ({args.direction} cycle, path={args.path_A}): {mean_mae:.4f}")
         print(f"N_images={len(per_image)}, image_size={args.ssim_image_size}")
@@ -1029,6 +1142,7 @@ def main():
             image_size=args.ssim_image_size,
             overlay_dir=args.overlay_dir,
             save_error_npy=args.save_error_npy,
+            tissue_stems=tissue_stems,
         )
         print(f"Judge Regen Error MAE (judge={args.judge_model} {args.judge_direction}, "
               f"A={args.path_A}, B'={args.path_B_generated}): {mean_mae:.4f}")

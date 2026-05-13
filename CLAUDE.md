@@ -394,7 +394,20 @@ python evaluation.py --metric judge_regen_error \
 
 # Save results to CSV (works with any metric)
 python evaluation.py --metric ssim --path_real real_images/ --path_fake generated_images/ --save_csv results.csv
+
+# Tissue-only evaluation — auto-detect masks from tile structure (images/ → masks/ sibling)
+python evaluation.py --metric patch_ssim --path_real testB/tiles/testB \
+    --path_fake ./inference/ --min_tissue_fraction 0.1
+
+# Tissue-only FID with explicit mask directory
+python evaluation.py --metric fid --path_real testB/tiles/testB \
+    --path_fake ./inference/ --backend inception --device cuda \
+    --mask_dir testB/tiles/testB --min_tissue_fraction 0.1 --save_csv fid.csv
 ```
+
+**Tissue filtering flags (all metrics):**
+- `--min_tissue_fraction FLOAT` — minimum fraction [0–1] of non-zero mask pixels required to include a tile (default 0 = all tiles). Set e.g. `0.1` to skip background-only tiles.
+- `--mask_dir PATH` — explicit root directory of tissue masks (walked recursively, matched by stem). If omitted, masks are auto-detected from the tile structure by replacing the `images/` path component with `masks/`. Tiles with no matching mask are always included (backward compatible with WSI/flat-dir evaluation).
 
 ### Reconstruction
 Reconstructed files are saved with the **original WSI filename** (e.g. `slide_001.tif`).
