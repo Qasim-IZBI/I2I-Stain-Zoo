@@ -28,8 +28,15 @@ import pandas as pd
 MODELS = ["cyclegan", "unit", "munit", "dclgan", "uvcgan", "cyclediffusion"]
 
 
-def load_all(indir: Path, models: list = None) -> pd.DataFrame:
+def load_all(indir: Path, models: list = None) -> tuple[pd.DataFrame, dict]:
+    """Return (df, wsi_data).
+
+    wsi_data maps (model, config) → list[float] of per-WSI absolute errors,
+    computed from per_wsi.csv if present alongside summary.json.
+    """
     rows = []
+    wsi_data: dict = {}
+
     for model in (models if models is not None else MODELS):
         json_path = indir / model / "summary.json"
         if not json_path.exists():
@@ -48,7 +55,24 @@ def load_all(indir: Path, models: list = None) -> pd.DataFrame:
                 "mean_paired_diff": m.get("mean_paired_diff_generated_minus_real"),
                 "n_matched":        m.get("n_matched"),
             })
-    return pd.DataFrame(rows)
+
+        per_wsi_path = indir / model / "per_wsi.csv"
+        if per_wsi_path.exists():
+            pw = pd.read_csv(per_wsi_path)
+            real_df = (pw[pw["condition"] == "real"][["wsi", "psr_fraction"]]
+                       .rename(columns={"psr_fraction": "real_frac"}))
+            for config in pw["condition"].unique():
+                if config == "real":
+                    continue
+                gen_df = (pw[pw["condition"] == config][["wsi", "psr_fraction"]]
+                          .rename(columns={"psr_fraction": "gen_frac"}))
+                paired = real_df.merge(gen_df, on="wsi")
+                if not paired.empty:
+                    wsi_data[(model, config)] = (
+                        (paired["gen_frac"] - paired["real_frac"]).abs().tolist()
+                    )
+
+    return pd.DataFrame(rows), wsi_data
 
 
 def pick_best(df: pd.DataFrame) -> pd.DataFrame:
@@ -79,7 +103,8 @@ def _parse_config(config: str):
     return left.replace("_model", ""), right.replace("_data", "")
 
 
-def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
+def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path,
+                wsi_data: dict | None = None) -> None:
     """Single-panel grouped scatter: x = model family, 9 configs per group (colour = data size, marker = model size)."""
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
@@ -122,7 +147,21 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
                 std = row["mae_paired_std"].iloc[0] if "mae_paired_std" in row.columns else 0
                 if std is None or (isinstance(std, float) and np.isnan(std)):
                     std = 0
-                xs.append(x_pos[model] + off)
+                x = x_pos[model] + off
+
+                # per-WSI scatter points (behind the errorbar)
+                if wsi_data is not None:
+                    config = f"{model_size}_model/{data_size}_data"
+                    wsi_vals = wsi_data.get((model, config), [])
+                    if wsi_vals:
+                        ax.scatter(
+                            [x] * len(wsi_vals), wsi_vals,
+                            color=DATA_SIZE_COLORS[data_size],
+                            marker=MODEL_SIZE_MARKERS[model_size],
+                            s=18, alpha=0.35, linewidths=0, zorder=2,
+                        )
+
+                xs.append(x)
                 ys.append(mae)
                 lowers.append(min(float(std), float(mae)))  # clip so bar never goes below 0
                 uppers.append(float(std))
@@ -135,6 +174,7 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
                 marker=MODEL_SIZE_MARKERS[model_size], markersize=6,
                 markeredgecolor="black", markeredgewidth=0.5,
                 ecolor="gray", elinewidth=1, capsize=3, alpha=0.85,
+                zorder=3,
             )
 
     # star = best config per model, placed at the matching offset
@@ -220,7 +260,7 @@ def main():
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     models_to_run = args.models if args.models else MODELS
-    df = load_all(args.indir, models=models_to_run)
+    df, wsi_data = load_all(args.indir, models=models_to_run)
     if df.empty:
         raise RuntimeError(f"No summary.json files found under {args.indir}")
 
@@ -233,7 +273,7 @@ def main():
     print("\nBest config per model family — large data size only, ranked by MAE (tiebreak Pearson r):")
     print(best[cols].to_string(index=False))
 
-    plot_merged(df, best, args.outdir / "best_per_model.png")
+    plot_merged(df, best, args.outdir / "best_per_model.png", wsi_data=wsi_data)
 
 
 if __name__ == "__main__":
