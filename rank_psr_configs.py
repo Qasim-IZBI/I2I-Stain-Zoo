@@ -11,9 +11,9 @@ Outputs
 -------
 best_per_model.csv   — one row per model: best config + its paired metrics
 all_configs.csv      — all configs × models with paired metrics (for inspection)
-best_per_model.png   — single panel: x = model family, y = MAE ±1 std error bars,
-                       colour = model size, marker shape = data size,
-                       horizontal offset separates the 9 configs per model family,
+best_per_model.png   — single grouped-scatter panel: x = model family,
+                       9 configs per group (colour = model size, marker = data size),
+                       horizontal offset separates configs, no cross-model lines,
                        star = best config per model (lowest MAE)
 """
 
@@ -80,7 +80,7 @@ def _parse_config(config: str):
 
 
 def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
-    """Single-panel MAE plot: x = model family, colour = model size, marker = data size."""
+    """Single-panel grouped scatter: x = model family, 9 configs per group (colour = model size, marker = data size)."""
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
@@ -131,7 +131,7 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
             ax.errorbar(
                 xs, ys, yerr=[lowers, uppers],
                 color=SIZE_COLORS[model_size],
-                linestyle="-",
+                linestyle="none",
                 marker=DATA_SIZE_MARKERS[data_size], markersize=6,
                 markeredgecolor="black", markeredgewidth=0.5,
                 ecolor="gray", elinewidth=1, capsize=3, alpha=0.85,
@@ -185,8 +185,8 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
     )
 
     ax.set_title(
-        "PSR MAE (paired, ±1 std) — colour = model size   marker = data size   "
-        "star = best config per model",
+        "PSR MAE (paired, ±1 std) — 9 configs per model family   "
+        "colour = model size   marker = data size   star = best config",
         fontsize=9,
     )
     fig.tight_layout()
