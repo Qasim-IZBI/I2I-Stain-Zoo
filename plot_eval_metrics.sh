@@ -38,8 +38,14 @@ PROJECT_ROOT=I2I-Stain-Zoo
 #   ${INDIR}/${model}/results/data_${d}/model_${s}/{metric}.csv  (eval_all_configs.sh)
 INDIR=/work2/bz66izin-VSproject/Eval
 
-# Output directory for all_configs.csv, best_per_model.csv, and metrics.png
+# Output directory for all_configs.csv and figures
 OUTDIR=/work2/bz66izin-VSproject/eval_plots
+
+# Tiled testB root containing per-WSI tiles_metadata.csv files.
+# When set, LPIPS and patch-SSIM error bars show ±1 std across WSI-level means
+# and individual WSI values are overlaid as semi-transparent points.
+# Set to "" to disable WSI-level aggregation (falls back to tile-level std).
+METADATA_DIR=/work2/bz66izin-VSproject/VS_Data/QP_SR/tiles/testB
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pre-flight
@@ -58,11 +64,22 @@ fi
 
 mkdir -p "${OUTDIR}"
 
-echo "Input  : ${INDIR}"
-echo "Output : ${OUTDIR}"
+echo "Input        : ${INDIR}"
+echo "Output       : ${OUTDIR}"
+echo "Metadata dir : ${METADATA_DIR:-<none, tile-level std>}"
+
+METADATA_ARG=()
+if [ -n "${METADATA_DIR}" ]; then
+    if [ ! -d "${METADATA_DIR}" ]; then
+        echo "[WARN] METADATA_DIR not found: ${METADATA_DIR} — running without WSI-level aggregation."
+    else
+        METADATA_ARG=(--metadata_dir "${METADATA_DIR}")
+    fi
+fi
 
 python "${PROJECT_ROOT}/plot_eval_metrics.py" \
     --indir  "${INDIR}" \
-    --outdir "${OUTDIR}"
+    --outdir "${OUTDIR}" \
+    "${METADATA_ARG[@]}"
 
 echo "Done. Outputs saved to ${OUTDIR}"
