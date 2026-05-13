@@ -10,13 +10,12 @@ Produces a 1×3 grouped-scatter figure using the same visual encoding as
 rank_psr_configs.py:
 
   x = model family   colour = data size   marker = model size
-  9 configs per model family   star = best config (large data only, per metric)
+  9 configs per model family
 
 Outputs
 -------
-all_configs.csv    — all (model, config) × metric values for inspection
-best_per_model.csv — best config per model per metric (large data size only)
-metrics.png        — 1×3 grouped-scatter figure
+all_configs.csv — all (model, config) × metric values for inspection
+metrics.png     — 1×3 grouped-scatter figure
 """
 
 import argparse
@@ -64,12 +63,6 @@ METRICS = {
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-
-def _parse_config(config: str):
-    """'small_model/large_data' → ('small', 'large')."""
-    left, right = config.split("/")
-    return left.replace("_model", ""), right.replace("_data", "")
-
 
 def _find_csv(indir: Path, model: str, model_size: str, data_size: str,
               filenames: list) -> Path | None:
@@ -132,33 +125,9 @@ def load_all(indir: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def pick_best(df: pd.DataFrame) -> pd.DataFrame:
-    """Best config per model per metric — large data size only."""
-    large = df[df["data_size"] == "large"].copy()
-    records = []
-    for model in MODELS:
-        mdf = large[large["model"] == model]
-        if mdf.empty:
-            continue
-        rec = {"model": model}
-        for metric, mcfg in METRICS.items():
-            valid = mdf.dropna(subset=[metric])
-            if valid.empty:
-                rec[f"best_config_{metric}"] = None
-                rec[f"best_{metric}"]        = None
-                continue
-            idx = valid[metric].idxmax() if mcfg["higher_better"] else valid[metric].idxmin()
-            best_row = valid.loc[idx]
-            rec[f"best_config_{metric}"] = best_row["config"]
-            rec[f"best_{metric}"]        = best_row[metric]
-        records.append(rec)
-    return pd.DataFrame(records)
-
-
 # ── plotting ──────────────────────────────────────────────────────────────────
 
-def _metric_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
-                  metric: str, mcfg: dict) -> None:
+def _metric_panel(ax, df: pd.DataFrame, metric: str, mcfg: dict) -> None:
     models  = [m for m in MODELS if m in df["model"].values]
     x_pos   = {m: i for i, m in enumerate(models)}
     combos  = [(ms, ds) for ds in DATASIZES for ms in MODEL_SIZES]
@@ -195,21 +164,6 @@ def _metric_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
                 ecolor="gray", elinewidth=1, capsize=3, alpha=0.85,
             )
 
-    # star = best config per model for this metric
-    for _, brow in best.iterrows():
-        model     = brow["model"]
-        best_cfg  = brow.get(f"best_config_{metric}")
-        best_val  = brow.get(f"best_{metric}")
-        if model not in x_pos or best_cfg is None or best_val is None or pd.isna(best_val):
-            continue
-        ms, ds = _parse_config(best_cfg)
-        off = offsets.get((ms, ds), 0)
-        ax.scatter(
-            [x_pos[model] + off], [float(best_val)],
-            color=DATA_SIZE_COLORS.get(ds, "gray"),
-            marker="*", s=260, edgecolors="black", linewidths=0.8, zorder=5,
-        )
-
     ax.set_xticks(list(x_pos.values()))
     ax.set_xticklabels(list(x_pos.keys()), fontsize=8, rotation=12, ha="right")
     ax.set_ylabel(mcfg["ylabel"], fontsize=9)
@@ -217,11 +171,11 @@ def _metric_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
     ax.set_ylim(bottom=0)
 
 
-def plot_all(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
+def plot_all(df: pd.DataFrame, outpath: Path) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 
     for ax, (metric, mcfg) in zip(axes, METRICS.items()):
-        _metric_panel(ax, df, best, metric, mcfg)
+        _metric_panel(ax, df, metric, mcfg)
 
     # shared legend (right side)
     color_handles = [
@@ -236,20 +190,15 @@ def plot_all(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
                label=f"{s} model")
         for s in MODEL_SIZES
     ]
-    star_handle = [
-        Line2D([0], [0], marker="*", color="w",
-               markerfacecolor="gray", markeredgecolor="black",
-               markersize=12, label="best config (large data)")
-    ]
     fig.legend(
-        handles=color_handles + marker_handles + star_handle,
+        handles=color_handles + marker_handles,
         fontsize=8, loc="center right", bbox_to_anchor=(1.02, 0.5),
         title="Colour = data size  |  Marker = model size",
         title_fontsize=7.5, frameon=True,
     )
     fig.suptitle(
         "Evaluation metrics — 9 configs per model family   "
-        "colour = data size   marker = model size   star = best config (large data)",
+        "colour = data size   marker = model size",
         fontsize=9,
     )
     fig.tight_layout()
@@ -280,18 +229,9 @@ def main():
     if df.empty:
         raise RuntimeError(f"No metric CSVs found under {args.indir}")
 
-    best = pick_best(df)
-
     df.to_csv(args.outdir / "all_configs.csv", index=False)
-    best.to_csv(args.outdir / "best_per_model.csv", index=False)
 
-    print("\nBest config per model (large data size only):")
-    cols = (["model"]
-            + [f"best_config_{m}" for m in METRICS]
-            + [f"best_{m}" for m in METRICS])
-    print(best[[c for c in cols if c in best.columns]].to_string(index=False))
-
-    plot_all(df, best, args.outdir / "metrics.png")
+    plot_all(df, args.outdir / "metrics.png")
 
 
 if __name__ == "__main__":
