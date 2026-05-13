@@ -12,7 +12,8 @@ Outputs
 best_per_model.csv   — one row per model: best config + its paired metrics
 all_configs.csv      — all configs × models with paired metrics (for inspection)
 best_per_model.png   — single panel: x = model family, y = MAE ±1 std error bars,
-                       colour = model size, line style = data size,
+                       colour = model size, marker shape = data size,
+                       horizontal offset separates the 9 configs per model family,
                        star = best config per model (lowest MAE)
 """
 
@@ -68,8 +69,8 @@ def pick_best(df: pd.DataFrame) -> pd.DataFrame:
 DATASIZES        = ["small", "medium", "large"]
 MODEL_SIZES      = ["small", "medium", "large"]
 SIZE_COLORS      = {"small": "#1f77b4", "medium": "#ff7f0e", "large": "#2ca02c"}
-DATA_SIZE_STYLES = {"small": "-",      "medium": "--",       "large": ":"}
-MODEL_MARKERS    = ["o", "s", "^", "D", "v", "P"]
+DATA_SIZE_MARKERS = {"small": "o", "medium": "s", "large": "^"}
+MODEL_MARKERS     = ["o", "s", "^", "D", "v", "P"]
 
 
 def _parse_config(config: str):
@@ -79,7 +80,7 @@ def _parse_config(config: str):
 
 
 def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
-    """Single-panel MAE plot: x = model family, colour = model size, style = data size."""
+    """Single-panel MAE plot: x = model family, colour = model size, marker = data size."""
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
@@ -96,11 +97,18 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
 
     x_pos = {m: i for i, m in enumerate(models)}
 
+    # Horizontal offset for each of the 9 (model_size, data_size) combos
+    combos  = [(ms, ds) for ms in MODEL_SIZES for ds in DATASIZES]
+    spacing = 0.08
+    offsets = {c: (i - (len(combos) - 1) / 2) * spacing
+               for i, c in enumerate(combos)}
+
     fig, ax = plt.subplots(figsize=(10, 5))
 
-    # 9 lines: 3 model sizes × 3 data sizes
+    # 9 series: 3 model sizes × 3 data sizes
     for model_size in MODEL_SIZES:
         for data_size in DATASIZES:
+            off = offsets[(model_size, data_size)]
             xs, ys, lowers, uppers = [], [], [], []
             for model in models:
                 row = df[
@@ -114,7 +122,7 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
                 std = row["mae_paired_std"].iloc[0] if "mae_paired_std" in row.columns else 0
                 if std is None or (isinstance(std, float) and np.isnan(std)):
                     std = 0
-                xs.append(x_pos[model])
+                xs.append(x_pos[model] + off)
                 ys.append(mae)
                 lowers.append(min(float(std), float(mae)))  # clip so bar never goes below 0
                 uppers.append(float(std))
@@ -123,23 +131,25 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
             ax.errorbar(
                 xs, ys, yerr=[lowers, uppers],
                 color=SIZE_COLORS[model_size],
-                linestyle=DATA_SIZE_STYLES[data_size],
-                marker="o", markersize=5,
+                linestyle="-",
+                marker=DATA_SIZE_MARKERS[data_size], markersize=6,
                 markeredgecolor="black", markeredgewidth=0.5,
                 ecolor="gray", elinewidth=1, capsize=3, alpha=0.85,
             )
 
-    # star = best config per model
+    # star = best config per model, placed at the matching offset
     for _, brow in best.iterrows():
         model = brow["model"]
         if model not in x_pos:
             continue
         mae = brow.get("mae_paired")
         model_size = brow.get("model_size")
+        data_size  = brow.get("data_size")
         if mae is None or pd.isna(mae) or model_size is None:
             continue
+        off = offsets.get((model_size, data_size), 0)
         ax.scatter(
-            [x_pos[model]], [mae],
+            [x_pos[model] + off], [mae],
             color=SIZE_COLORS.get(model_size, "gray"),
             marker="*", s=260, edgecolors="black", linewidths=0.8, zorder=5,
         )
@@ -155,9 +165,11 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
               label=f"{s} model")
         for s in MODEL_SIZES
     ]
-    style_handles = [
-        Line2D([0], [0], color="black", linestyle=DATA_SIZE_STYLES[s],
-               linewidth=1.5, label=f"{s} data")
+    marker_handles = [
+        Line2D([0], [0], color="black", marker=DATA_SIZE_MARKERS[s],
+               linestyle="none", markersize=7,
+               markeredgecolor="black", markeredgewidth=0.5,
+               label=f"{s} data")
         for s in DATASIZES
     ]
     star_handle = [
@@ -166,14 +178,14 @@ def plot_merged(df: pd.DataFrame, best: pd.DataFrame, outpath: Path) -> None:
                markersize=12, label="best config (lowest MAE)")
     ]
     ax.legend(
-        handles=color_handles + style_handles + star_handle,
+        handles=color_handles + marker_handles + star_handle,
         fontsize=8, loc="upper right",
-        title="Colour = model size  |  Style = data size",
+        title="Colour = model size  |  Marker = data size",
         title_fontsize=7.5, frameon=True,
     )
 
     ax.set_title(
-        "PSR MAE (paired, ±1 std) — colour = model size   style = data size   "
+        "PSR MAE (paired, ±1 std) — colour = model size   marker = data size   "
         "star = best config per model",
         fontsize=9,
     )
