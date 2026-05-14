@@ -70,6 +70,11 @@ PROJECT_ROOT=I2I-Stain-Zoo
 # For SSIM/LPIPS (paired), filenames here must match inference output filenames.
 TEST_B="${DATA_DIR}testB/tiles/testB"
 
+# Minimum tissue fraction to include a tile (0 = all tiles, 0.1 = at least 10% tissue).
+# Masks are auto-detected from the tile structure (images/ → masks/ sibling).
+# Set to 0 to disable tissue filtering.
+MIN_TISSUE_FRACTION=0.1
+
 # Inference output produced by the corresponding inference run
 INFER_BASE=/work2/bz66izin-VSproject/inference
 FAKE_DIR=${INFER_BASE}/${MODEL}/results/data_${DATASIZE}/model_${SIZE}/inference
@@ -104,9 +109,10 @@ fi
 
 mkdir -p "${OUT_DIR}"
 
-echo "Inference dir : ${FAKE_DIR}"
-echo "Real image dir: ${TEST_B}"
-echo "Output dir    : ${OUT_DIR}"
+echo "Inference dir    : ${FAKE_DIR}"
+echo "Real image dir   : ${TEST_B}"
+echo "Output dir       : ${OUT_DIR}"
+echo "Min tissue frac  : ${MIN_TISSUE_FRACTION}"
 
 # -----------------------------
 # FID  (distribution-level, unpaired — Inception backend)
@@ -114,12 +120,13 @@ echo "Output dir    : ${OUT_DIR}"
 if [ ! -f "${OUT_DIR}/fid.csv" ]; then
     echo "--- Running FID ---"
     run_cmd python "${PROJECT_ROOT}/evaluation.py" \
-        --metric     fid \
-        --path_real  "${TEST_B}" \
-        --path_fake  "${FAKE_DIR}" \
-        --backend    inception \
-        --device     cuda \
-        --save_csv   "${OUT_DIR}/fid.csv"
+        --metric               fid \
+        --path_real            "${TEST_B}" \
+        --path_fake            "${FAKE_DIR}" \
+        --backend              inception \
+        --device               cuda \
+        --min_tissue_fraction  "${MIN_TISSUE_FRACTION}" \
+        --save_csv             "${OUT_DIR}/fid.csv"
 else
     echo "[SKIP] fid.csv already exists."
 fi
@@ -130,13 +137,14 @@ fi
 if [ ! -f "${OUT_DIR}/patch_ssim.csv" ]; then
     echo "--- Running Patch-SSIM ---"
     run_cmd python "${PROJECT_ROOT}/evaluation.py" \
-        --metric          patch_ssim \
-        --path_real       "${TEST_B}" \
-        --path_fake       "${FAKE_DIR}" \
-        --patch_size      64 \
-        --patches_per_image 16 \
-        --device          cuda \
-        --save_csv        "${OUT_DIR}/patch_ssim.csv"
+        --metric               patch_ssim \
+        --path_real            "${TEST_B}" \
+        --path_fake            "${FAKE_DIR}" \
+        --patch_size           64 \
+        --patches_per_image    16 \
+        --device               cuda \
+        --min_tissue_fraction  "${MIN_TISSUE_FRACTION}" \
+        --save_csv             "${OUT_DIR}/patch_ssim.csv"
 else
     echo "[SKIP] patch_ssim.csv already exists."
 fi
@@ -147,11 +155,12 @@ fi
 if [ ! -f "${OUT_DIR}/lpips.csv" ]; then
     echo "--- Running LPIPS ---"
     run_cmd python "${PROJECT_ROOT}/evaluation.py" \
-        --metric     lpips \
-        --path_real  "${TEST_B}" \
-        --path_fake  "${FAKE_DIR}" \
-        --device     cuda \
-        --save_csv   "${OUT_DIR}/lpips.csv"
+        --metric               lpips \
+        --path_real            "${TEST_B}" \
+        --path_fake            "${FAKE_DIR}" \
+        --device               cuda \
+        --min_tissue_fraction  "${MIN_TISSUE_FRACTION}" \
+        --save_csv             "${OUT_DIR}/lpips.csv"
 else
     echo "[SKIP] lpips.csv already exists."
 fi
