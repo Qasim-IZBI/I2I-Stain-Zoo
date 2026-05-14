@@ -170,7 +170,7 @@ def compute_activations(
     paths = list_images(folder)
     if tissue_stems is not None:
         paths = [p for p in paths
-                 if os.path.splitext(os.path.basename(p))[0] in tissue_stems]
+                 if os.path.splitext(os.path.relpath(p, folder))[0] in tissue_stems]
         print(f"[tissue filter] FID: {len(paths)} images from {folder}")
     ds = ImageFolderList(paths, transform)
     dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
@@ -296,7 +296,7 @@ def list_paired_images(
 
     if tissue_stems is not None:
         pairs = [(r, f) for r, f in pairs
-                 if os.path.splitext(os.path.basename(r))[0] in tissue_stems]
+                 if os.path.splitext(os.path.relpath(r, path_real))[0] in tissue_stems]
         if not pairs:
             raise FileNotFoundError(
                 "No pairs remain after tissue filtering. "
@@ -328,13 +328,19 @@ def _auto_mask_path(img_path: str) -> Optional[str]:
 
 def build_tissue_filter(
     real_paths: List[str],
+    root: str,
     mask_dir: Optional[str] = None,
     min_fraction: float = 0.0,
 ) -> Optional[set]:
-    """Return a set of stems passing the tissue fraction threshold, or None (no filter).
+    """Return a set of relative-path stems (relative to root, no ext) passing the tissue threshold.
+
+    Keying by relative path (e.g. "001/images/0000001") instead of bare basename avoids
+    false-positive/negative collisions when tile IDs reset per WSI (multiple WSIs share
+    filenames like 0000001.tif).
 
     Mask discovery:
-      mask_dir given → walk recursively, match by stem (basename without ext).
+      mask_dir given → walk recursively, match by basename (masks are typically flat or share
+                       the same relative structure; basename lookup handles both cases).
       mask_dir=None  → auto-detect from tile structure (images/ → masks/ sibling).
     Tiles with no matching mask are always included (backward compatible).
     """
@@ -349,16 +355,17 @@ def build_tissue_filter(
     passing: set = set()
     n_found = n_pass = n_low = n_no_mask = 0
     for p in real_paths:
-        stem = os.path.splitext(os.path.basename(p))[0]
-        mp = mask_by_stem.get(stem) if mask_dir else _auto_mask_path(p)
+        rel_stem  = os.path.splitext(os.path.relpath(p, root))[0]   # e.g. "001/images/0000001"
+        base_stem = os.path.splitext(os.path.basename(p))[0]        # e.g. "0000001"
+        mp = mask_by_stem.get(base_stem) if mask_dir else _auto_mask_path(p)
         if mp is None:
-            passing.add(stem)
+            passing.add(rel_stem)
             n_no_mask += 1
             continue
         n_found += 1
         frac = _load_mask_fraction(mp)
         if frac >= min_fraction:
-            passing.add(stem)
+            passing.add(rel_stem)
             n_pass += 1
         else:
             n_low += 1
@@ -750,7 +757,7 @@ def compute_judge_regen_error(
     pairs = list_paired_images_by_relpath(path_A, path_B_generated)
     if tissue_stems is not None:
         pairs = [(a, b, s) for a, b, s in pairs
-                 if os.path.splitext(os.path.basename(a))[0] in tissue_stems]
+                 if os.path.splitext(os.path.relpath(a, path_A))[0] in tissue_stems]
     print(f"[judge_regen_error] {len(pairs)} paired tiles "
           f"(judge={judge_model_name}, direction={judge_direction})")
 
@@ -852,7 +859,7 @@ def compute_regen_error_precomputed(
     a_paths = list_images(path_A)
     if tissue_stems is not None:
         a_paths = [p for p in a_paths
-                   if os.path.splitext(os.path.basename(p))[0] in tissue_stems]
+                   if os.path.splitext(os.path.relpath(p, path_A))[0] in tissue_stems]
 
     # Build stem → path map for A' tiles (flat directory)
     regen_map = {
@@ -976,7 +983,7 @@ def compute_regen_error(
     paths = list_images(path_A)
     if tissue_stems is not None:
         paths = [p for p in paths
-                 if os.path.splitext(os.path.basename(p))[0] in tissue_stems]
+                 if os.path.splitext(os.path.relpath(p, path_A))[0] in tissue_stems]
 
     # --- Pass 1: compute all error maps ---
     stems: List[str] = []
@@ -1165,7 +1172,7 @@ def main():
         if ref_path is None:
             ap.error("--min_tissue_fraction / --mask_dir requires --path_real or --path_A")
         tissue_stems = build_tissue_filter(
-            list_images(ref_path), args.mask_dir, args.min_tissue_fraction
+            list_images(ref_path), ref_path, args.mask_dir, args.min_tissue_fraction
         )
 
     if args.metric == "fid":
