@@ -87,7 +87,6 @@ else
         --dataB "${DATA_B}" \
         --data_range "${DATA_RANGE}" \
         --seed "${SEED}" \
-        --amp \
         --output "${MEMBER_DIR}/stage1/"
 fi
 
