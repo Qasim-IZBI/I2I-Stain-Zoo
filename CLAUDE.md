@@ -848,9 +848,21 @@ Visual encoding: colour = data size, marker shape = model size, error bars = ±1
 semi-transparent scatter = per-WSI points; star in PSR-MAE panel = best config per model (lowest MAE, large data only).
 
 ### PSR Spearman Correlation — Per Model Type
-Grouped bar chart of Spearman ρ between PSR-MAE and each image quality metric
-(Patch-SSIM, LPIPS, FID), computed per model type across its 9 configs
-(3 model sizes × 3 data sizes). Reads from `combined_metrics.csv`.
+**What is being measured:** For each model family (CycleGAN, UNIT, etc.), this script
+asks whether the image quality metrics (Patch-SSIM, LPIPS, FID) agree with the
+biological fidelity metric (PSR-MAE) when comparing configurations. Concretely, for
+each model the 9 configs (3 model sizes × 3 data sizes) are scored by PSR-MAE and by
+each image quality metric, and the Spearman rank correlation ρ between the two
+orderings is computed.
+
+**What the result answers:** Do image quality metrics reliably identify the same
+"good" and "bad" configurations as PSR-MAE? A high |ρ| means the two metrics agree on
+which configs produce better virtual staining — so optimising image quality would
+implicitly optimise biological fidelity. A low |ρ| (near zero) means the metrics
+diverge: a config that looks better by SSIM/LPIPS/FID may not produce more accurate
+PSR+ area fractions, making image quality metrics unreliable proxies for downstream
+pathological analysis. The expected signs are: Patch-SSIM negative (higher SSIM →
+lower MAE = better), LPIPS and FID positive (higher = worse on both).
 
 ```bash
 python plot_psr_spearman.py \
@@ -865,9 +877,23 @@ Outputs in `--outdir`:
 - `psr_spearman.csv` — Spearman ρ, p-value, and n per (model, metric)
 
 ### Ranking Correlation Table — All Configs
-4×4 Spearman rank correlation heatmap between FID, LPIPS, Patch-SSIM, and PSR-MAE
-rankings across all 54 configurations. Ranking is direction-aware (lower = rank 1
-for FID/LPIPS/PSR-MAE; higher = rank 1 for Patch-SSIM). Reads from `combined_metrics.csv`.
+**What is being measured:** This script takes all 54 configurations (6 models × 3
+model sizes × 3 data sizes) and ranks them independently by each metric. It then
+computes the Spearman rank correlation between every pair of ranking vectors, producing
+a 4×4 matrix covering all pairwise relationships among Patch-SSIM, LPIPS, FID, and
+PSR-MAE. Ranking is direction-aware: rank 1 = best (ascending for FID/LPIPS/PSR-MAE,
+descending for Patch-SSIM).
+
+**What the result answers:** Across the full model zoo, do the metrics agree on which
+configurations are best? This is a global consistency check with two practical
+implications: (1) if image quality metrics strongly correlate with PSR-MAE, they can
+serve as cheap surrogates for the expensive PSR segmentation + comparison pipeline
+when selecting models; (2) if FID, LPIPS, and Patch-SSIM correlate well with each
+other but not with PSR-MAE, it suggests that all standard image quality metrics share
+a blind spot for biological content accuracy and should not be used alone to select
+virtual staining models. A ρ near +1 (or −1 for metrics of opposite polarity) means
+the two metrics are interchangeable for model ranking; ρ near 0 means they capture
+orthogonal aspects of translation quality.
 
 ```bash
 python plot_ranking_correlation.py \
