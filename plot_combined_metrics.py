@@ -382,7 +382,7 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
         fig.add_subplot(gs[1, 1]),
     ]
 
-    ax_leg = fig.add_subplot(gs[:, 2])
+    ax_leg = fig.add_subplot(gs[0, 2])
     ax_leg.axis("off")
 
     metric_order = ["patch_ssim", "lpips", "fid"]
