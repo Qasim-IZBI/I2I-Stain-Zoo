@@ -344,10 +344,10 @@ def main():
 
     # ---- DCLGAN losses ----
     parser.add_argument("--lambda_dcl", type=float, default=1.0)
-    parser.add_argument("--dclgan_lambda_cycle", type=float, default=0.0,
-                        help="Cycle-consistency weight for DCLGAN (default 0: DCL replaces cycle)")
-    parser.add_argument("--dclgan_lambda_identity", type=float, default=1.0,
-                        help="Identity loss weight for DCLGAN (default 1.0, CUT-style colour anchor)")
+    parser.add_argument("--dclgan_lambda_cycle", type=float, default=10.0,
+                        help="Cycle-consistency weight for DCLGAN (default 10.0)")
+    parser.add_argument("--dclgan_lambda_identity", type=float, default=0.0,
+                        help="Identity loss weight for DCLGAN (default 0: off)")
     parser.add_argument("--n_patches", type=int, default=256)
     parser.add_argument("--proj_dim", type=int, default=256)
 

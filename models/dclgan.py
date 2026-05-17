@@ -35,8 +35,8 @@ class DCLGANConfig:
     # Losses
     gan_mode: str = "lsgan"
     lambda_gan: float = 1.0
-    lambda_cycle: float = 0.0     # optional; DCL replaces cycle consistency
-    lambda_identity: float = 1.0  # on by default (CUT-style colour anchor)
+    lambda_cycle: float = 10.0    # cycle-consistency anchor
+    lambda_identity: float = 0.0  # optional, default off for VRAM
     lambda_dcl: float = 1.0       # dual contrastive weight
 
     # DCL / contrastive
@@ -241,16 +241,12 @@ class DCLGAN(nn.Module):
         fake_B, feats_A = self.G_A2B(real_A)
         fake_A, feats_B = self.G_B2A(real_B)
 
-        # Cycle (optional — skipped when lambda_cycle == 0)
-        if self.cfg.lambda_cycle > 0:
-            rec_A, _ = self.G_B2A(fake_B)
-            rec_B, _ = self.G_A2B(fake_A)
-            loss_cycle = self.l1(rec_A, real_A) + self.l1(rec_B, real_B)
-        else:
-            rec_A = rec_B = None
-            loss_cycle = torch.tensor(0.0, device=real_A.device)
+        # Cycle
+        rec_A, _ = self.G_B2A(fake_B)
+        rec_B, _ = self.G_A2B(fake_A)
+        loss_cycle = self.l1(rec_A, real_A) + self.l1(rec_B, real_B)
 
-        # Identity (on by default; identity_loss short-circuits when lam <= 0)
+        # Identity (optional; identity_loss short-circuits when lam <= 0)
         loss_idt = identity_loss(self.l1, self.forward_A2B, self.forward_B2A,
                                  real_A, real_B, self.cfg.lambda_identity)
 
@@ -288,12 +284,11 @@ class DCLGAN(nn.Module):
         visuals = {
             "real_A": real_A,
             "fake_B": fake_B,
+            "rec_A": rec_A,
             "real_B": real_B,
             "fake_A": fake_A,
+            "rec_B": rec_B,
         }
-        if rec_A is not None:
-            visuals["rec_A"] = rec_A
-            visuals["rec_B"] = rec_B
         return loss_G, logs, visuals
 
     def compute_discriminator_loss(self, batch, visuals):
