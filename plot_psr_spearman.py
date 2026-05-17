@@ -94,12 +94,6 @@ def plot_correlations(corr: pd.DataFrame, outpath: Path) -> None:
     ax.set_xticks(x)
     ax.set_xticklabels(models, fontsize=9)
     ax.set_ylabel("Spearman ρ  (vs PSR-MAE)", fontsize=10)
-    ax.set_title(
-        "Spearman correlation between PSR-MAE and image quality metrics\n"
-        "per model type (9 configs: 3 model sizes × 3 data sizes)   "
-        "* p<0.05   ** p<0.01",
-        fontsize=9,
-    )
     ax.set_ylim(-1.05, 1.05)
     ax.legend(fontsize=9, frameon=True)
     ax.spines["top"].set_visible(False)

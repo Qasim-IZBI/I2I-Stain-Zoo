@@ -407,11 +407,6 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
         handletextpad=0.4,
     )
 
-    fig.suptitle(
-        "Evaluation metrics — 9 configs per model family",
-        fontsize=10, y=0.97,
-    )
-
     fig.savefig(outpath, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved → {outpath}")

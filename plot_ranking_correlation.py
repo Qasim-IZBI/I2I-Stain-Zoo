@@ -147,12 +147,6 @@ def plot_table(corr_df: pd.DataFrame, pval_df: pd.DataFrame, n_configs: int,
     cbar.set_label("Spearman ρ", fontsize=9)
     cbar.ax.tick_params(labelsize=8)
 
-    ax.set_title(
-        f"Spearman rank correlation across all configurations (n={n_configs})\n"
-        "* p<0.05   ** p<0.01   *** p<0.001",
-        fontsize=9, pad=14,
-    )
-
     fig.tight_layout()
     fig.savefig(outpath, dpi=150, bbox_inches="tight")
     plt.close(fig)
