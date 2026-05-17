@@ -63,9 +63,10 @@ def compute_ranking_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame
             pair = ranked[[a, b]].dropna()
             if len(pair) < 3:
                 continue
-            rho, pval = spearmanr(pair[a], pair[b])
-            rho_mat[i, j]  = rho
-            pval_mat[i, j] = pval
+            result = spearmanr(pair[a].values, pair[b].values)
+            # scipy ≥1.9 may return arrays instead of scalars
+            rho_mat[i, j]  = float(np.atleast_1d(result.statistic).flat[0])
+            pval_mat[i, j] = float(np.atleast_1d(result.pvalue).flat[0])
 
     corr_df = pd.DataFrame(rho_mat,  index=labels, columns=labels)
     pval_df = pd.DataFrame(pval_mat, index=labels, columns=labels)
