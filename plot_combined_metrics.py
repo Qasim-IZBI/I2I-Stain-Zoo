@@ -451,6 +451,16 @@ def main():
     if psr_df.empty:
         print("[WARN] No PSR summary.json files found — PSR panel will be empty.")
 
+    # ── save combined CSV ──────────────────────────────────────────────────────
+    keys = ["model", "model_size", "data_size"]
+    combined = eval_df.merge(
+        psr_df[keys + ["mae_paired", "mae_paired_std", "pearson_r", "n_matched"]],
+        on=keys, how="outer",
+    ).sort_values(keys).reset_index(drop=True)
+    csv_path = args.outdir / "combined_metrics.csv"
+    combined.to_csv(csv_path, index=False)
+    print(f"Saved → {csv_path}")
+
     outpath = args.outdir / "combined_metrics.png"
     plot_combined(eval_df, eval_wsi, psr_df, psr_wsi, best_psr, outpath)
 
