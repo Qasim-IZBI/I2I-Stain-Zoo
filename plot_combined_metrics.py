@@ -364,19 +364,25 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
                   psr_df: pd.DataFrame,  psr_wsi: dict,
                   best_psr: pd.DataFrame, outpath: Path) -> None:
 
-    # Layout: 4 metric panels + narrow legend column on the right
-    fig = plt.figure(figsize=(34, 5))
+    # Layout: 2×2 metric panels + narrow legend column on the right
+    fig = plt.figure(figsize=(20, 10))
     gs  = fig.add_gridspec(
-        1, 5,
-        width_ratios=[1, 1, 1, 1, 0.35],
-        wspace=0.38,
-        left=0.04, right=0.98,
-        top=0.88, bottom=0.18,
+        2, 3,
+        width_ratios=[1, 1, 0.25],
+        wspace=0.35,
+        hspace=0.45,
+        left=0.06, right=0.98,
+        top=0.92, bottom=0.10,
     )
 
-    axes = [fig.add_subplot(gs[i]) for i in range(4)]
+    axes = [
+        fig.add_subplot(gs[0, 0]),
+        fig.add_subplot(gs[0, 1]),
+        fig.add_subplot(gs[1, 0]),
+        fig.add_subplot(gs[1, 1]),
+    ]
 
-    ax_leg = fig.add_subplot(gs[4])
+    ax_leg = fig.add_subplot(gs[:, 2])
     ax_leg.axis("off")
 
     metric_order = ["patch_ssim", "lpips", "fid"]
