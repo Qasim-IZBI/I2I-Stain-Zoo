@@ -370,7 +370,7 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
         2, 3,
         width_ratios=[1, 1, 0.25],
         wspace=0.35,
-        hspace=0.45,
+        hspace=0.25,
         left=0.06, right=0.98,
         top=0.92, bottom=0.10,
     )
