@@ -365,7 +365,7 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
                   best_psr: pd.DataFrame, outpath: Path) -> None:
 
     # Layout: 4 metric panels + narrow legend column on the right
-    fig = plt.figure(figsize=(26, 5))
+    fig = plt.figure(figsize=(34, 5))
     gs  = fig.add_gridspec(
         1, 5,
         width_ratios=[1, 1, 1, 1, 0.35],
