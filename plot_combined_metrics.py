@@ -256,7 +256,7 @@ def _draw_eval_panel(ax, df: pd.DataFrame, metric: str, mcfg: dict,
             )
 
     ax.set_xticks(list(x_pos.values()))
-    ax.set_xticklabels(list(x_pos.keys()), fontsize=8, rotation=12, ha="right")
+    ax.set_xticklabels(list(x_pos.keys()), fontsize=8, rotation=0, ha="center")
     ax.set_ylabel(mcfg["ylabel"], fontsize=9)
     ax.set_title(mcfg["title"], fontsize=9)
     ax.set_ylim(bottom=0)
@@ -327,7 +327,7 @@ def _draw_psr_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
             )
 
     ax.set_xticks(list(x_pos.values()))
-    ax.set_xticklabels(list(x_pos.keys()), fontsize=8, rotation=12, ha="right")
+    ax.set_xticklabels(list(x_pos.keys()), fontsize=8, rotation=0, ha="center")
     ax.set_ylabel("PSR-MAE (paired) ↓", fontsize=9)
     ax.set_title("PSR-MAE", fontsize=9)
     ax.set_ylim(bottom=0)
@@ -364,20 +364,20 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
                   psr_df: pd.DataFrame,  psr_wsi: dict,
                   best_psr: pd.DataFrame, outpath: Path) -> None:
 
-    # Layout: narrow legend column + 4 metric panels
+    # Layout: 4 metric panels + narrow legend column on the right
     fig = plt.figure(figsize=(22, 5))
     gs  = fig.add_gridspec(
         1, 5,
-        width_ratios=[0.55, 1, 1, 1, 1],
+        width_ratios=[1, 1, 1, 1, 0.35],
         wspace=0.38,
-        left=0.02, right=0.98,
+        left=0.04, right=0.98,
         top=0.88, bottom=0.18,
     )
 
-    ax_leg = fig.add_subplot(gs[0])
-    ax_leg.axis("off")
+    axes = [fig.add_subplot(gs[i]) for i in range(4)]
 
-    axes = [fig.add_subplot(gs[i + 1]) for i in range(4)]
+    ax_leg = fig.add_subplot(gs[4])
+    ax_leg.axis("off")
 
     metric_order = ["patch_ssim", "lpips", "fid"]
     for ax, metric in zip(axes[:3], metric_order):
@@ -385,18 +385,20 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
 
     _draw_psr_panel(axes[3], psr_df, best_psr, psr_wsi)
 
-    # Single shared legend inside the left panel
+    # Single shared legend inside the right panel
     handles = _legend_handles(include_star=not best_psr.empty)
     ax_leg.legend(
         handles=handles,
         loc="center",
-        fontsize=8.5,
+        fontsize=7.5,
         frameon=True,
         title="Colour = data size\nMarker = model size",
-        title_fontsize=8,
-        handlelength=1.6,
-        handleheight=1.1,
-        borderpad=0.8,
+        title_fontsize=7,
+        handlelength=1.2,
+        handleheight=0.8,
+        borderpad=0.5,
+        labelspacing=0.35,
+        handletextpad=0.4,
     )
 
     fig.suptitle(
