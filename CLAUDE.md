@@ -848,21 +848,26 @@ Visual encoding: colour = data size, marker shape = model size, error bars = ±1
 semi-transparent scatter = per-WSI points; star in PSR-MAE panel = best config per model (lowest MAE, large data only).
 
 ### PSR Spearman Correlation — Per Model Type
-**What is being measured:** For each model family (CycleGAN, UNIT, etc.), this script
-asks whether the image quality metrics (Patch-SSIM, LPIPS, FID) agree with the
-biological fidelity metric (PSR-MAE) when comparing configurations. Concretely, for
-each model the 9 configs (3 model sizes × 3 data sizes) are scored by PSR-MAE and by
-each image quality metric, and the Spearman rank correlation ρ between the two
-orderings is computed.
+> **Scope: within-model.** This plot asks whether image quality metrics agree with
+> PSR-MAE *inside a single architecture* when tuning model size and data size.
+> Contrast with the Ranking Correlation Table below, which asks the same question
+> *across all architectures simultaneously*.
 
-**What the result answers:** Do image quality metrics reliably identify the same
-"good" and "bad" configurations as PSR-MAE? A high |ρ| means the two metrics agree on
-which configs produce better virtual staining — so optimising image quality would
-implicitly optimise biological fidelity. A low |ρ| (near zero) means the metrics
-diverge: a config that looks better by SSIM/LPIPS/FID may not produce more accurate
-PSR+ area fractions, making image quality metrics unreliable proxies for downstream
-pathological analysis. The expected signs are: Patch-SSIM negative (higher SSIM →
-lower MAE = better), LPIPS and FID positive (higher = worse on both).
+**What is being measured:** For each model family separately (CycleGAN, UNIT, etc.),
+the 9 configs (3 model sizes × 3 data sizes) are ranked by PSR-MAE and by each image
+quality metric (Patch-SSIM, LPIPS, FID). The Spearman rank correlation ρ between the
+two orderings is computed, giving one bar per metric per model — 18 bars total.
+
+**What the result answers:** Within a given architecture, if you tune the model size
+or training data size, do better image quality scores also mean more accurate PSR+
+area fractions? A high |ρ| for a particular model means that metric can guide
+hyperparameter selection for that architecture without running the expensive PSR
+segmentation pipeline. A ρ near zero means the two metrics are decoupled within that
+architecture — picking the config with the best SSIM, for example, gives no
+information about which config will best reproduce PSR+ distributions. The plot also
+reveals whether the relationship is consistent across architectures or model-specific.
+Expected signs: Patch-SSIM negative (higher SSIM → lower MAE), LPIPS and FID positive
+(higher = worse on both).
 
 ```bash
 python plot_psr_spearman.py \
@@ -877,23 +882,27 @@ Outputs in `--outdir`:
 - `psr_spearman.csv` — Spearman ρ, p-value, and n per (model, metric)
 
 ### Ranking Correlation Table — All Configs
-**What is being measured:** This script takes all 54 configurations (6 models × 3
-model sizes × 3 data sizes) and ranks them independently by each metric. It then
-computes the Spearman rank correlation between every pair of ranking vectors, producing
-a 4×4 matrix covering all pairwise relationships among Patch-SSIM, LPIPS, FID, and
-PSR-MAE. Ranking is direction-aware: rank 1 = best (ascending for FID/LPIPS/PSR-MAE,
-descending for Patch-SSIM).
+> **Scope: cross-model.** This table asks whether image quality metrics agree with
+> PSR-MAE *across the entire model zoo* (all architectures, sizes, and data sizes
+> pooled). Contrast with the PSR Spearman plot above, which asks the same question
+> separately for each architecture.
 
-**What the result answers:** Across the full model zoo, do the metrics agree on which
-configurations are best? This is a global consistency check with two practical
-implications: (1) if image quality metrics strongly correlate with PSR-MAE, they can
-serve as cheap surrogates for the expensive PSR segmentation + comparison pipeline
-when selecting models; (2) if FID, LPIPS, and Patch-SSIM correlate well with each
-other but not with PSR-MAE, it suggests that all standard image quality metrics share
-a blind spot for biological content accuracy and should not be used alone to select
-virtual staining models. A ρ near +1 (or −1 for metrics of opposite polarity) means
-the two metrics are interchangeable for model ranking; ρ near 0 means they capture
-orthogonal aspects of translation quality.
+**What is being measured:** All 54 configurations are ranked globally by each metric
+independently, then the Spearman rank correlation between every pair of ranking vectors
+is computed. This produces a 4×4 matrix of ρ values covering all pairwise
+relationships among Patch-SSIM, LPIPS, FID, and PSR-MAE across the full design space.
+Ranking is direction-aware: rank 1 = best (ascending for FID/LPIPS/PSR-MAE, descending
+for Patch-SSIM).
+
+**What the result answers:** When choosing the best overall model — comparing not just
+configs within one architecture but across all six — do image quality metrics and
+PSR-MAE agree on the winner? This is the critical question for model selection at
+publication time. If image quality metrics strongly correlate with PSR-MAE globally,
+they can substitute for the full PSR pipeline as a selection criterion. If FID, LPIPS,
+and Patch-SSIM agree with each other but not with PSR-MAE, it means all three
+standard metrics share the same blind spot: they reward perceptual realism but miss
+biological content accuracy, and any model chosen solely on image quality grounds may
+be the wrong choice for downstream pathological analysis.
 
 ```bash
 python plot_ranking_correlation.py \
