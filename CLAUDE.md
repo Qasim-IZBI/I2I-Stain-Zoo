@@ -823,6 +823,65 @@ Outputs in `--outdir`:
 `--indir` must contain one subdirectory per model (cyclegan/, unit/, etc.), each holding
 a `summary.json` from `compare_psr.py`. Missing model directories are warned and skipped.
 
+### Combined Metric Figure — All Four Metrics
+Produces a single 2×2 figure (Patch-SSIM, LPIPS, FID, PSR-MAE) with a shared
+compact legend to the right of the top-right subplot and light vertical separator
+lines between model groups. Requires eval metric CSVs and PSR `summary.json` files.
+Also writes `combined_metrics.csv` (used as input by the correlation scripts below).
+
+```bash
+# Direct invocation
+python plot_combined_metrics.py \
+    --eval_indir /work2/bz66izin-VSproject/Eval \
+    --psr_indir  /work2/bz66izin-VSproject/psr_comparison \
+    --outdir     ./combined_metrics_plot/
+
+# SLURM
+sbatch plot_combined_metrics.sh
+```
+
+Outputs in `--outdir`:
+- `combined_metrics.png` — 2×2 grouped-scatter figure
+- `combined_metrics.csv` — outer join of all four metrics, one row per (model, model_size, data_size)
+
+Visual encoding: colour = data size, marker shape = model size, error bars = ±1 std across WSIs,
+semi-transparent scatter = per-WSI points; star in PSR-MAE panel = best config per model (lowest MAE, large data only).
+
+### PSR Spearman Correlation — Per Model Type
+Grouped bar chart of Spearman ρ between PSR-MAE and each image quality metric
+(Patch-SSIM, LPIPS, FID), computed per model type across its 9 configs
+(3 model sizes × 3 data sizes). Reads from `combined_metrics.csv`.
+
+```bash
+python plot_psr_spearman.py \
+    --csv    ./combined_metrics_plot/combined_metrics.csv \
+    --outdir ./combined_metrics_plot/
+
+sbatch plot_psr_spearman.sh
+```
+
+Outputs in `--outdir`:
+- `psr_spearman.png` — grouped bar chart; significance markers (* p<0.05, ** p<0.01)
+- `psr_spearman.csv` — Spearman ρ, p-value, and n per (model, metric)
+
+### Ranking Correlation Table — All Configs
+4×4 Spearman rank correlation heatmap between FID, LPIPS, Patch-SSIM, and PSR-MAE
+rankings across all 54 configurations. Ranking is direction-aware (lower = rank 1
+for FID/LPIPS/PSR-MAE; higher = rank 1 for Patch-SSIM). Reads from `combined_metrics.csv`.
+
+```bash
+python plot_ranking_correlation.py \
+    --csv    ./combined_metrics_plot/combined_metrics.csv \
+    --outdir ./combined_metrics_plot/
+
+sbatch plot_ranking_correlation.sh
+```
+
+Outputs in `--outdir`:
+- `ranking_correlation.png` — colour-coded 4×4 table (RdYlGn, −1 to +1); significance markers
+- `ranking_correlation.csv` — Spearman ρ matrix
+- `ranking_correlation_pvalues.csv` — p-value matrix
+
 ### Cross-stain Consistency
 Measures spatial agreement between acellular eosinophilic regions in the H&E input
 (collagen proxy, via colour deconvolution) and PSR-positive regions in the generated SR
