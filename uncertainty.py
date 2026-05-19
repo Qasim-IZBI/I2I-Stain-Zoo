@@ -26,15 +26,71 @@ python uncertainty.py \\
     --output ./uncertainty_out
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import sys
 import warnings
 from pathlib import Path
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 import tifffile
+
+
+# ---------------------------------------------------------------------------
+# Tissue mask helpers  (mirrors evaluation.py build_tissue_filter pattern)
+# ---------------------------------------------------------------------------
+
+def _auto_mask_path(tile_path: str) -> Optional[str]:
+    """Auto-detect mask by replacing the 'images' dir component with 'masks'."""
+    parts = tile_path.replace("\\", "/").split("/")
+    try:
+        idx = len(parts) - 1 - parts[::-1].index("images")
+        parts[idx] = "masks"
+        candidate = "/".join(parts)
+        return candidate if Path(candidate).is_file() else None
+    except ValueError:
+        return None
+
+
+def _load_mask_array(mask_path: str) -> np.ndarray:
+    """Return a boolean (H, W) tissue mask; any non-zero pixel is tissue."""
+    arr = tifffile.imread(mask_path)
+    if arr.ndim > 2:
+        arr = arr[..., 0]
+    return arr > 0
+
+
+def _build_mask_lookup(mask_dir: Optional[Path]) -> dict:
+    """Walk mask_dir recursively and return stem → Path mapping."""
+    if mask_dir is None:
+        return {}
+    exts = {".tif", ".tiff", ".png"}
+    return {p.stem: p for p in mask_dir.rglob("*") if p.is_file() and p.suffix.lower() in exts}
+
+
+def _find_tile_mask(
+    tile_path: str,
+    mask_by_stem: dict,
+) -> Optional[np.ndarray]:
+    """Find and load the tissue mask for a tile.
+
+    Tries (in order):
+      1. mask_by_stem keyed by tile basename stem
+      2. Auto-detect images/ → masks/ sibling on the tile path
+    Returns a boolean (H, W) array, or None if no mask found.
+    Tiles with no mask are always included (backward-compatible with evaluation.py).
+    """
+    stem = Path(tile_path).stem
+    if stem in mask_by_stem:
+        return _load_mask_array(str(mask_by_stem[stem]))
+    auto = _auto_mask_path(tile_path)
+    if auto is not None:
+        return _load_mask_array(auto)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +286,8 @@ def process_architecture(
     upper_pct: float,
     save_overlays: bool,
     data_range: tuple[int, int] | None = None,
+    mask_dir: Optional[Path] = None,
+    min_tissue_fraction: float = 0.0,
 ) -> None:
     """Full uncertainty pipeline for one architecture."""
     print(f"\n{'=' * 60}")
@@ -267,6 +325,11 @@ def process_architecture(
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
 
+    # --- build mask lookup once (empty dict = no masking) ---
+    mask_by_stem = _build_mask_lookup(mask_dir)
+    apply_masking = mask_dir is not None or min_tissue_fraction > 0.0
+    n_skipped = 0
+
     # --- pass 1: compute raw uncertainty maps and mean prediction ---
     raw_maps:  dict[str, np.ndarray] = {}
     mean_maps: dict[str, np.ndarray] = {}
@@ -283,10 +346,26 @@ def process_architecture(
         if log_compress:
             u = np.log1p(u)
 
+        # Apply tissue mask: zero non-tissue pixels; skip sub-threshold tiles.
+        # Matches evaluation.py build_tissue_filter: tiles with no mask are included.
+        if apply_masking:
+            tile_path = str(ensemble_dirs[0] / fname)
+            mask_arr = _find_tile_mask(tile_path, mask_by_stem)
+            if mask_arr is not None:
+                frac = float(mask_arr.mean())
+                if frac < min_tissue_fraction:
+                    n_skipped += 1
+                    print(f"  [{name}] skip (tissue {frac:.2f} < {min_tissue_fraction:.2f}): {fname}")
+                    continue
+                u[~mask_arr] = 0.0
+
         raw_maps[fname]  = u
         mean_maps[fname] = np.mean(stack, axis=0)   # (H, W, 3) mean prediction
         ref_images[fname] = stack[0]
         print(f"  [{name}] computed uncertainty: {fname}")
+
+    if n_skipped:
+        print(f"  [{name}] Skipped {n_skipped} tiles below tissue threshold ({min_tissue_fraction:.2f})")
 
     # --- pass 2: global normalisation ---
     low, high = compute_global_bounds(
@@ -397,6 +476,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "combined with a SLURM array. Without this flag all tiles are "
              "discovered automatically.",
     )
+    parser.add_argument(
+        "--mask_dir", type=Path, default=None,
+        help="Directory of tissue mask TIFs (walked recursively, matched by stem). "
+             "If omitted, masks are auto-detected from the tile structure by "
+             "replacing the 'images' path component with 'masks'. "
+             "Tiles with no matching mask are always included.",
+    )
+    parser.add_argument(
+        "--min_tissue_fraction", type=float, default=0.0,
+        help="Minimum tissue fraction [0–1] to include a tile (default 0 = all tiles). "
+             "Set >0 to skip background-only tiles (e.g. 0.1). "
+             "Requires --mask_dir or a tile structure with a 'masks/' sibling.",
+    )
     return parser.parse_args(argv)
 
 
@@ -426,6 +518,8 @@ def main(argv: list[str] | None = None) -> None:
         upper_pct=args.upper_percentile,
         save_overlays=args.overlays,
         data_range=data_range,
+        mask_dir=args.mask_dir,
+        min_tissue_fraction=args.min_tissue_fraction,
     )
 
     print(f"\nDone. Outputs written to {args.output / args.model}")

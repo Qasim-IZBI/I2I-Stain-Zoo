@@ -47,6 +47,79 @@ from tqdm import tqdm
 
 
 # ---------------------------------------------------------------------------
+# Tissue mask helpers  (mirrors evaluation.py build_tissue_filter pattern)
+# ---------------------------------------------------------------------------
+
+def _auto_mask_path(img_path: str) -> Optional[str]:
+    """Auto-detect mask by replacing the 'images' dir component with 'masks'."""
+    parts = img_path.replace("\\", "/").split("/")
+    try:
+        idx = len(parts) - 1 - parts[::-1].index("images")
+        parts[idx] = "masks"
+        candidate = "/".join(parts)
+        return candidate if Path(candidate).is_file() else None
+    except ValueError:
+        return None
+
+
+def _load_mask_array(mask_path: str, target_size: Optional[tuple] = None) -> np.ndarray:
+    """Return a boolean (H, W) tissue mask; any non-zero pixel is tissue.
+    Resizes to target_size (W, H) with nearest-neighbour if needed."""
+    arr = np.array(Image.open(mask_path))
+    if arr.ndim > 2:
+        arr = arr[..., 0]
+    mask = arr > 0
+    if target_size is not None and mask.shape != (target_size[1], target_size[0]):
+        mask = np.array(
+            Image.fromarray(mask.astype(np.uint8) * 255).resize(target_size, Image.NEAREST)
+        ) > 127
+    return mask
+
+
+def _build_mask_lookup(mask_dir: Optional[Path]) -> dict:
+    """Walk mask_dir recursively and return stem → Path mapping."""
+    if mask_dir is None:
+        return {}
+    exts = {".tif", ".tiff", ".png"}
+    return {p.stem: p for p in mask_dir.rglob("*") if p.is_file() and p.suffix.lower() in exts}
+
+
+def _find_tile_mask(
+    row: pd.Series,
+    mask_by_stem: dict,
+    tile_size: int,
+) -> Optional[np.ndarray]:
+    """Find and load the tissue mask for one metadata row.
+
+    Priority (mirrors evaluation.py):
+      1. mask_path column from tiles_metadata.csv
+      2. Auto-detect images/ → masks/ on image_path
+      3. mask_by_stem (from --mask_dir) keyed by tile_name stem
+    Tiles with no mask are always included.
+    """
+    tile_name = f"{int(row['tile_name']):07d}"
+    target = (tile_size, tile_size)
+
+    # 1. mask_path from metadata
+    mp = row.get("mask_path", None)
+    if mp and isinstance(mp, str) and mp.strip() and Path(mp).is_file():
+        return _load_mask_array(mp, target)
+
+    # 2. auto-detect from image_path
+    ip = row.get("image_path", None)
+    if ip and isinstance(ip, str):
+        auto = _auto_mask_path(ip)
+        if auto is not None:
+            return _load_mask_array(auto, target)
+
+    # 3. explicit mask_dir by stem
+    if tile_name in mask_by_stem:
+        return _load_mask_array(str(mask_by_stem[tile_name]), target)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Tile .npy path resolution
 # ---------------------------------------------------------------------------
 
@@ -122,8 +195,13 @@ def _reconstruct_canvas(
     group: pd.DataFrame,
     npy_dir: Path,
     blend: str,
+    mask_by_stem: dict,
+    min_tissue_fraction: float,
 ) -> tuple[np.ndarray, int]:
     """Stitch per-tile .npy files into a float32 WSI canvas.
+
+    Non-tissue pixels are zeroed before accumulation (mirrors evaluation.py
+    build_tissue_filter: tiles with no mask are always included).
 
     Returns (canvas, n_missing) where canvas is (H, W) float32 and n_missing
     is the number of tiles whose .npy file could not be located.
@@ -166,6 +244,14 @@ def _reconstruct_canvas(
                     (tile_size, tile_size), Image.BILINEAR
                 )
             )
+
+        # Tissue masking: zero non-tissue pixels; skip sub-threshold tiles.
+        # Tiles with no mask are always included (evaluation.py convention).
+        mask_arr = _find_tile_mask(row, mask_by_stem, tile_size)
+        if mask_arr is not None:
+            if float(mask_arr.mean()) < min_tissue_fraction:
+                continue
+            arr[~mask_arr] = 0.0
 
         canvas[y : y + tile_size, x : x + tile_size] += arr
         weight[y : y + tile_size, x : x + tile_size] += 1
@@ -235,6 +321,15 @@ def main():
                         help="Also save raw float32 WSI canvas as <stem>.npy")
     parser.add_argument("--data_range", type=str, default=None,
                         help="Limit to WSI folders START,END inclusive (e.g. '1,5')")
+    parser.add_argument("--mask_dir", type=str, default=None,
+                        help="Directory of tissue mask TIFs (walked recursively, matched by "
+                             "tile_name stem). If omitted, masks are auto-detected from the "
+                             "tile structure (images/ → masks/ sibling) or from the "
+                             "mask_path column in tiles_metadata.csv. "
+                             "Tiles with no matching mask are always included.")
+    parser.add_argument("--min_tissue_fraction", type=float, default=0.0,
+                        help="Minimum tissue fraction [0–1] to include a tile (default 0 = all "
+                             "tiles). Set >0 to skip background tiles (e.g. 0.1).")
     args = parser.parse_args()
 
     npy_dir = Path(args.npy_dir)
@@ -246,6 +341,9 @@ def main():
         start, end = args.data_range.split(",")
         data_range = (int(start), int(end))
 
+    mask_by_stem = _build_mask_lookup(Path(args.mask_dir) if args.mask_dir else None)
+    min_tissue_fraction = args.min_tissue_fraction
+
     df = _load_metadata(Path(args.metadata), data_range)
     wsis = list(df.groupby("source_file"))
     print(f"Loaded metadata: {len(df)} tiles across {len(wsis)} WSIs")
@@ -255,7 +353,7 @@ def main():
         print("Global normalization: reconstruction pass 1/2 ...")
         canvases: dict[str, np.ndarray] = {}
         for source_file, group in tqdm(wsis, desc="Pass 1"):
-            canvas, _ = _reconstruct_canvas(group, npy_dir, args.blend)
+            canvas, _ = _reconstruct_canvas(group, npy_dir, args.blend, mask_by_stem, min_tissue_fraction)
             canvases[source_file] = canvas
 
         all_vals = np.concatenate([c.ravel() for c in canvases.values()])
@@ -297,7 +395,7 @@ def main():
             canvas = canvases[source_file]
             n_missing = 0
         else:
-            canvas, n_missing = _reconstruct_canvas(group, npy_dir, args.blend)
+            canvas, n_missing = _reconstruct_canvas(group, npy_dir, args.blend, mask_by_stem, min_tissue_fraction)
 
         n_total_missing += n_missing
         if n_missing:
