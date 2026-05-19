@@ -222,9 +222,9 @@ def make_plot(
     ax = axes[0, 0]
     ax.plot([0, 1], [0, 1], "k--", linewidth=1, alpha=0.6, label="y = x")
     ax.plot(bin_mean_u, bin_mean_e, "o-", color="C0", label="bin means")
-    ax.set_xlabel("Mean uncertainty (bin, normalised)")
-    ax.set_ylabel("Mean error (bin, normalised)")
-    ax.set_title(f"Reliability diagram   ECE = {ece:.4f}")
+    ax.set_xlabel("Mean uncertainty per tile (bin, normalised)")
+    ax.set_ylabel("Mean error per tile (bin, normalised)")
+    ax.set_title(f"Reliability diagram (tile means)   ECE = {ece:.4f}")
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
@@ -295,20 +295,14 @@ def main():
                     help="Number of quantile bins for reliability diagram and ECE.")
     ap.add_argument("--ause_steps", type=int, default=100,
                     help="Number of fraction-removed steps for sparsification curve.")
-    ap.add_argument("--reliability_sample", type=int, default=4096,
-                    help="Pixels sampled per tile for the dataset-level reliability "
-                         "diagram (cap memory). Set 0 to use all pixels.")
     ap.add_argument("--min_tissue_pixels", type=int, default=256,
                     help="Skip tiles with fewer tissue pixels than this.")
-    ap.add_argument("--seed", type=int, default=0,
-                    help="RNG seed for the per-tile reliability subsample.")
     args = ap.parse_args()
 
     if not args.no_mask and args.mask_dir is None:
         ap.error("--mask_dir is required (or pass --no_mask to compute on all pixels).")
 
     args.outdir.mkdir(parents=True, exist_ok=True)
-    rng = np.random.default_rng(args.seed)
 
     # ---- discover paired stems ----
     u_stems = list_npy_stems(args.uncertainty_dir)
@@ -333,8 +327,6 @@ def main():
     spar_per_tile_pred: list[np.ndarray] = []
     spar_per_tile_oracle: list[np.ndarray] = []
     fractions_grid: Optional[np.ndarray] = None
-    sample_u: list[np.ndarray] = []
-    sample_e: list[np.ndarray] = []
 
     for stem in tqdm(common, desc="Tiles"):
         u_full = np.load(args.uncertainty_dir / f"{stem}.npy").astype(np.float64)
@@ -378,15 +370,6 @@ def main():
         if fractions_grid is None:
             fractions_grid = fractions
 
-        # subsample for global reliability
-        if args.reliability_sample > 0 and u.size > args.reliability_sample:
-            sel = rng.choice(u.size, size=args.reliability_sample, replace=False)
-            sample_u.append(u[sel])
-            sample_e.append(e[sel])
-        else:
-            sample_u.append(u)
-            sample_e.append(e)
-
         rows.append({
             "tile_stem":     stem,
             "source_wsi":    stem_to_wsi.get(stem, ""),
@@ -418,13 +401,17 @@ def main():
         across_pearson = float("nan")
         across_spearman = float("nan")
 
-    # ---- dataset-level reliability + ECE ----
-    u_all = np.concatenate(sample_u)
-    e_all = np.concatenate(sample_e)
-    u_lo, u_hi = float(np.percentile(u_all, 1)), float(np.percentile(u_all, 99))
-    e_lo, e_hi = float(np.percentile(e_all, 1)), float(np.percentile(e_all, 99))
+    # ---- tile-mean reliability + ECE ----
+    # Use per-tile mean_u / mean_e (one point per tile) rather than subsampled
+    # pixels. The within-tile Spearman rho already captures pixel-level spatial
+    # calibration; the reliability diagram answers the tile-level question:
+    # "do tiles with higher uncertainty have higher error?"
+    u_tile = finite["mean_u"].values
+    e_tile = finite["mean_e"].values
+    u_lo, u_hi = float(np.percentile(u_tile, 1)), float(np.percentile(u_tile, 99))
+    e_lo, e_hi = float(np.percentile(e_tile, 1)), float(np.percentile(e_tile, 99))
     bin_u, bin_e, bin_counts = reliability_bins(
-        u_all, e_all, args.n_bins, u_lo, u_hi, e_lo, e_hi
+        u_tile, e_tile, args.n_bins, u_lo, u_hi, e_lo, e_hi
     )
     ece = expected_calibration_error(bin_u, bin_e, bin_counts)
 
@@ -455,8 +442,8 @@ def main():
             "bin_mean_u_normalised": bin_u.tolist(),
             "bin_mean_e_normalised": bin_e.tolist(),
             "bin_counts":            bin_counts.tolist(),
-            "u_norm_p1_p99":         [u_lo, u_hi],
-            "e_norm_p1_p99":         [e_lo, e_hi],
+            "u_tile_mean_p1_p99":    [u_lo, u_hi],
+            "e_tile_mean_p1_p99":    [e_lo, e_hi],
         },
         "sparsification": {
             "fractions":      fractions_grid.tolist(),
@@ -471,7 +458,7 @@ def main():
             "no_mask":           args.no_mask,
             "n_bins":            args.n_bins,
             "ause_steps":        args.ause_steps,
-            "reliability_sample": args.reliability_sample,
+            "reliability_granularity": "tile_means",
             "min_tissue_pixels": args.min_tissue_pixels,
         },
     }
