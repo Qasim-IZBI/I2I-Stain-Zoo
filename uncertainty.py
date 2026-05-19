@@ -75,18 +75,36 @@ def _build_mask_lookup(mask_dir: Optional[Path]) -> dict:
 def _find_tile_mask(
     tile_path: str,
     mask_by_stem: dict,
+    mask_dir: Optional[Path] = None,
+    fname: Optional[str] = None,
 ) -> Optional[np.ndarray]:
     """Find and load the tissue mask for a tile.
 
     Tries (in order):
-      1. mask_by_stem keyed by tile basename stem
-      2. Auto-detect images/ → masks/ sibling on the tile path
+      1. mask_dir + fname with images/ replaced by masks/  (e.g. mask_dir/001/masks/0000001.tif)
+         This handles multi-WSI runs where tile IDs repeat across WSIs — the WSI
+         subfolder in fname disambiguates them.
+      2. mask_by_stem keyed by tile basename stem (flat dir, single-WSI safe)
+      3. Auto-detect images/ → masks/ sibling on the tile path
     Returns a boolean (H, W) array, or None if no mask found.
     Tiles with no mask are always included (backward-compatible with evaluation.py).
     """
+    # 1. Path-based via fname structure (mask_dir/NNN/masks/tile.tif)
+    if mask_dir is not None and fname is not None:
+        parts = fname.replace("\\", "/").split("/")
+        try:
+            idx = len(parts) - 1 - parts[::-1].index("images")
+            parts[idx] = "masks"
+            candidate = mask_dir / Path("/".join(parts))
+            if candidate.is_file():
+                return _load_mask_array(str(candidate))
+        except ValueError:
+            pass
+    # 2. Flat stem lookup from mask_dir (single-WSI or flat mask dirs)
     stem = Path(tile_path).stem
     if stem in mask_by_stem:
         return _load_mask_array(str(mask_by_stem[stem]))
+    # 3. Auto-detect images/ → masks/ sibling on the tile path itself
     auto = _auto_mask_path(tile_path)
     if auto is not None:
         return _load_mask_array(auto)
@@ -350,7 +368,7 @@ def process_architecture(
         # Matches evaluation.py build_tissue_filter: tiles with no mask are included.
         if apply_masking:
             tile_path = str(ensemble_dirs[0] / fname)
-            mask_arr = _find_tile_mask(tile_path, mask_by_stem)
+            mask_arr = _find_tile_mask(tile_path, mask_by_stem, mask_dir, fname)
             if mask_arr is not None:
                 frac = float(mask_arr.mean())
                 if frac < min_tissue_fraction:

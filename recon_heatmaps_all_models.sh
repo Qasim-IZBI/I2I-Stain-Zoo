@@ -67,6 +67,13 @@ TEST_A="/work2/bz66izin-VSproject/VS_Data/eval_imgs/no_overlap/testA/tiles/testA
 ENSEMBLE_ROOT="/work2/bz66izin-VSproject/ensemble/${MODEL}/data_large/${MODEL_SIZE}"
 OUT_BASE="${ENSEMBLE_ROOT}/wsi_heatmaps"
 
+# Tissue mask root — same structure as testA (NNN/masks/*.tif).
+# reconstruct_heatmaps.py reads mask_path directly from tiles_metadata.csv;
+# uncertainty.py uses MASK_DIR + the fname WSI prefix to avoid tile-ID
+# collisions across WSIs (001/masks/0000001.tif, 002/masks/0000001.tif, …).
+MASK_DIR="${TEST_A}"
+MIN_TISSUE=0.1
+
 run_cmd() {
     echo "Running command:"
     printf ' %q' "$@"
@@ -95,12 +102,14 @@ else
         mkdir -p "${OUT_UNCERTAINTY}"
         echo "--- Uncertainty: reconstructing ${N_WSIS} WSI heatmaps ---"
         run_cmd python "${PROJECT_ROOT}/reconstruct_heatmaps.py" \
-            --metadata   "${TEST_A}" \
-            --npy_dir    "${UNCERTAINTY_NPY}" \
-            --output     "${OUT_UNCERTAINTY}" \
-            --colormap   magma \
+            --metadata            "${TEST_A}" \
+            --npy_dir             "${UNCERTAINTY_NPY}" \
+            --output              "${OUT_UNCERTAINTY}" \
+            --colormap            magma \
             --global_norm \
-            --save_npy
+            --save_npy \
+            --mask_dir            "${MASK_DIR}" \
+            --min_tissue_fraction "${MIN_TISSUE}"
         echo "Uncertainty heatmaps → ${OUT_UNCERTAINTY}"
     fi
 fi
@@ -140,12 +149,14 @@ for WSI_IDX in $(seq 0 $(( N_WSIS - 1 ))); do
 
     echo "--- Regen error WSI ${WSI_FOLDER}: reconstructing heatmap ---"
     run_cmd python "${PROJECT_ROOT}/reconstruct_heatmaps.py" \
-        --metadata   "${TEST_A}" \
-        --npy_dir    "${REGEN_NPY}" \
-        --output     "${OUT_REGEN}" \
-        --colormap   hot \
-        --data_range "${WSI_NUM},${WSI_NUM}" \
-        --save_npy
+        --metadata            "${TEST_A}" \
+        --npy_dir             "${REGEN_NPY}" \
+        --output              "${OUT_REGEN}" \
+        --colormap            hot \
+        --data_range          "${WSI_NUM},${WSI_NUM}" \
+        --save_npy \
+        --mask_dir            "${MASK_DIR}" \
+        --min_tissue_fraction "${MIN_TISSUE}"
 
     touch "${SENTINEL}"
     echo "Regen error WSI ${WSI_FOLDER} heatmap → ${OUT_REGEN}"
