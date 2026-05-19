@@ -50,16 +50,57 @@ def discover_ensemble_dirs(root: Path) -> list[Path]:
     return dirs
 
 
-def discover_common_filenames(ensemble_dirs: list[Path]) -> list[str]:
-    """Return sorted filenames present in *all* ensemble directories.
+def discover_common_filenames(
+    ensemble_dirs: list[Path],
+    data_range: tuple[int, int] | None = None,
+) -> list[str]:
+    """Return sorted relative paths present in *all* ensemble directories.
 
-    Filenames that are missing from at least one directory are skipped with a
-    warning.
+    Two layouts are supported:
+    - Flat:   member_dir/*.tif  (legacy)
+    - Subdir: member_dir/{NNN}/images/*.tif  (inference.py default output)
+
+    When *data_range* is given only the specified WSI folders are walked.
+    Without it the layout is auto-detected: flat files are preferred; if none
+    are found the subdir layout is assumed and all numbered WSI folders are
+    walked.
+
+    Relative paths (e.g. "001/images/0000001.tif") are used as keys so that
+    tiles from different WSIs with identical basenames do not collide.
     """
-    sets = []
+    TIFF_EXTS = {".tif", ".tiff"}
+    sets: list[set[str]] = []
+
     for d in ensemble_dirs:
-        names = {f.name for f in d.iterdir() if f.is_file() and f.suffix.lower() in {".tif", ".tiff"}}
+        names: set[str] = set()
+
+        if data_range is not None:
+            # Explicit range: walk only the requested WSI subdirs.
+            for i in range(data_range[0], data_range[1] + 1):
+                img_dir = d / f"{i:03d}" / "images"
+                if img_dir.is_dir():
+                    for f in img_dir.iterdir():
+                        if f.is_file() and f.suffix.lower() in TIFF_EXTS:
+                            names.add(str(f.relative_to(d)))
+        else:
+            # Auto-detect layout.
+            flat = [f for f in d.iterdir()
+                    if f.is_file() and f.suffix.lower() in TIFF_EXTS]
+            if flat:
+                # Flat layout — use basename as key (backward-compatible).
+                names = {f.name for f in flat}
+            else:
+                # Subdir layout — walk all {NNN}/images/ directories.
+                for img_dir in sorted(d.glob("*/images")):
+                    if img_dir.is_dir():
+                        for f in img_dir.iterdir():
+                            if f.is_file() and f.suffix.lower() in TIFF_EXTS:
+                                names.add(str(f.relative_to(d)))
+
         sets.append(names)
+
+    if not sets:
+        return []
 
     common = sorted(set.intersection(*sets))
     all_names = sorted(set.union(*sets))
@@ -67,7 +108,7 @@ def discover_common_filenames(ensemble_dirs: list[Path]) -> list[str]:
     skipped = set(all_names) - set(common)
     if skipped:
         warnings.warn(
-            f"Skipping {len(skipped)} filename(s) not present in all ensemble "
+            f"Skipping {len(skipped)} path(s) not present in all ensemble "
             f"directories: {sorted(skipped)[:5]}{'…' if len(skipped) > 5 else ''}"
         )
 
@@ -187,11 +228,14 @@ def process_architecture(
     lower_pct: float,
     upper_pct: float,
     save_overlays: bool,
+    data_range: tuple[int, int] | None = None,
 ) -> None:
     """Full uncertainty pipeline for one architecture."""
     print(f"\n{'=' * 60}")
     print(f"Architecture: {name}")
     print(f"Ensemble root: {root}")
+    if data_range is not None:
+        print(f"WSI range: {data_range[0]:03d} – {data_range[1]:03d}")
     print(f"{'=' * 60}")
 
     # --- discover ensemble members ---
@@ -204,26 +248,28 @@ def process_architecture(
     print(f"Found {len(ensemble_dirs)} ensemble members: "
           f"{ensemble_dirs[0].name} … {ensemble_dirs[-1].name}")
 
-    filenames = discover_common_filenames(ensemble_dirs)
+    filenames = discover_common_filenames(ensemble_dirs, data_range=data_range)
     if not filenames:
-        raise RuntimeError(f"No common TIFF filenames across ensemble dirs in {root}")
+        raise RuntimeError(f"No common TIFF paths across ensemble dirs in {root}")
     print(f"Processing {len(filenames)} common image(s)")
 
     # --- create output dirs ---
     out = output_root / name
     dirs = {
-        "raw_npy": out / "raw_npy",
+        "raw_npy":  out / "raw_npy",
         "norm_npy": out / "norm_npy",
         "heatmaps": out / "heatmaps",
+        "mean_rgb": out / "mean_rgb",
     }
     if save_overlays:
         dirs["overlays"] = out / "overlays"
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
 
-    # --- pass 1: compute raw uncertainty maps ---
-    raw_maps: dict[str, np.ndarray] = {}
-    ref_images: dict[str, np.ndarray] = {}  # first ensemble member as reference
+    # --- pass 1: compute raw uncertainty maps and mean prediction ---
+    raw_maps:  dict[str, np.ndarray] = {}
+    mean_maps: dict[str, np.ndarray] = {}
+    ref_images: dict[str, np.ndarray] = {}  # first ensemble member for overlays
 
     for fname in filenames:
         stack = []
@@ -236,8 +282,9 @@ def process_architecture(
         if log_compress:
             u = np.log1p(u)
 
-        raw_maps[fname] = u
-        ref_images[fname] = stack[0]  # keep first member for overlays
+        raw_maps[fname]  = u
+        mean_maps[fname] = np.mean(stack, axis=0)   # (H, W, 3) mean prediction
+        ref_images[fname] = stack[0]
         print(f"  [{name}] computed uncertainty: {fname}")
 
     # --- pass 2: global normalisation ---
@@ -262,25 +309,41 @@ def process_architecture(
     }
 
     for fname in filenames:
-        stem = Path(fname).stem
+        # Preserve the relative path structure (e.g. "001/images/0000001") so
+        # that per-WSI parallel jobs writing to the same output root do not
+        # overwrite each other's files.
+        rel_stem = Path(fname).with_suffix("")  # "001/images/0000001" or "0000001"
         u_raw = raw_maps[fname]
         u_norm = normalise(u_raw, low, high)
 
-        # Save raw and normalised .npy
-        np.save(str(dirs["raw_npy"] / f"{stem}.npy"), u_raw)
-        np.save(str(dirs["norm_npy"] / f"{stem}.npy"), u_norm)
+        for base_dir in dirs.values():
+            (base_dir / rel_stem).parent.mkdir(parents=True, exist_ok=True)
 
-        # Save heatmap
-        save_heatmap(u_norm, dirs["heatmaps"] / f"{stem}.png")
-
-        # Save overlay
+        np.save(str(dirs["raw_npy"] / rel_stem.with_suffix(".npy")), u_raw)
+        np.save(str(dirs["norm_npy"] / rel_stem.with_suffix(".npy")), u_norm)
+        save_heatmap(u_norm, dirs["heatmaps"] / rel_stem.with_suffix(".png"))
         if save_overlays:
-            save_overlay(ref_images[fname], u_norm, dirs["overlays"] / f"{stem}.png")
+            save_overlay(ref_images[fname], u_norm,
+                         dirs["overlays"] / rel_stem.with_suffix(".png"))
+
+        # Mean prediction — clamp to [0, 255] and save as uint8 TIF
+        mean_uint8 = np.clip(mean_maps[fname], 0, 255).astype(np.uint8)
+        tifffile.imwrite(str(dirs["mean_rgb"] / rel_stem.with_suffix(".tif")),
+                         mean_uint8)
 
         summary["images"][fname] = image_stats(u_raw)
 
     # --- write summary JSON ---
-    summary_path = out / "summary.json"
+    # When data_range is a single WSI, tag the filename to avoid races between
+    # parallel jobs writing to the same output directory.
+    if data_range is not None and data_range[0] == data_range[1]:
+        summary_name = f"summary_wsi{data_range[0]:03d}.json"
+    elif data_range is not None:
+        summary_name = f"summary_wsi{data_range[0]:03d}-{data_range[1]:03d}.json"
+    else:
+        summary_name = "summary.json"
+
+    summary_path = out / summary_name
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"  Summary saved to {summary_path}")
@@ -325,6 +388,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--overlays", action="store_true",
         help="Save overlay PNGs (heatmap blended on reference image).",
     )
+    parser.add_argument(
+        "--data_range", type=str, default=None,
+        metavar="START,END",
+        help="Limit processing to WSI folders {START:03d}–{END:03d} under each "
+             "member directory (e.g. '1,5'). Enables per-WSI parallel jobs when "
+             "combined with a SLURM array. Without this flag all tiles are "
+             "discovered automatically.",
+    )
     return parser.parse_args(argv)
 
 
@@ -335,6 +406,16 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Error: {args.data} is not a directory.", file=sys.stderr)
         sys.exit(1)
 
+    data_range: tuple[int, int] | None = None
+    if args.data_range is not None:
+        try:
+            start, end = args.data_range.split(",")
+            data_range = (int(start.strip()), int(end.strip()))
+        except ValueError:
+            print(f"Error: --data_range must be 'START,END', got '{args.data_range}'",
+                  file=sys.stderr)
+            sys.exit(1)
+
     process_architecture(
         name=args.model,
         root=args.data,
@@ -343,6 +424,7 @@ def main(argv: list[str] | None = None) -> None:
         lower_pct=args.lower_percentile,
         upper_pct=args.upper_percentile,
         save_overlays=args.overlays,
+        data_range=data_range,
     )
 
     print(f"\nDone. Outputs written to {args.output / args.model}")
