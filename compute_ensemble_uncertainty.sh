@@ -55,6 +55,10 @@ ENSEMBLE_ROOT="/work2/bz66izin-VSproject/ensemble/${MODEL}/data_large/${MODEL_SI
 IN_DIR="${ENSEMBLE_ROOT}/inference"
 OUT_DIR="${ENSEMBLE_ROOT}/uncertainty"
 
+# Tissue mask root — masks resolved as TEST_A/NNN/masks/tile.tif
+TEST_A="/work2/bz66izin-VSproject/VS_Data/eval_imgs/no_overlap/testA/tiles/testA"
+MIN_TISSUE=0.1
+
 echo "TASK_ID=${SLURM_ARRAY_TASK_ID}  MODEL=${MODEL}  SIZE=${MODEL_SIZE}  WSI=$(printf '%03d' ${WSI_NUM})"
 echo "Input  : ${IN_DIR}"
 echo "Output : ${OUT_DIR}"
@@ -87,12 +91,14 @@ run_cmd() {
 }
 
 run_cmd python I2I-Stain-Zoo/uncertainty.py \
-    --model      "${MODEL}" \
-    --data       "${IN_DIR}" \
-    --output     "${OUT_DIR}" \
-    --data_range "${DATA_RANGE}" \
+    --model               "${MODEL}" \
+    --data                "${IN_DIR}" \
+    --output              "${OUT_DIR}" \
+    --data_range          "${DATA_RANGE}" \
     --log-compress \
-    --lower-percentile 1 \
-    --upper-percentile 99
+    --lower-percentile    1 \
+    --upper-percentile    99 \
+    --mask_dir            "${TEST_A}" \
+    --min_tissue_fraction "${MIN_TISSUE}"
 
 echo "Done. Uncertainty maps for ${MODEL} WSI ${WSI_FOLDER} saved to ${OUT_DIR}"
