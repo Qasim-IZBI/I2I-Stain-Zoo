@@ -95,7 +95,7 @@ if [ ! -d "${UNCERTAINTY_NPY}" ] || [ -z "$(ls -A "${UNCERTAINTY_NPY}" 2>/dev/nu
     echo "[SKIP-uncertainty] raw_npy dir missing or empty: ${UNCERTAINTY_NPY}"
     echo "                   Run compute_ensemble_uncertainty.sh first."
 else
-    N_DONE_U=$(find "${OUT_UNCERTAINTY}" -maxdepth 1 -name "*_heatmap.tif" 2>/dev/null | wc -l)
+    N_DONE_U=$(find "${OUT_UNCERTAINTY}" -maxdepth 1 -name "*_heatmap.tif" 2>/dev/null | wc -l || echo 0)
     if [ "${N_DONE_U}" -ge "${N_WSIS}" ]; then
         echo "[SKIP-uncertainty] ${N_DONE_U}/${N_WSIS} heatmaps already present: ${OUT_UNCERTAINTY}"
     else
