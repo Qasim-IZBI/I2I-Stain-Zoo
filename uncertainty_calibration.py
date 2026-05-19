@@ -204,10 +204,6 @@ def make_plot(
     bin_mean_u: np.ndarray,
     bin_mean_e: np.ndarray,
     ece: float,
-    fractions: np.ndarray,
-    s_pred_avg: np.ndarray,
-    s_oracle_avg: np.ndarray,
-    ause_mean: float,
     rho_within: np.ndarray,
     rho_within_mean: float,
     mean_u_per_tile: np.ndarray,
@@ -215,6 +211,10 @@ def make_plot(
     pearson_across: float,
     spearman_across: float,
     outpath: Path,
+    fractions: Optional[np.ndarray] = None,
+    s_pred_avg: Optional[np.ndarray] = None,
+    s_oracle_avg: Optional[np.ndarray] = None,
+    ause_mean: Optional[float] = None,
 ) -> None:
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
@@ -228,15 +228,20 @@ def make_plot(
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-    # (b) Sparsification curve (averaged across tiles)
+    # (b) Sparsification curve — omitted when --no_ause
     ax = axes[0, 1]
-    ax.plot(fractions, s_pred_avg, color="C1", label="Predicted (sort by u)")
-    ax.plot(fractions, s_oracle_avg, color="gray", linestyle="--", label="Oracle (sort by e)")
-    ax.fill_between(fractions, s_pred_avg, s_oracle_avg, color="C1", alpha=0.2)
-    ax.set_xlabel("Fraction of pixels removed")
-    ax.set_ylabel("Mean residual error")
-    ax.set_title(f"Sparsification (avg over tiles)   AUSE = {ause_mean:.4f}")
-    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+    if fractions is not None and s_pred_avg is not None and s_oracle_avg is not None:
+        ax.plot(fractions, s_pred_avg, color="C1", label="Predicted (sort by u)")
+        ax.plot(fractions, s_oracle_avg, color="gray", linestyle="--", label="Oracle (sort by e)")
+        ax.fill_between(fractions, s_pred_avg, s_oracle_avg, color="C1", alpha=0.2)
+        ax.set_xlabel("Fraction of pixels removed")
+        ax.set_ylabel("Mean residual error")
+        ax.set_title(f"Sparsification (avg over tiles)   AUSE = {ause_mean:.4f}")
+        ax.legend(fontsize=8); ax.grid(alpha=0.3)
+    else:
+        ax.text(0.5, 0.5, "AUSE not computed\n(--no_ause)",
+                ha="center", va="center", transform=ax.transAxes, fontsize=12, color="gray")
+        ax.set_axis_off()
 
     # (c) Histogram of within-tile Spearman rho
     ax = axes[1, 0]
@@ -295,6 +300,8 @@ def main():
                     help="Number of quantile bins for reliability diagram and ECE.")
     ap.add_argument("--ause_steps", type=int, default=100,
                     help="Number of fraction-removed steps for sparsification curve.")
+    ap.add_argument("--no_ause", action="store_true",
+                    help="Skip sparsification curve and AUSE computation.")
     ap.add_argument("--min_tissue_pixels", type=int, default=256,
                     help="Skip tiles with fewer tissue pixels than this.")
     args = ap.parse_args()
@@ -362,13 +369,16 @@ def main():
             sp_rho, sp_p = float(sp.statistic), float(sp.pvalue)
             pe_rho, pe_p = float(pe.statistic), float(pe.pvalue)
 
-        # sparsification + AUSE
-        fractions, s_pred, s_oracle = sparsification_curve(u, e, n_steps=args.ause_steps)
-        a = ause(fractions, s_pred, s_oracle)
-        spar_per_tile_pred.append(s_pred)
-        spar_per_tile_oracle.append(s_oracle)
-        if fractions_grid is None:
-            fractions_grid = fractions
+        # sparsification + AUSE (skipped when --no_ause)
+        if not args.no_ause:
+            fractions, s_pred, s_oracle = sparsification_curve(u, e, n_steps=args.ause_steps)
+            a = ause(fractions, s_pred, s_oracle)
+            spar_per_tile_pred.append(s_pred)
+            spar_per_tile_oracle.append(s_oracle)
+            if fractions_grid is None:
+                fractions_grid = fractions
+        else:
+            a = float("nan")
 
         rows.append({
             "tile_stem":     stem,
@@ -416,8 +426,12 @@ def main():
     ece = expected_calibration_error(bin_u, bin_e, bin_counts)
 
     # ---- average sparsification curve ----
-    s_pred_avg = np.mean(np.stack(spar_per_tile_pred, axis=0), axis=0)
-    s_oracle_avg = np.mean(np.stack(spar_per_tile_oracle, axis=0), axis=0)
+    if not args.no_ause and spar_per_tile_pred:
+        s_pred_avg = np.mean(np.stack(spar_per_tile_pred, axis=0), axis=0)
+        s_oracle_avg = np.mean(np.stack(spar_per_tile_oracle, axis=0), axis=0)
+    else:
+        s_pred_avg = None
+        s_oracle_avg = None
 
     # ---- summary aggregates ----
     rho_w = df["spearman_rho"].values
@@ -445,7 +459,7 @@ def main():
             "u_tile_mean_p1_p99":    [u_lo, u_hi],
             "e_tile_mean_p1_p99":    [e_lo, e_hi],
         },
-        "sparsification": {
+        "sparsification": None if args.no_ause else {
             "fractions":      fractions_grid.tolist(),
             "s_pred_avg":     s_pred_avg.tolist(),
             "s_oracle_avg":   s_oracle_avg.tolist(),
@@ -459,6 +473,7 @@ def main():
             "n_bins":            args.n_bins,
             "ause_steps":        args.ause_steps,
             "reliability_granularity": "tile_means",
+            "no_ause":           args.no_ause,
             "min_tissue_pixels": args.min_tissue_pixels,
         },
     }
@@ -489,10 +504,6 @@ def main():
         bin_mean_u=bin_u,
         bin_mean_e=bin_e,
         ece=ece,
-        fractions=fractions_grid,
-        s_pred_avg=s_pred_avg,
-        s_oracle_avg=s_oracle_avg,
-        ause_mean=summary["within_tile"]["ause_mean"],
         rho_within=rho_w,
         rho_within_mean=summary["within_tile"]["spearman_mean"],
         mean_u_per_tile=df["mean_u"].values,
@@ -500,6 +511,10 @@ def main():
         pearson_across=across_pearson,
         spearman_across=across_spearman,
         outpath=args.outdir / "calibration.png",
+        fractions=fractions_grid,
+        s_pred_avg=s_pred_avg,
+        s_oracle_avg=s_oracle_avg,
+        ause_mean=summary["within_tile"]["ause_mean"],
     )
 
     # ---- console summary ----
