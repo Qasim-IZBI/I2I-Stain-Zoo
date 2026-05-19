@@ -63,6 +63,8 @@ MODEL="${MODELS[$MODEL_IDX]}"
 MODEL_SIZE="${MODEL_SIZES[$MODEL_IDX]}"
 
 TEST_A="/work2/bz66izin-VSproject/VS_Data/eval_imgs/no_overlap/testA/tiles/testA"
+MASK_DIR="${TEST_A}/${WSI_FOLDER}/masks"
+MIN_TISSUE=0.1
 
 ENSEMBLE_ROOT="/work2/bz66izin-VSproject/ensemble/${MODEL}/data_large/${MODEL_SIZE}"
 
@@ -111,10 +113,12 @@ run_cmd() {
 
 # No --device needed: compute_regen_error_precomputed is CPU-only (pure MAE).
 run_cmd python I2I-Stain-Zoo/evaluation.py \
-    --metric       regen_error \
-    --path_A       "${PATH_A}" \
-    --path_A_regen "${PATH_A_REGEN}" \
-    --overlay_dir  "${OVERLAY_DIR}" \
-    --save_error_npy
+    --metric              regen_error \
+    --path_A              "${PATH_A}" \
+    --path_A_regen        "${PATH_A_REGEN}" \
+    --overlay_dir         "${OVERLAY_DIR}" \
+    --save_error_npy \
+    --mask_dir            "${MASK_DIR}" \
+    --min_tissue_fraction "${MIN_TISSUE}"
 
 echo "Done. Error maps for ${MODEL} WSI ${WSI_FOLDER} saved to ${OVERLAY_DIR}"
