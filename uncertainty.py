@@ -140,12 +140,13 @@ def compute_uncertainty_map(stack: np.ndarray) -> np.ndarray:
     Returns
     -------
     np.ndarray
-        Shape (H, W) — scalar uncertainty map (sum of per-channel variances).
+        Shape (H, W) — scalar uncertainty map (sqrt of summed per-channel
+        variances), in pixel units matching the regen-error MAE scale.
     """
     # Per-channel sample variance across ensemble axis (ddof=1)
     channel_var = np.var(stack, axis=0, ddof=1)  # (H, W, 3)
-    # Collapse channels by summation
-    return channel_var.sum(axis=2)  # (H, W)
+    # sqrt(sum of variances) → pixel units, comparable to regen-error MAE
+    return np.sqrt(channel_var.sum(axis=2))  # (H, W)
 
 
 def compute_global_bounds(
