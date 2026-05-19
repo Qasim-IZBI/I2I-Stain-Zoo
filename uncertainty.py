@@ -407,6 +407,8 @@ def process_architecture(
     }
 
     for fname in filenames:
+        if fname not in raw_maps:   # skipped in pass 1 (below tissue threshold)
+            continue
         # Preserve the relative path structure (e.g. "001/images/0000001") so
         # that per-WSI parallel jobs writing to the same output root do not
         # overwrite each other's files.
