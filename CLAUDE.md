@@ -380,6 +380,15 @@ python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ck
 # Writes <overlay_dir>/error_npy/<stem>.npy alongside heatmaps/ and overlays/.
 # --save_error_npy requires --overlay_dir.
 
+# Regen error from precomputed A' tiles — no model inference re-run (works for all models)
+# Use when B→A tiles are already on disk (e.g. from infer_B2A_all.sh).
+python evaluation.py --metric regen_error \
+    --path_A      data/HE \
+    --path_A_regen ./inference_B2A/ \
+    --overlay_dir ./regen_overlays/ --save_error_npy
+# --path_A_regen is a flat directory of precomputed A' .tif tiles, matched to testA by stem.
+# --model and --ckpt are not required in this mode.
+
 # Judge regen error |A − judge(B')| (model-independent error proxy; required for MIUDiff)
 # Loads precomputed B' tiles from --path_B_generated (no forward inference here),
 # runs an external judge model in --judge_direction (typically B2A) to produce A_judge,
@@ -449,6 +458,40 @@ Checkpoint resolution:
 Output per run: `{BASE}/{model}/results/data_{datasize}/model_{size}/inference/`
 Logs: `logs_infer/infer_{jobid}_{taskid}.out / .err`
 MIUDiff DDIM steps are set by `MIU_STEPS=200` at the top of the script.
+
+### Batch B→A Reverse Inference (SLURM)
+Runs B→A inference on the A→B translated tiles produced by `infer_small_models.sh`,
+giving A' tiles needed for regen-error evaluation without re-running any model inference
+at eval time. 18-job array: 6 models × 3 data sizes, `model_small` only.
+
+```bash
+sbatch infer_B2A_all.sh
+```
+
+Input per job: `{INFER_BASE}/{model}/results/data_{datasize}/model_small/inference/` (flat B' tiles)
+Output per job: `{INFER_BASE}/{model}/results/data_{datasize}/model_small/inference_B2A/` (flat A' tiles)
+Logs: `logs_infer_B2A/infer_{jobid}_{taskid}.out / .err`
+
+Skip guard: tiles counted; job exits if `n_out == n_in` and both are > 0.
+
+### Batch Regen Error from Precomputed A' Tiles (SLURM)
+Computes cycle regen-error MAE for all 6 models using precomputed A' tiles from
+`infer_B2A_all.sh`. No model or GPU needed — CPU-only pass over tile pairs.
+18-job array: 6 models × 3 data sizes, `model_small` only.
+
+```bash
+sbatch eval_regen_B2A_all.sh
+```
+
+Input: `inference_B2A/` flat A' tiles (from `infer_B2A_all.sh`); original testA tiles for pairing.
+Output per job in `{REGEN_EVAL_DIR}/{model}/data_{datasize}/model_small/`:
+- `regen_mae.csv` — per-tile MAE + dataset MEAN row
+- `overlays/heatmaps/` — hot-colormap error heatmaps
+- `overlays/overlays/` — 50/50 blend of heatmap and original A tile
+- `overlays/error_npy/` — raw `[H,W]` float32 error maps (consumed by `uncertainty_calibration.py`)
+
+Logs: `logs_regen_eval/regen_{jobid}_{taskid}.out / .err`
+Prerequisites: `infer_small_models.sh` and `infer_B2A_all.sh` must have completed first.
 
 ### Visual Inference Grid (all 54 runs)
 Runs A→B inference on a sample of testA tiles for every combination of model,
@@ -600,21 +643,53 @@ Inputs to `uncertainty_calibration.py`:
 
 Key flags:
 - `--n_bins 10` — quantile bins for the reliability diagram and ECE.
-- `--ause_steps 100` — fraction-removed steps in the sparsification curve.
-- `--reliability_sample 4096` — pixels sampled per tile into the global ECE pool (caps memory; set 0 for all pixels).
+- `--no_ause` — skip sparsification curve and AUSE computation (saves runtime; sparsification panel is blanked in the figure).
+- `--ause_steps 100` — fraction-removed steps in the sparsification curve (ignored when `--no_ause`).
 - `--min_tissue_pixels 256` — skip tiles with fewer tissue pixels than this.
 
 Outputs in `--outdir`:
 - `per_tile.csv` — tile_stem, source_wsi, n_tissue_pixels, spearman_rho, pearson_rho_within, mean_u, mean_e, ause
 - `per_wsi.csv` — per-WSI rollup (only when `--tiles_metadata` provided)
 - `summary.json` — dataset aggregates: within-tile Spearman mean/std/median, across-tile Pearson/Spearman, AUSE mean/std, ECE, reliability bins, sparsification curve arrays, parameter record
-- `calibration.png` — 2×2 figure: reliability diagram, sparsification curve, within-tile ρ histogram, across-tile mean(U) vs mean(E) scatter
+- `calibration.png` — 2×2 figure: reliability diagram (tile-mean based), sparsification curve (or blank if `--no_ause`), within-tile ρ histogram, across-tile mean(U) vs mean(E) scatter
+
+**Reliability diagram note:** ECE and the reliability diagram are computed from per-tile `mean_u` / `mean_e` values (one point per tile), not from subsampled pixels. This answers the tile-level question "do tiles with higher uncertainty have higher error?" — the within-tile Spearman ρ already captures the pixel-level spatial calibration.
 
 Interpretation cheatsheet:
 - Within-tile Spearman ρ → +1 = uncertain pixels are wrong pixels; ≈0 = uninformative; <0 = anti-calibrated.
 - AUSE → 0 = optimal; > 0 = predicted ranking misses high-error pixels.
 - ECE → 0 = bins lie on the y=x diagonal after p1–p99 normalisation.
 - Across-tile ρ → catches the case where uncertainty is locally calibrated but flat at tile level (useless for triage).
+
+### Aggregate Calibration — Per-Model Summaries
+Pools the per-WSI `per_tile.csv` files written by `run_calibration_all.sh` (6 models × 5 WSIs)
+and recomputes all calibration metrics on the full tile pool per model. This gives
+statistically correct per-model statistics: within-tile Spearman distribution,
+across-tile correlations, and reliability diagram / ECE are computed from all tiles
+together rather than averaged over per-WSI summaries.
+
+```bash
+# Direct invocation
+python aggregate_calibration.py \
+    --base   /work2/bz66izin-VSproject/ensemble \
+    --outdir ./calibration_combined/
+
+# SLURM (single job — loops over all 6 models internally)
+sbatch aggregate_calibration.sh
+```
+
+Outputs per model in `{outdir}/{model}/`:
+- `summary.json` — within-tile Spearman mean/std/median, across-tile Pearson/Spearman, ECE, reliability bins
+- `calibration.png` — 4-panel figure: reliability diagram, within-tile ρ histogram, across-tile mean(U) vs mean(E) scatter (same layout as per-WSI)
+
+Outputs overall:
+- `{outdir}/all_models.csv` — one row per model with all key metrics for side-by-side comparison
+
+Key flag:
+- `--n_bins INT` — quantile bins for the reliability diagram and ECE (default: 10)
+
+**Note:** run after `run_calibration_all.sh` completes all 30 jobs. The script expects
+`per_tile.csv` files at `ensemble/{MODEL}/data_large/{MODEL_SIZE}/calibration/{MODEL}/wsi{NNN}/`.
 
 ### PSR Positive Area Segmentation
 Runs a nnUNet v2 segmentation model (Dataset214_SR, patch size 512×512, trained on
