@@ -33,6 +33,14 @@ from matplotlib.patches import Patch
 # ── shared constants ──────────────────────────────────────────────────────────
 
 MODELS             = ["cyclegan", "unit", "munit", "dclgan", "uvcgan", "cyclediffusion"]
+MODEL_DISPLAY_NAMES = {
+    "cyclegan":       "CycleGAN",
+    "unit":           "UNIT",
+    "munit":          "MUNIT",
+    "dclgan":         "DCLGAN",
+    "uvcgan":         "UVCGAN",
+    "cyclediffusion": "CycleDiffusion",
+}
 DATASIZES          = ["small", "medium", "large"]
 MODEL_SIZES        = ["small", "medium", "large"]
 DATA_SIZE_COLORS   = {"small": "#1f77b4", "medium": "#ff7f0e", "large": "#2ca02c"}
@@ -256,7 +264,7 @@ def _draw_eval_panel(ax, df: pd.DataFrame, metric: str, mcfg: dict,
             )
 
     ax.set_xticks(list(x_pos.values()))
-    ax.set_xticklabels(list(x_pos.keys()), fontsize=8, rotation=0, ha="center")
+    ax.set_xticklabels([MODEL_DISPLAY_NAMES.get(m, m) for m in x_pos], fontsize=8, rotation=0, ha="center")
     ax.set_ylabel(mcfg["ylabel"], fontsize=9)
     ax.set_title(mcfg["title"], fontsize=9)
     ax.set_ylim(bottom=0)
@@ -327,7 +335,7 @@ def _draw_psr_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
             )
 
     ax.set_xticks(list(x_pos.values()))
-    ax.set_xticklabels(list(x_pos.keys()), fontsize=8, rotation=0, ha="center")
+    ax.set_xticklabels([MODEL_DISPLAY_NAMES.get(m, m) for m in x_pos], fontsize=8, rotation=0, ha="center")
     ax.set_ylabel("PSR-MAE (paired) ↓", fontsize=9)
     ax.set_title("PSR-MAE", fontsize=9)
     ax.set_ylim(bottom=0)
@@ -364,11 +372,10 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
                   psr_df: pd.DataFrame,  psr_wsi: dict,
                   best_psr: pd.DataFrame, outpath: Path) -> None:
 
-    # Layout: 2×2 metric panels + narrow legend column on the right
-    fig = plt.figure(figsize=(20, 10))
+    # Layout: 2×2 metric panels
+    fig = plt.figure(figsize=(16, 10))
     gs  = fig.add_gridspec(
-        2, 3,
-        width_ratios=[1, 1, 0.25],
+        2, 2,
         wspace=0.20,
         hspace=0.25,
         left=0.06, right=0.98,
@@ -382,30 +389,15 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
         fig.add_subplot(gs[1, 1]),
     ]
 
-    ax_leg = fig.add_subplot(gs[0, 2])
-    ax_leg.axis("off")
-
     metric_order = ["patch_ssim", "lpips", "fid"]
     for ax, metric in zip(axes[:3], metric_order):
         _draw_eval_panel(ax, eval_df, metric, EVAL_METRICS[metric], eval_wsi)
 
     _draw_psr_panel(axes[3], psr_df, best_psr, psr_wsi)
 
-    # Single shared legend inside the right panel
-    handles = _legend_handles(include_star=not best_psr.empty)
-    ax_leg.legend(
-        handles=handles,
-        loc="center",
-        fontsize=7.5,
-        frameon=True,
-        title="Colour = data size\nMarker = model size",
-        title_fontsize=7,
-        handlelength=1.2,
-        handleheight=0.8,
-        borderpad=0.5,
-        labelspacing=0.35,
-        handletextpad=0.4,
-    )
+    # Remove x-axis tick labels from top row (shared with bottom row)
+    for ax in axes[:2]:
+        ax.set_xticklabels([])
 
     fig.savefig(outpath, dpi=150, bbox_inches="tight")
     plt.close(fig)
