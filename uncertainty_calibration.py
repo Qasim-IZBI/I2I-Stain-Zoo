@@ -215,7 +215,9 @@ def make_plot(
     s_pred_avg: Optional[np.ndarray] = None,
     s_oracle_avg: Optional[np.ndarray] = None,
     ause_mean: Optional[float] = None,
+    title: str = "",
 ) -> None:
+    prefix = f"{title}   " if title else ""
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
     # (a) Reliability diagram
@@ -224,7 +226,7 @@ def make_plot(
     ax.plot(bin_mean_u, bin_mean_e, "o-", color="C0", label="bin means")
     ax.set_xlabel("Mean uncertainty per tile (bin, normalised)")
     ax.set_ylabel("Mean error per tile (bin, normalised)")
-    ax.set_title(f"Reliability diagram (tile means)   ECE = {ece:.4f}")
+    ax.set_title(f"{prefix}ECE = {ece:.4f}")
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
@@ -236,7 +238,7 @@ def make_plot(
         ax.fill_between(fractions, s_pred_avg, s_oracle_avg, color="C1", alpha=0.2)
         ax.set_xlabel("Fraction of pixels removed")
         ax.set_ylabel("Mean residual error")
-        ax.set_title(f"Sparsification (avg over tiles)   AUSE = {ause_mean:.4f}")
+        ax.set_title(f"{prefix}AUSE = {ause_mean:.4f}")
         ax.legend(fontsize=8); ax.grid(alpha=0.3)
     else:
         ax.text(0.5, 0.5, "AUSE not computed\n(--no_ause)",
@@ -250,9 +252,9 @@ def make_plot(
     ax.axvline(rho_within_mean, color="black", linestyle="--",
                label=f"mean = {rho_within_mean:.3f}")
     ax.axvline(0, color="gray", linewidth=0.7)
-    ax.set_xlabel("Within-tile Spearman ρ (uncertainty vs error)")
+    ax.set_xlabel("Within-tile Spearman $\\rho$ (uncertainty vs error)")
     ax.set_ylabel("Tile count")
-    ax.set_title(f"Per-tile spatial calibration   N = {len(valid)}")
+    ax.set_title(f"{prefix}N = {len(valid)}   mean $\\rho$ = {rho_within_mean:.3f}")
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
     # (d) Across-tile scatter
@@ -261,7 +263,7 @@ def make_plot(
                edgecolors="black", linewidths=0.3, color="C3")
     ax.set_xlabel("Mean uncertainty per tile")
     ax.set_ylabel("Mean error per tile")
-    ax.set_title(f"Across-tile   Pearson = {pearson_across:.3f}   Spearman = {spearman_across:.3f}")
+    ax.set_title(f"{prefix}$\\rho$ = {pearson_across:.3f}   $r_s$ = {spearman_across:.3f}")
     ax.grid(alpha=0.3)
 
     fig.tight_layout()
@@ -304,6 +306,8 @@ def main():
                     help="Skip sparsification curve and AUSE computation.")
     ap.add_argument("--min_tissue_pixels", type=int, default=256,
                     help="Skip tiles with fewer tissue pixels than this.")
+    ap.add_argument("--title", type=str, default="",
+                    help="Title prefix shown in each plot panel (e.g. the model name).")
     args = ap.parse_args()
 
     if not args.no_mask and args.mask_dir is None:
@@ -515,6 +519,7 @@ def main():
         s_pred_avg=s_pred_avg,
         s_oracle_avg=s_oracle_avg,
         ause_mean=summary["within_tile"]["ause_mean"],
+        title=args.title,
     )
 
     # ---- console summary ----

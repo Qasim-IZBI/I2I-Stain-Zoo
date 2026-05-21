@@ -31,7 +31,65 @@ import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
 
-from uncertainty_calibration import reliability_bins, expected_calibration_error, make_plot
+import matplotlib.pyplot as plt
+
+from uncertainty_calibration import reliability_bins, expected_calibration_error
+
+
+DISPLAY_NAMES = {
+    "cyclegan":       "CycleGAN",
+    "unit":           "UNIT",
+    "munit":          "MUNIT",
+    "dclgan":         "DCLGAN",
+    "uvcgan":         "UVCGAN",
+    "cyclediffusion": "CycleDiffusion",
+}
+
+
+def _save_reliability(bin_mean_u, bin_mean_e, ece, model_name, outpath):
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.plot([0, 1], [0, 1], "k--", linewidth=1, alpha=0.6, label="y = x")
+    ax.plot(bin_mean_u, bin_mean_e, "o-", color="C0", label="bin means")
+    ax.set_xlabel("Mean uncertainty per tile (bin, normalised)")
+    ax.set_ylabel("Mean error per tile (bin, normalised)")
+    ax.set_title(f"{DISPLAY_NAMES.get(model_name, model_name)}   ECE = {ece:.4f}")
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+    print(f"Saved plot → {outpath}")
+
+
+def _save_spearman_hist(rho_within, rho_within_mean, model_name, outpath):
+    fig, ax = plt.subplots(figsize=(6, 5))
+    valid = rho_within[np.isfinite(rho_within)]
+    ax.hist(valid, bins=30, color="C2", alpha=0.75, edgecolor="black", linewidth=0.5)
+    ax.axvline(rho_within_mean, color="black", linestyle="--",
+               label=f"mean = {rho_within_mean:.3f}")
+    ax.axvline(0, color="gray", linewidth=0.7)
+    ax.set_xlabel("Within-tile Spearman $\\rho$ (uncertainty vs error)")
+    ax.set_ylabel("Tile count")
+    ax.set_title(f"{DISPLAY_NAMES.get(model_name, model_name)}   N = {len(valid)}   mean $\\rho$ = {rho_within_mean:.3f}")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+    print(f"Saved plot → {outpath}")
+
+
+def _save_across_tile(mean_u_per_tile, mean_e_per_tile, pearson_across, spearman_across, model_name, outpath):
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.scatter(mean_u_per_tile, mean_e_per_tile, s=15, alpha=0.6,
+               edgecolors="black", linewidths=0.3, color="C3")
+    ax.set_xlabel("Mean uncertainty per tile")
+    ax.set_ylabel("Mean error per tile")
+    ax.set_title(f"{DISPLAY_NAMES.get(model_name, model_name)}   $\\rho$ = {pearson_across:.3f}   $r_s$ = {spearman_across:.3f}")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+    print(f"Saved plot → {outpath}")
 
 
 MODELS = ["cyclegan", "unit", "munit", "dclgan", "uvcgan", "cyclediffusion"]
@@ -44,6 +102,10 @@ MODEL_SIZES = {
     "cyclediffusion": "model_small",
 }
 N_WSIS = 5
+LAYOUT = [
+    ["cyclegan", "unit",   "munit"],
+    ["dclgan",   "uvcgan", "cyclediffusion"],
+]
 
 
 def aggregate_model(
@@ -136,20 +198,133 @@ def aggregate_model(
         json.dump(summary, f, indent=2)
     print(f"  [{model}] Saved summary  → {json_path}")
 
-    make_plot(
-        bin_mean_u=bin_u,
-        bin_mean_e=bin_e,
-        ece=ece,
-        rho_within=rho_w,
-        rho_within_mean=summary["within_tile"]["spearman_mean"],
-        mean_u_per_tile=df["mean_u"].values,
-        mean_e_per_tile=df["mean_e"].values,
-        pearson_across=across_pearson,
-        spearman_across=across_spearman,
-        outpath=model_outdir / "calibration.png",
-    )
+    _save_reliability(bin_u, bin_e, ece, model, model_outdir / "reliability.png")
+    _save_spearman_hist(rho_w, summary["within_tile"]["spearman_mean"], model,
+                        model_outdir / "spearman_hist.png")
+    _save_across_tile(df["mean_u"].values, df["mean_e"].values,
+                      across_pearson, across_spearman, model,
+                      model_outdir / "across_tile.png")
 
-    return summary
+    plot_data = {
+        "bin_u":           bin_u,
+        "bin_e":           bin_e,
+        "ece":             ece,
+        "rho_w":           rho_w,
+        "rho_within_mean": summary["within_tile"]["spearman_mean"],
+        "mean_u":          df["mean_u"].values,
+        "mean_e":          df["mean_e"].values,
+        "pearson_across":  across_pearson,
+        "spearman_across": across_spearman,
+    }
+    return summary, plot_data
+
+
+def _apply_grid_visibility(ax, row, col):
+    if row == 0:
+        ax.tick_params(labelbottom=False, bottom=False)
+        ax.set_xlabel("")
+    if col > 0:
+        ax.tick_params(labelleft=False, left=False)
+        ax.set_ylabel("")
+
+
+def make_combined_reliability(all_plot_data: dict, outdir: Path) -> None:
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    for r, row_models in enumerate(LAYOUT):
+        for c, model in enumerate(row_models):
+            ax = axes[r, c]
+            if model not in all_plot_data:
+                ax.set_visible(False)
+                continue
+            d = all_plot_data[model]
+            ax.plot([0, 1], [0, 1], "k--", linewidth=1, alpha=0.6)
+            ax.plot(d["bin_u"], d["bin_e"], "o-", color="C0")
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.set_title(f"{DISPLAY_NAMES[model]}   ECE = {d['ece']:.4f}")
+            ax.set_xlabel("Mean uncertainty per tile (bin, normalised)")
+            ax.set_ylabel("Mean error per tile (bin, normalised)")
+            ax.grid(alpha=0.3)
+            _apply_grid_visibility(ax, r, c)
+    fig.tight_layout()
+    outpath = outdir / "combined_reliability.png"
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+    print(f"Saved plot → {outpath}")
+
+
+def make_combined_spearman_hist(all_plot_data: dict, outdir: Path) -> None:
+    all_rho = np.concatenate([
+        all_plot_data[m]["rho_w"][np.isfinite(all_plot_data[m]["rho_w"])]
+        for m in MODELS if m in all_plot_data
+    ])
+    bins = np.linspace(all_rho.min(), all_rho.max(), 31)
+    x_lim = (bins[0] - (bins[-1] - bins[0]) * 0.02,
+              bins[-1] + (bins[-1] - bins[0]) * 0.02)
+    y_max = max(
+        np.histogram(all_plot_data[m]["rho_w"][np.isfinite(all_plot_data[m]["rho_w"])], bins=bins)[0].max()
+        for m in MODELS if m in all_plot_data
+    )
+    y_lim = (0, y_max * 1.1)
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    for r, row_models in enumerate(LAYOUT):
+        for c, model in enumerate(row_models):
+            ax = axes[r, c]
+            if model not in all_plot_data:
+                ax.set_visible(False)
+                continue
+            d = all_plot_data[model]
+            valid = d["rho_w"][np.isfinite(d["rho_w"])]
+            ax.hist(valid, bins=bins, color="C2", alpha=0.75, edgecolor="black", linewidth=0.5)
+            ax.axvline(d["rho_within_mean"], color="black", linestyle="--")
+            ax.axvline(0, color="gray", linewidth=0.7)
+            ax.set_xlim(x_lim)
+            ax.set_ylim(y_lim)
+            ax.set_title(f"{DISPLAY_NAMES[model]}   N = {len(valid)}   mean $\\rho$ = {d['rho_within_mean']:.3f}")
+            ax.set_xlabel("Within-tile Spearman $\\rho$ (uncertainty vs error)")
+            ax.set_ylabel("Tile count")
+            ax.grid(alpha=0.3)
+            _apply_grid_visibility(ax, r, c)
+    fig.tight_layout()
+    outpath = outdir / "combined_spearman_hist.png"
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+    print(f"Saved plot → {outpath}")
+
+
+def make_combined_across_tile(all_plot_data: dict, outdir: Path) -> None:
+    all_u = np.concatenate([all_plot_data[m]["mean_u"] for m in MODELS if m in all_plot_data])
+    all_e = np.concatenate([all_plot_data[m]["mean_e"] for m in MODELS if m in all_plot_data])
+    all_u = all_u[np.isfinite(all_u)]
+    all_e = all_e[np.isfinite(all_e)]
+    u_pad = (all_u.max() - all_u.min()) * 0.05
+    e_pad = (all_e.max() - all_e.min()) * 0.05
+    u_lim = (all_u.min() - u_pad, all_u.max() + u_pad)
+    e_lim = (all_e.min() - e_pad, all_e.max() + e_pad)
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    for r, row_models in enumerate(LAYOUT):
+        for c, model in enumerate(row_models):
+            ax = axes[r, c]
+            if model not in all_plot_data:
+                ax.set_visible(False)
+                continue
+            d = all_plot_data[model]
+            ax.scatter(d["mean_u"], d["mean_e"], s=15, alpha=0.6,
+                       edgecolors="black", linewidths=0.3, color="C3")
+            ax.set_xlim(u_lim)
+            ax.set_ylim(e_lim)
+            ax.set_title(f"{DISPLAY_NAMES[model]}   $\\rho$ = {d['pearson_across']:.3f}   $r_s$ = {d['spearman_across']:.3f}")
+            ax.set_xlabel("Mean uncertainty per tile")
+            ax.set_ylabel("Mean error per tile")
+            ax.grid(alpha=0.3)
+            _apply_grid_visibility(ax, r, c)
+    fig.tight_layout()
+    outpath = outdir / "combined_across_tile.png"
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+    print(f"Saved plot → {outpath}")
 
 
 def main() -> None:
@@ -173,28 +348,37 @@ def main() -> None:
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     all_rows = []
+    all_plot_data = {}
     for model in MODELS:
         print(f"\n=== {model} ===")
         result = aggregate_model(model, args.base, args.outdir, n_bins=args.n_bins)
         if result is None:
             continue
+        summary, plot_data = result
+        all_plot_data[model] = plot_data
         all_rows.append({
-            "model":           result["model"],
-            "model_size":      result["model_size"],
-            "n_wsi":           result["n_wsi"],
-            "n_tiles":         result["n_tiles"],
-            "spearman_mean":   result["within_tile"]["spearman_mean"],
-            "spearman_std":    result["within_tile"]["spearman_std"],
-            "spearman_median": result["within_tile"]["spearman_median"],
-            "across_pearson":  result["across_tile"]["pearson"],
-            "across_spearman": result["across_tile"]["spearman"],
-            "ece":             result["reliability"]["ece"],
+            "model":           summary["model"],
+            "model_size":      summary["model_size"],
+            "n_wsi":           summary["n_wsi"],
+            "n_tiles":         summary["n_tiles"],
+            "spearman_mean":   summary["within_tile"]["spearman_mean"],
+            "spearman_std":    summary["within_tile"]["spearman_std"],
+            "spearman_median": summary["within_tile"]["spearman_median"],
+            "across_pearson":  summary["across_tile"]["pearson"],
+            "across_spearman": summary["across_tile"]["spearman"],
+            "ece":             summary["reliability"]["ece"],
         })
 
     if all_rows:
         csv_path = args.outdir / "all_models.csv"
         pd.DataFrame(all_rows).to_csv(csv_path, index=False)
         print(f"\nSaved all-models table → {csv_path}")
+
+    if all_plot_data:
+        print("\n=== Combined plots ===")
+        make_combined_reliability(all_plot_data, args.outdir)
+        make_combined_spearman_hist(all_plot_data, args.outdir)
+        make_combined_across_tile(all_plot_data, args.outdir)
 
     print("\n=== Done ===")
 
