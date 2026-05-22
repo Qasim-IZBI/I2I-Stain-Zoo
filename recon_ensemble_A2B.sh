@@ -3,14 +3,14 @@
 #SBATCH --output=logs_recon_ensemble/recon_ens_%A_%a.out
 #SBATCH --error=logs_recon_ensemble/recon_ens_%A_%a.err
 
-#SBATCH --time=2:00:00
-#SBATCH --cpus-per-task=8
+#SBATCH --time=4:00:00
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --partition=paula
 #SBATCH --ntasks=1
 #SBATCH --array=0-299   # 300 jobs = 6 models × 10 ensemble members × 5 test WSIs
 
-set -euo pipefail
+set -eo pipefail
 
 module purge
 module load Anaconda3
@@ -68,7 +68,7 @@ echo "WSI_FOLDER=${WSI_FOLDER}"
 PROJECT_ROOT=I2I-Stain-Zoo
 
 # Single-WSI metadata CSV — gives reconstruct.py the x/y tile coordinates
-TEST_A="/work2/bz66izin-VSproject/VS_Data/eval_imgs/no_overlap/testA/tiles/testA"
+TEST_A="/work2/bz66izin-VSproject/VS_Data/temp/tiles/testA"
 WSI_METADATA="${TEST_A}/${WSI_FOLDER}/tiles_metadata.csv"
 
 ENSEMBLE_ROOT="/work2/bz66izin-VSproject/ensemble/${MODEL}/data_large/${MODEL_SIZE}"
