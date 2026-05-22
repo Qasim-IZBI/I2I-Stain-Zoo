@@ -100,9 +100,17 @@ df = pd.read_csv('${WSI_METADATA}')
 print(df['source_file'].iloc[0])
 ")
 
-RECON_TIF="${RECON_DIR}/${WSI_TIF}"
+# Strip .tif extension to get the stem
+WSI_STEM="${WSI_TIF%.tif}"
 
-echo "WSI TIF   : ${RECON_TIF}"
+# Reconstructed file uses _0000.tif suffix (nnUNet single-channel input convention)
+RECON_TIF="${RECON_DIR}/${WSI_STEM}_0000.tif"
+
+# nnUNet output mask: strips the _0000 channel suffix → plain stem.tif
+OUT_MASK="${WSI_STEM}.tif"
+
+echo "WSI stem  : ${WSI_STEM}"
+echo "Recon TIF : ${RECON_TIF}"
 echo "Output dir: ${OUT_DIR}"
 
 # -----------------------------
@@ -117,8 +125,8 @@ if [ ! -f "${RECON_TIF}" ]; then
 fi
 
 # 2. Skip if this WSI's mask already exists in the output directory
-if [ -f "${OUT_DIR}/${WSI_TIF}" ]; then
-    echo "[SKIP] Mask already present: ${OUT_DIR}/${WSI_TIF}. Exiting."
+if [ -f "${OUT_DIR}/${OUT_MASK}" ]; then
+    echo "[SKIP] Mask already present: ${OUT_DIR}/${OUT_MASK}. Exiting."
     exit 0
 fi
 
@@ -140,8 +148,8 @@ TMP_IN="${TMP_BASE}/input"
 TMP_OUT="${TMP_BASE}/output"
 mkdir -p "${TMP_IN}" "${TMP_OUT}"
 
-# Symlink the WSI TIF into the temp input directory
-ln -s "${RECON_TIF}" "${TMP_IN}/${WSI_TIF}"
+# Symlink the WSI TIF into the temp input directory with _0000 suffix
+ln -s "${RECON_TIF}" "${TMP_IN}/${WSI_STEM}_0000.tif"
 
 echo "Temp input : ${TMP_IN}"
 echo "Temp output: ${TMP_OUT}"
@@ -168,6 +176,6 @@ run_cmd nnUNetv2_predict \
     -device cuda
 
 # Move the predicted mask to the shared output directory
-mv "${TMP_OUT}/${WSI_TIF}" "${OUT_DIR}/${WSI_TIF}"
+mv "${TMP_OUT}/${OUT_MASK}" "${OUT_DIR}/${OUT_MASK}"
 
-echo "Done. PSR mask for ${MODEL} member ${MEMBER} WSI ${WSI_FOLDER} → ${OUT_DIR}/${WSI_TIF}"
+echo "Done. PSR mask for ${MODEL} member ${MEMBER} WSI ${WSI_FOLDER} → ${OUT_DIR}/${OUT_MASK}"
