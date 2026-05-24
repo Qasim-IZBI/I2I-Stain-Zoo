@@ -80,6 +80,14 @@ def load_model_tiles(base: Path, model: str) -> np.ndarray:
 # Plot
 # ---------------------------------------------------------------------------
 
+def _apply_common_style(ax: plt.Axes, labels: list[str], n: int) -> None:
+    ax.set_xticks(range(1, n + 1))
+    ax.set_xticklabels(labels, fontsize=10)
+    ax.set_ylabel("Mean uncertainty per tile", fontsize=10)
+    ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.7)
+    ax.set_axisbelow(True)
+
+
 def plot_boxplot(data: dict[str, np.ndarray], outdir: Path) -> None:
     models_with_data = [m for m in MODELS if len(data[m]) > 0]
     labels = [MODEL_DISPLAY_NAMES[m] for m in models_with_data]
@@ -109,18 +117,50 @@ def plot_boxplot(data: dict[str, np.ndarray], outdir: Path) -> None:
         ax.text(i, med_line.get_ydata()[1], f"{median_val:.4f}",
                 ha="center", va="bottom", fontsize=7.5, color="black")
 
-    ax.set_xticks(range(1, len(labels) + 1))
-    ax.set_xticklabels(labels, fontsize=10)
-    ax.set_ylabel("Mean uncertainty per tile", fontsize=10)
+    _apply_common_style(ax, labels, len(labels))
     ax.set_title("Epistemic uncertainty distribution across model families", fontsize=11)
-    ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.7)
-    ax.set_axisbelow(True)
 
     fig.tight_layout()
     out_path = outdir / "uncertainty_boxplot.png"
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"\nSaved → {out_path}")
+    print(f"Saved → {out_path}")
+
+
+def plot_violin(data: dict[str, np.ndarray], outdir: Path) -> None:
+    models_with_data = [m for m in MODELS if len(data[m]) > 0]
+    labels = [MODEL_DISPLAY_NAMES[m] for m in models_with_data]
+    values = [data[m] for m in models_with_data]
+
+    colors = plt.cm.tab10(np.linspace(0, 0.6, len(models_with_data)))
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    parts = ax.violinplot(values, positions=range(1, len(values) + 1),
+                          showmedians=True, showextrema=True)
+
+    for pc, color in zip(parts["bodies"], colors):
+        pc.set_facecolor(color)
+        pc.set_alpha(0.7)
+
+    for key in ("cmedians", "cmins", "cmaxes", "cbars"):
+        parts[key].set_linewidth(1.2)
+        parts[key].set_color("black")
+
+    # Annotate median values
+    for i, vals in enumerate(values, start=1):
+        median_val = float(np.median(vals))
+        ax.text(i, median_val, f"{median_val:.4f}",
+                ha="center", va="bottom", fontsize=7.5, color="black")
+
+    _apply_common_style(ax, labels, len(labels))
+    ax.set_title("Epistemic uncertainty distribution across model families", fontsize=11)
+
+    fig.tight_layout()
+    out_path = outdir / "uncertainty_violin.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved → {out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +185,7 @@ def main() -> None:
         raise RuntimeError("No data found for any model. Check --base path.")
 
     plot_boxplot(data, args.outdir)
+    plot_violin(data, args.outdir)
 
 
 if __name__ == "__main__":
