@@ -42,7 +42,7 @@ ENSEMBLE_ROOT="/work2/bz66izin-VSproject/ensemble/${MODEL}/data_large/${MODEL_SI
 UNCERTAINTY_DIR="${ENSEMBLE_ROOT}/uncertainty/${MODEL}/raw_npy"
 OUT_DIR="${ENSEMBLE_ROOT}/uncertainty/${MODEL}/per_wsi_csv"
 
-TEST_A="/work2/bz66izin-VSproject/VS_Data/eval_imgs/no_overlap/testA/tiles/testA"
+TEST_A="/work2/bz66izin-VSproject/VS_Data/temp/tiles/testA"
 
 echo "TASK_ID=${SLURM_ARRAY_TASK_ID}  MODEL=${MODEL}  SIZE=${MODEL_SIZE}"
 echo "Uncertainty dir : ${UNCERTAINTY_DIR}"
