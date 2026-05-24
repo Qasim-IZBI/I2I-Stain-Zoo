@@ -1,8 +1,10 @@
-"""Boxplot of per-tile mean uncertainty for each model family.
+"""Boxplot and violin plot of per-tile mean uncertainty for each model family.
 
-Reads the per-WSI CSVs produced by aggregate_uncertainty.py (one CSV per WSI,
-one row per tile with mean_uncertainty), pools all tiles across WSIs for each
-model family, and draws one box per model on the x-axis.
+Produces:
+  - One pooled figure (all WSIs combined) for box and violin
+  - One per-WSI figure (box and violin) saved under {outdir}/per_wsi/
+
+Reads the per-WSI CSVs produced by aggregate_uncertainty.py.
 
 Example
 -------
@@ -54,42 +56,70 @@ DEFAULT_BASE = Path("/work2/bz66izin-VSproject/ensemble")
 # Data loading
 # ---------------------------------------------------------------------------
 
-def load_model_tiles(base: Path, model: str) -> np.ndarray:
-    """Return all per-tile mean_uncertainty values for one model family."""
-    model_size = MODEL_SIZES[model]
-    csv_dir = base / model / "data_large" / model_size / "uncertainty" / model / "per_wsi_csv"
-    if not csv_dir.exists():
-        print(f"  [WARN] Not found: {csv_dir}")
-        return np.array([])
+def load_all_data(base: Path) -> dict[str, dict[str, np.ndarray]]:
+    """Load uncertainty values per model and per WSI.
 
-    dfs = []
-    for csv_path in sorted(csv_dir.glob("*.csv")):
-        df = pd.read_csv(csv_path, usecols=["mean_uncertainty"])
-        dfs.append(df)
+    Returns: {model: {wsi_stem: np.ndarray of per-tile mean_uncertainty}}
+    """
+    all_data: dict[str, dict[str, np.ndarray]] = {}
 
-    if not dfs:
-        print(f"  [WARN] No CSVs in {csv_dir}")
-        return np.array([])
+    for model in MODELS:
+        model_size = MODEL_SIZES[model]
+        csv_dir = (base / model / "data_large" / model_size
+                   / "uncertainty" / model / "per_wsi_csv")
 
-    values = pd.concat(dfs, ignore_index=True)["mean_uncertainty"].dropna().to_numpy()
-    print(f"  {MODEL_DISPLAY_NAMES[model]}: {len(values):,} tiles from {len(dfs)} WSI(s)")
-    return values
+        wsi_data: dict[str, np.ndarray] = {}
+        if not csv_dir.exists():
+            print(f"  [WARN] Not found: {csv_dir}")
+        else:
+            for csv_path in sorted(csv_dir.glob("*.csv")):
+                wsi_stem = csv_path.stem
+                vals = (pd.read_csv(csv_path, usecols=["mean_uncertainty"])
+                        ["mean_uncertainty"].dropna().to_numpy())
+                wsi_data[wsi_stem] = vals
+
+            n_tiles = sum(len(v) for v in wsi_data.values())
+            print(f"  {MODEL_DISPLAY_NAMES[model]}: {n_tiles:,} tiles "
+                  f"from {len(wsi_data)} WSI(s)")
+
+        all_data[model] = wsi_data
+
+    return all_data
+
+
+def pool_across_wsis(all_data: dict[str, dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
+    """Concatenate all WSI arrays per model."""
+    return {
+        model: (np.concatenate(list(wsi_data.values()))
+                if wsi_data else np.array([]))
+        for model, wsi_data in all_data.items()
+    }
 
 
 # ---------------------------------------------------------------------------
-# Plot
+# Shared plot helpers
 # ---------------------------------------------------------------------------
 
-def _apply_common_style(ax: plt.Axes, labels: list[str], n: int) -> None:
-    ax.set_xticks(range(1, n + 1))
+def _apply_common_style(ax: plt.Axes, labels: list[str]) -> None:
+    ax.set_xticks(range(1, len(labels) + 1))
     ax.set_xticklabels(labels, fontsize=10)
     ax.set_ylabel("Mean uncertainty per tile", fontsize=10)
     ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.7)
     ax.set_axisbelow(True)
 
 
-def plot_boxplot(data: dict[str, np.ndarray], outdir: Path) -> None:
+def _colors(n: int) -> np.ndarray:
+    return plt.cm.tab10(np.linspace(0, 0.6, n))
+
+
+# ---------------------------------------------------------------------------
+# Box plot
+# ---------------------------------------------------------------------------
+
+def plot_boxplot(data: dict[str, np.ndarray], title: str, out_path: Path) -> None:
     models_with_data = [m for m in MODELS if len(data[m]) > 0]
+    if not models_with_data:
+        return
     labels = [MODEL_DISPLAY_NAMES[m] for m in models_with_data]
     values = [data[m] for m in models_with_data]
 
@@ -106,40 +136,41 @@ def plot_boxplot(data: dict[str, np.ndarray], outdir: Path) -> None:
         capprops=dict(linewidth=1.0),
     )
 
-    colors = plt.cm.tab10(np.linspace(0, 0.6, len(models_with_data)))
-    for patch, color in zip(bp["boxes"], colors):
+    for patch, color in zip(bp["boxes"], _colors(len(models_with_data))):
         patch.set_facecolor(color)
         patch.set_alpha(0.7)
 
-    # Annotate median values above each box
     for i, (vals, med_line) in enumerate(zip(values, bp["medians"]), start=1):
-        median_val = float(np.median(vals))
-        ax.text(i, med_line.get_ydata()[1], f"{median_val:.4f}",
+        ax.text(i, med_line.get_ydata()[1], f"{np.median(vals):.4f}",
                 ha="center", va="bottom", fontsize=7.5, color="black")
 
-    _apply_common_style(ax, labels, len(labels))
-    ax.set_title("Epistemic uncertainty distribution across model families", fontsize=11)
+    _apply_common_style(ax, labels)
+    ax.set_title(title, fontsize=11)
 
     fig.tight_layout()
-    out_path = outdir / "uncertainty_boxplot.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved → {out_path}")
 
 
-def plot_violin(data: dict[str, np.ndarray], outdir: Path) -> None:
+# ---------------------------------------------------------------------------
+# Violin plot
+# ---------------------------------------------------------------------------
+
+def plot_violin(data: dict[str, np.ndarray], title: str, out_path: Path) -> None:
     models_with_data = [m for m in MODELS if len(data[m]) > 0]
+    if not models_with_data:
+        return
     labels = [MODEL_DISPLAY_NAMES[m] for m in models_with_data]
     values = [data[m] for m in models_with_data]
-
-    colors = plt.cm.tab10(np.linspace(0, 0.6, len(models_with_data)))
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
     parts = ax.violinplot(values, positions=range(1, len(values) + 1),
                           showmedians=True, showextrema=True)
 
-    for pc, color in zip(parts["bodies"], colors):
+    for pc, color in zip(parts["bodies"], _colors(len(models_with_data))):
         pc.set_facecolor(color)
         pc.set_alpha(0.7)
 
@@ -147,17 +178,15 @@ def plot_violin(data: dict[str, np.ndarray], outdir: Path) -> None:
         parts[key].set_linewidth(1.2)
         parts[key].set_color("black")
 
-    # Annotate median values
     for i, vals in enumerate(values, start=1):
-        median_val = float(np.median(vals))
-        ax.text(i, median_val, f"{median_val:.4f}",
+        ax.text(i, float(np.median(vals)), f"{np.median(vals):.4f}",
                 ha="center", va="bottom", fontsize=7.5, color="black")
 
-    _apply_common_style(ax, labels, len(labels))
-    ax.set_title("Epistemic uncertainty distribution across model families", fontsize=11)
+    _apply_common_style(ax, labels)
+    ax.set_title(title, fontsize=11)
 
     fig.tight_layout()
-    out_path = outdir / "uncertainty_violin.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved → {out_path}")
@@ -168,24 +197,40 @@ def plot_violin(data: dict[str, np.ndarray], outdir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Boxplot of per-tile uncertainty per model family.")
+    ap = argparse.ArgumentParser(
+        description="Box and violin plots of per-tile uncertainty per model family."
+    )
     ap.add_argument("--base", type=Path, default=DEFAULT_BASE,
                     help=f"Ensemble root directory (default: {DEFAULT_BASE})")
     ap.add_argument("--outdir", type=Path, default=Path("uncertainty_boxplot"),
-                    help="Output directory for the figure (default: ./uncertainty_boxplot/)")
+                    help="Output directory (default: ./uncertainty_boxplot/)")
     args = ap.parse_args()
 
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     print("Loading uncertainty CSVs …")
-    data = {model: load_model_tiles(args.base, model) for model in MODELS}
+    all_data = load_all_data(args.base)
 
-    n_missing = sum(1 for v in data.values() if len(v) == 0)
-    if n_missing == len(MODELS):
+    pooled = pool_across_wsis(all_data)
+    if all(len(v) == 0 for v in pooled.values()):
         raise RuntimeError("No data found for any model. Check --base path.")
 
-    plot_boxplot(data, args.outdir)
-    plot_violin(data, args.outdir)
+    # --- pooled plots (all WSIs combined) ---
+    print("\nPlotting pooled figures …")
+    pooled_title = "Epistemic uncertainty distribution across model families"
+    plot_boxplot(pooled, pooled_title, args.outdir / "uncertainty_boxplot.png")
+    plot_violin(pooled,  pooled_title, args.outdir / "uncertainty_violin.png")
+
+    # --- per-WSI plots ---
+    all_wsis = sorted({wsi for wsi_data in all_data.values() for wsi in wsi_data})
+    print(f"\nPlotting per-WSI figures for {len(all_wsis)} WSI(s) …")
+    per_wsi_dir = args.outdir / "per_wsi"
+
+    for wsi in all_wsis:
+        wsi_data = {model: all_data[model].get(wsi, np.array([])) for model in MODELS}
+        title = f"Epistemic uncertainty — {wsi}"
+        plot_boxplot(wsi_data, title, per_wsi_dir / f"{wsi}_boxplot.png")
+        plot_violin(wsi_data,  title, per_wsi_dir / f"{wsi}_violin.png")
 
 
 if __name__ == "__main__":
