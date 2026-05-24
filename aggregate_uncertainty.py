@@ -4,6 +4,11 @@ Reads per-tile [H, W] float32 .npy files from uncertainty.py (raw_npy/) and
 computes the tissue-masked mean uncertainty for each tile. Saves one CSV per
 WSI, where each row is one tile.
 
+WSI membership is derived from the NNN/ subfolder in the npy path
+(e.g. raw_npy/001/images/0000001.npy → WSI 001), then matched to the WSI
+source filename via tiles_metadata/001/tiles_metadata.csv. This avoids the
+collision problem that arises when tile IDs repeat across WSIs.
+
 Output per WSI: {outdir}/{wsi_stem}.csv
 Columns: tile_name, mean_uncertainty
 
@@ -26,7 +31,24 @@ import pandas as pd
 from tqdm import tqdm
 
 from uncertainty import _build_mask_lookup, _find_tile_mask
-from uncertainty_calibration import build_stem_to_wsi
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _wsi_source_map(tiles_metadata_root: Path) -> dict[str, str]:
+    """Return {wsi_folder: wsi_stem} by reading source_file from each
+    tiles_metadata/NNN/tiles_metadata.csv.  NNN is the zero-padded folder
+    name (e.g. '001').
+    """
+    mapping: dict[str, str] = {}
+    for csv_path in sorted(tiles_metadata_root.glob("*/tiles_metadata.csv")):
+        wsi_folder = csv_path.parent.name  # e.g. "001"
+        df = pd.read_csv(csv_path, usecols=["source_file"], nrows=1)
+        if not df.empty:
+            mapping[wsi_folder] = Path(df["source_file"].iloc[0]).stem
+    return mapping
 
 
 # ---------------------------------------------------------------------------
@@ -53,10 +75,13 @@ def main() -> None:
 
     args.outdir.mkdir(parents=True, exist_ok=True)
 
-    # --- tile stem → WSI source file ---
-    stem_to_wsi = build_stem_to_wsi(args.tiles_metadata)
-    if not stem_to_wsi:
-        raise RuntimeError("No tile→WSI mapping found. Check --tiles_metadata path.")
+    # --- NNN folder → WSI source stem ---
+    folder_to_wsi = _wsi_source_map(args.tiles_metadata)
+    if not folder_to_wsi:
+        raise RuntimeError(
+            f"No tiles_metadata.csv files found under {args.tiles_metadata}"
+        )
+    print(f"Found {len(folder_to_wsi)} WSI(s): {sorted(folder_to_wsi)}")
 
     # --- pre-build mask stem lookup (same as uncertainty.py) ---
     mask_by_stem = _build_mask_lookup(args.mask_dir)
@@ -67,20 +92,21 @@ def main() -> None:
 
     # --- collect rows grouped by WSI ---
     wsi_rows: dict[str, list[dict]] = {}
+    n_skipped = 0
 
     for npy_path in tqdm(npy_files, desc="Tiles"):
-        stem = npy_path.stem
-        wsi = stem_to_wsi.get(stem)
-        if wsi is None:
+        # Derive WSI folder from path: raw_npy/NNN/images/stem.npy
+        rel = npy_path.relative_to(args.uncertainty_dir)
+        wsi_folder = rel.parts[0] if len(rel.parts) >= 2 else None
+        wsi_stem = folder_to_wsi.get(wsi_folder) if wsi_folder else None
+        if wsi_stem is None:
             continue
 
         u_map = np.load(npy_path).astype(np.float64)  # [H, W]
 
-        # fname: relative path inside uncertainty_dir, with .npy → .tif
-        # e.g. "001/images/0000001.tif" — used by _find_tile_mask for the
+        # fname as NNN/images/stem.tif — used by _find_tile_mask for the
         # primary mask_dir/NNN/masks/ lookup (same logic as uncertainty.py)
-        rel = npy_path.relative_to(args.uncertainty_dir).with_suffix(".tif")
-        fname = str(rel)
+        fname = str(rel.with_suffix(".tif"))
 
         if args.mask_dir is not None:
             mask = _find_tile_mask(
@@ -98,6 +124,7 @@ def main() -> None:
                     )
                     mask = np.array(mask_img).astype(bool)
                 if mask.mean() < args.min_tissue_fraction:
+                    n_skipped += 1
                     continue
                 tile_mean = float(u_map[mask].mean())
             else:
@@ -105,13 +132,15 @@ def main() -> None:
         else:
             tile_mean = float(u_map.mean())
 
-        wsi_stem = Path(wsi).stem
         wsi_rows.setdefault(wsi_stem, []).append(
-            {"tile_name": stem, "mean_uncertainty": tile_mean}
+            {"tile_name": npy_path.stem, "mean_uncertainty": tile_mean}
         )
 
     if not wsi_rows:
         raise RuntimeError("No tiles were processed. Check paths and --tiles_metadata.")
+
+    if n_skipped:
+        print(f"Skipped {n_skipped} tiles below --min_tissue_fraction {args.min_tissue_fraction}")
 
     for wsi_stem, rows in sorted(wsi_rows.items()):
         df = pd.DataFrame(rows).sort_values("tile_name").reset_index(drop=True)
