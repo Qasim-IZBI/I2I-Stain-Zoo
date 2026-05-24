@@ -1,5 +1,5 @@
 """
-plot_psr_spearman.py — Spearman correlation between PSR-MAE and each image
+plot_psr_spearman.py — Spearman correlation between CPA-MAE and each image
 quality metric (Patch-SSIM, LPIPS, FID), computed per model type across
 the 9 configs (3 model sizes × 3 data sizes).
 
@@ -93,7 +93,7 @@ def plot_correlations(corr: pd.DataFrame, outpath: Path) -> None:
     ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
     ax.set_xticks(x)
     ax.set_xticklabels(models, fontsize=9)
-    ax.set_ylabel("Spearman ρ  (vs PSR-MAE)", fontsize=10)
+    ax.set_ylabel("Spearman ρ  (vs CPA-MAE)", fontsize=10)
     ax.set_ylim(-1.05, 1.05)
     ax.legend(fontsize=9, frameon=True)
     ax.spines["top"].set_visible(False)
@@ -107,7 +107,7 @@ def plot_correlations(corr: pd.DataFrame, outpath: Path) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Spearman correlation between PSR-MAE and image quality metrics per model."
+        description="Spearman correlation between CPA-MAE and image quality metrics per model."
     )
     parser.add_argument(
         "--csv", type=Path, required=True,

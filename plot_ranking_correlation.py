@@ -1,6 +1,6 @@
 """
 plot_ranking_correlation.py — Spearman rank correlation table between
-FID, LPIPS, Patch-SSIM, and PSR-MAE rankings across all configurations.
+FID, LPIPS, Patch-SSIM, and CPA-MAE rankings across all configurations.
 
 Each of the 54 configs (6 models × 3 model sizes × 3 data sizes) is ranked
 independently per metric (rank 1 = best). Spearman ρ is then computed between
@@ -10,7 +10,7 @@ Ranking direction:
   FID      — ascending  (lower is better)
   LPIPS    — ascending  (lower is better)
   Patch-SSIM — descending (higher is better)
-  PSR-MAE  — ascending  (lower is better)
+  CPA-MAE  — ascending  (lower is better)
 
 Input
 -----
@@ -36,7 +36,7 @@ METRIC_COLS = {
     "Patch-SSIM": ("patch_ssim", False),   # (column, ascending)
     "LPIPS":      ("lpips",      True),
     "FID":        ("fid",        True),
-    "PSR-MAE":    ("mae_paired", True),
+    "CPA-MAE":    ("mae_paired", True),
 }
 
 

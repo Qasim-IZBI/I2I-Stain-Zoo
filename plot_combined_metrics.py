@@ -336,8 +336,8 @@ def _draw_psr_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
 
     ax.set_xticks(list(x_pos.values()))
     ax.set_xticklabels([MODEL_DISPLAY_NAMES.get(m, m) for m in x_pos], fontsize=8, rotation=0, ha="center")
-    ax.set_ylabel("PSR-MAE (paired) ↓", fontsize=9)
-    ax.set_title("PSR-MAE", fontsize=9)
+    ax.set_ylabel("CPA-MAE (paired) ↓", fontsize=9)
+    ax.set_title("CPA-MAE", fontsize=9)
     ax.set_ylim(bottom=0)
     _draw_separators(ax, len(models))
 
