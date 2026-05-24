@@ -113,6 +113,36 @@ def _colors(n: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Quantile stats
+# ---------------------------------------------------------------------------
+
+def compute_stats(data: dict[str, np.ndarray], wsi: str) -> list[dict]:
+    """Return one row per model with standard boxplot quantile statistics."""
+    rows = []
+    for model in MODELS:
+        vals = data[model]
+        if len(vals) == 0:
+            continue
+        q1, median, q3 = np.percentile(vals, [25, 50, 75])
+        iqr = q3 - q1
+        rows.append({
+            "wsi":           wsi,
+            "model":         MODEL_DISPLAY_NAMES[model],
+            "n_tiles":       len(vals),
+            "min":           float(vals.min()),
+            "whisker_low":   float(max(vals.min(), q1 - 1.5 * iqr)),
+            "q1":            float(q1),
+            "median":        float(median),
+            "mean":          float(vals.mean()),
+            "q3":            float(q3),
+            "whisker_high":  float(min(vals.max(), q3 + 1.5 * iqr)),
+            "max":           float(vals.max()),
+            "iqr":           float(iqr),
+        })
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Box plot
 # ---------------------------------------------------------------------------
 
@@ -215,11 +245,14 @@ def main() -> None:
     if all(len(v) == 0 for v in pooled.values()):
         raise RuntimeError("No data found for any model. Check --base path.")
 
+    all_stats: list[dict] = []
+
     # --- pooled plots (all WSIs combined) ---
     print("\nPlotting pooled figures …")
     pooled_title = "Epistemic uncertainty distribution across model families"
     plot_boxplot(pooled, pooled_title, args.outdir / "uncertainty_boxplot.png")
     plot_violin(pooled,  pooled_title, args.outdir / "uncertainty_violin.png")
+    all_stats.extend(compute_stats(pooled, wsi="all"))
 
     # --- per-WSI plots ---
     all_wsis = sorted({wsi for wsi_data in all_data.values() for wsi in wsi_data})
@@ -231,6 +264,13 @@ def main() -> None:
         title = f"Epistemic uncertainty — {wsi}"
         plot_boxplot(wsi_data, title, per_wsi_dir / f"{wsi}_boxplot.png")
         plot_violin(wsi_data,  title, per_wsi_dir / f"{wsi}_violin.png")
+        all_stats.extend(compute_stats(wsi_data, wsi=wsi))
+
+    # --- save quantile CSV ---
+    stats_df = pd.DataFrame(all_stats)
+    stats_path = args.outdir / "uncertainty_quantiles.csv"
+    stats_df.to_csv(stats_path, index=False, float_format="%.6f")
+    print(f"\nSaved quantile stats → {stats_path}")
 
 
 if __name__ == "__main__":
