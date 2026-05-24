@@ -23,37 +23,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import tifffile
 from tqdm import tqdm
 
+from uncertainty import _build_mask_lookup, _find_tile_mask
 from uncertainty_calibration import build_stem_to_wsi
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _find_mask(stem: str, mask_dir: Path) -> np.ndarray | None:
-    """Return boolean tissue mask for a tile, or None if not found.
-
-    Tries (in order):
-      1. Flat file: mask_dir/{stem}.tif
-      2. Subdir layout: mask_dir/NNN/masks/{stem}.tif
-    """
-    for ext in (".tif", ".tiff", ".png"):
-        flat = mask_dir / f"{stem}{ext}"
-        if flat.exists():
-            arr = tifffile.imread(str(flat))
-            return arr.astype(bool) if arr.ndim == 2 else arr[..., 0].astype(bool)
-
-    for sub in sorted(mask_dir.glob("*/masks")):
-        for ext in (".tif", ".tiff", ".png"):
-            p = sub / f"{stem}{ext}"
-            if p.exists():
-                arr = tifffile.imread(str(p))
-                return arr.astype(bool) if arr.ndim == 2 else arr[..., 0].astype(bool)
-
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -85,12 +58,14 @@ def main() -> None:
     if not stem_to_wsi:
         raise RuntimeError("No tile→WSI mapping found. Check --tiles_metadata path.")
 
+    # --- pre-build mask stem lookup (same as uncertainty.py) ---
+    mask_by_stem = _build_mask_lookup(args.mask_dir)
+
     npy_files = sorted(args.uncertainty_dir.rglob("*.npy"))
     if not npy_files:
         raise RuntimeError(f"No .npy files found under {args.uncertainty_dir}")
 
     # --- collect rows grouped by WSI ---
-    # wsi_stem -> list of {"tile_name": str, "mean_uncertainty": float}
     wsi_rows: dict[str, list[dict]] = {}
 
     for npy_path in tqdm(npy_files, desc="Tiles"):
@@ -101,8 +76,19 @@ def main() -> None:
 
         u_map = np.load(npy_path).astype(np.float64)  # [H, W]
 
+        # fname: relative path inside uncertainty_dir, with .npy → .tif
+        # e.g. "001/images/0000001.tif" — used by _find_tile_mask for the
+        # primary mask_dir/NNN/masks/ lookup (same logic as uncertainty.py)
+        rel = npy_path.relative_to(args.uncertainty_dir).with_suffix(".tif")
+        fname = str(rel)
+
         if args.mask_dir is not None:
-            mask = _find_mask(stem, args.mask_dir)
+            mask = _find_tile_mask(
+                tile_path=str(npy_path),
+                mask_by_stem=mask_by_stem,
+                mask_dir=args.mask_dir,
+                fname=fname,
+            )
             if mask is not None:
                 if mask.shape != u_map.shape:
                     from PIL import Image
