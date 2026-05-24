@@ -71,8 +71,9 @@ def main() -> None:
     ap.add_argument("--mask_dir", type=Path, default=None,
                     help="Directory of tissue masks (<stem>.tif or NNN/masks/<stem>.tif). "
                          "If omitted, all pixels are used.")
-    ap.add_argument("--min_tissue_pixels", type=int, default=0,
-                    help="Skip tiles with fewer tissue pixels than this (default: 0 = keep all).")
+    ap.add_argument("--min_tissue_fraction", type=float, default=0.0,
+                    help="Minimum fraction [0–1] of tissue pixels required to include a tile "
+                         "(default: 0.0 = keep all tiles).")
     ap.add_argument("--outdir", type=Path, required=True,
                     help="Output directory; one {wsi_stem}.csv is written per WSI.")
     args = ap.parse_args()
@@ -110,7 +111,7 @@ def main() -> None:
                         (u_map.shape[1], u_map.shape[0]), resample=Image.NEAREST
                     )
                     mask = np.array(mask_img).astype(bool)
-                if int(mask.sum()) < args.min_tissue_pixels:
+                if mask.mean() < args.min_tissue_fraction:
                     continue
                 tile_mean = float(u_map[mask].mean())
             else:

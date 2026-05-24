@@ -74,7 +74,7 @@ run_cmd python I2I-Stain-Zoo/aggregate_uncertainty.py \
     --uncertainty_dir "${UNCERTAINTY_DIR}" \
     --tiles_metadata  "${TEST_A}" \
     --mask_dir        "${TEST_A}" \
-    --min_tissue_pixels 256 \
+    --min_tissue_fraction 0.1 \
     --outdir          "${OUT_DIR}"
 
 echo "Done. Per-WSI uncertainty CSVs saved to ${OUT_DIR}/"
