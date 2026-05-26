@@ -116,7 +116,7 @@ def aggregate_model(
 ) -> Optional[dict]:
     model_size = MODEL_SIZES[model]
     ensemble_root = base / model / "data_large" / model_size
-    calib_root = ensemble_root / "calibration" / model
+    calib_root = ensemble_root / "calibration_nolog" / model
 
     # Collect per_tile.csv from all WSIs
     dfs = []
