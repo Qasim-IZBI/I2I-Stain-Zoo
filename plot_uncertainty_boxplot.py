@@ -66,7 +66,7 @@ def load_all_data(base: Path) -> dict[str, dict[str, np.ndarray]]:
     for model in MODELS:
         model_size = MODEL_SIZES[model]
         csv_dir = (base / model / "data_large" / model_size
-                   / "uncertainty" / model / "per_wsi_csv")
+                   / "uncertainty_nolog" / model / "per_wsi_csv")
 
         wsi_data: dict[str, np.ndarray] = {}
         if not csv_dir.exists():
