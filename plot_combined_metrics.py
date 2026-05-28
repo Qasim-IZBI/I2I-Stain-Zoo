@@ -49,10 +49,10 @@ MODEL_SIZE_MARKERS = {"small": "o", "medium": "s", "large": "^"}
 DATA_SIZE_LABELS   = {"small": "25% data", "medium": "50% data", "large": "100% data"}
 MODEL_SIZE_LABELS  = {"small": "S generator", "medium": "M generator", "large": "L generator"}
 
-FONT_TITLE  = 13
-FONT_LABEL  = 12
-FONT_TICK   = 11
-FONT_LEGEND = 11
+FONT_TITLE  = 16
+FONT_LABEL  = 16
+FONT_TICK   = 16
+FONT_LEGEND = 16
 
 EVAL_METRICS = {
     "patch_ssim": {
