@@ -392,7 +392,7 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
     fig = plt.figure(figsize=(16, 10))
     gs  = fig.add_gridspec(
         2, 2,
-        wspace=0.30,
+        wspace=0.13,
         hspace=0.08,
         left=0.06, right=0.98,
         top=0.92, bottom=0.10,
