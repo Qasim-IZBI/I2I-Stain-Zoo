@@ -51,7 +51,7 @@ MODEL_SIZE_LABELS  = {"small": "S generator", "medium": "M generator", "large": 
 
 FONT_TITLE  = 14
 FONT_LABEL  = 14
-FONT_TICK   = 14
+FONT_TICK   = 13
 FONT_LEGEND = 14
 
 EVAL_METRICS = {
@@ -392,7 +392,7 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
     fig = plt.figure(figsize=(16, 10))
     gs  = fig.add_gridspec(
         2, 2,
-        wspace=0.30,          # column gap wide enough for left-side y-axis labels
+        wspace=0.15,          # column gap wide enough for left-side y-axis labels
         hspace=0.08,
         left=0.06, right=0.83,   # leave right margin for legend
         top=0.92, bottom=0.10,
