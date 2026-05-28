@@ -51,7 +51,7 @@ MODEL_SIZE_LABELS  = {"small": "S generator", "medium": "M generator", "large": 
 
 FONT_TITLE  = 14
 FONT_LABEL  = 14
-FONT_TICK   = 12
+FONT_TICK   = 11.5
 FONT_LEGEND = 14
 
 EVAL_METRICS = {
@@ -388,13 +388,13 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
                   psr_df: pd.DataFrame,  psr_wsi: dict,
                   best_psr: pd.DataFrame, outpath: Path) -> None:
 
-    # Layout: 2×2 metric panels + legend strip on the right
+    # Layout: 2×2 metric panels
     fig = plt.figure(figsize=(16, 10))
     gs  = fig.add_gridspec(
         2, 2,
-        wspace=0.15,          # column gap wide enough for left-side y-axis labels
+        wspace=0.30,
         hspace=0.08,
-        left=0.06, right=0.83,   # leave right margin for legend
+        left=0.06, right=0.98,
         top=0.92, bottom=0.10,
     )
 
@@ -414,19 +414,6 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
     # Remove x-axis tick labels from top row (shared with bottom row)
     for ax in axes[:2]:
         ax.set_xticklabels([])
-
-    # Legend — placed in the right margin
-    fig.legend(
-        handles=_legend_handles(),
-        loc="center left",
-        bbox_to_anchor=(0.85, 0.5),
-        fontsize=FONT_LEGEND,
-        frameon=True,
-        borderpad=0.9,
-        handlelength=1.6,
-        handletextpad=0.6,
-        labelspacing=0.7,
-    )
 
     fig.savefig(outpath, dpi=150, bbox_inches="tight")
     plt.close(fig)
