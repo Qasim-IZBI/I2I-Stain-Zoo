@@ -46,6 +46,14 @@ MODEL_SIZES        = ["small", "medium", "large"]
 DATA_SIZE_COLORS   = {"small": "#1f77b4", "medium": "#ff7f0e", "large": "#2ca02c"}
 MODEL_SIZE_MARKERS = {"small": "o", "medium": "s", "large": "^"}
 
+DATA_SIZE_LABELS   = {"small": "25% data", "medium": "50% data", "large": "100% data"}
+MODEL_SIZE_LABELS  = {"small": "S generator", "medium": "M generator", "large": "L generator"}
+
+FONT_TITLE  = 13
+FONT_LABEL  = 12
+FONT_TICK   = 11
+FONT_LEGEND = 11
+
 EVAL_METRICS = {
     "patch_ssim": {
         "filenames":     ["patch_ssim.csv"],
@@ -204,9 +212,15 @@ def pick_best_psr(df: pd.DataFrame) -> pd.DataFrame:
 # ── shared panel drawing ──────────────────────────────────────────────────────
 
 def _offsets():
-    combos  = [(ms, ds) for ds in DATASIZES for ms in MODEL_SIZES]
-    spacing = 0.08
-    return {c: (i - (len(combos) - 1) / 2) * spacing for i, c in enumerate(combos)}
+    within_spacing = 0.055   # gap between model-size markers within one data group
+    group_spacing  = 0.22    # gap between data-fraction group centres
+    result = {}
+    for gi, ds in enumerate(DATASIZES):
+        group_center = (gi - 1) * group_spacing        # −0.22, 0, +0.22
+        for mi, ms in enumerate(MODEL_SIZES):
+            pt_offset = (mi - 1) * within_spacing      # −0.055, 0, +0.055
+            result[(ms, ds)] = group_center + pt_offset
+    return result
 
 
 def _draw_separators(ax, n_models: int) -> None:
@@ -264,9 +278,10 @@ def _draw_eval_panel(ax, df: pd.DataFrame, metric: str, mcfg: dict,
             )
 
     ax.set_xticks(list(x_pos.values()))
-    ax.set_xticklabels([MODEL_DISPLAY_NAMES.get(m, m) for m in x_pos], fontsize=8, rotation=0, ha="center")
-    ax.set_ylabel(mcfg["ylabel"], fontsize=9)
-    ax.set_title(mcfg["title"], fontsize=9)
+    ax.set_xticklabels([MODEL_DISPLAY_NAMES.get(m, m) for m in x_pos], fontsize=FONT_TICK, rotation=0, ha="center")
+    ax.set_ylabel(mcfg["ylabel"], fontsize=FONT_LABEL)
+    ax.set_title(mcfg["title"], fontsize=FONT_TITLE)
+    ax.tick_params(axis="y", labelsize=FONT_TICK)
     ax.set_ylim(bottom=0)
     _draw_separators(ax, len(models))
 
@@ -335,9 +350,10 @@ def _draw_psr_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
             )
 
     ax.set_xticks(list(x_pos.values()))
-    ax.set_xticklabels([MODEL_DISPLAY_NAMES.get(m, m) for m in x_pos], fontsize=8, rotation=0, ha="center")
-    ax.set_ylabel("CPA-MAE (paired) ↓", fontsize=9)
-    ax.set_title("CPA-MAE", fontsize=9)
+    ax.set_xticklabels([MODEL_DISPLAY_NAMES.get(m, m) for m in x_pos], fontsize=FONT_TICK, rotation=0, ha="center")
+    ax.set_ylabel("CPA-MAE (paired) ↓", fontsize=FONT_LABEL)
+    ax.set_title("CPA-MAE", fontsize=FONT_TITLE)
+    ax.tick_params(axis="y", labelsize=FONT_TICK)
     ax.set_ylim(bottom=0)
     _draw_separators(ax, len(models))
 
@@ -347,21 +363,21 @@ def _draw_psr_panel(ax, df: pd.DataFrame, best: pd.DataFrame,
 def _legend_handles(include_star: bool = True) -> list:
     handles = [
         Patch(facecolor=DATA_SIZE_COLORS[s], edgecolor="black", linewidth=0.7,
-              label=f"{s} data")
+              label=DATA_SIZE_LABELS[s])
         for s in DATASIZES
     ]
     handles += [
         Line2D([0], [0], color="black", marker=MODEL_SIZE_MARKERS[s],
-               linestyle="none", markersize=7,
+               linestyle="none", markersize=8,
                markeredgecolor="black", markeredgewidth=0.5,
-               label=f"{s} model")
+               label=MODEL_SIZE_LABELS[s])
         for s in MODEL_SIZES
     ]
     if include_star:
         handles.append(
             Line2D([0], [0], marker="*", color="w",
                    markerfacecolor="gray", markeredgecolor="black",
-                   markersize=12, label="best PSR config")
+                   markersize=13, label="best PSR config")
         )
     return handles
 
@@ -372,13 +388,13 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
                   psr_df: pd.DataFrame,  psr_wsi: dict,
                   best_psr: pd.DataFrame, outpath: Path) -> None:
 
-    # Layout: 2×2 metric panels
+    # Layout: 2×2 metric panels + legend strip on the right
     fig = plt.figure(figsize=(16, 10))
     gs  = fig.add_gridspec(
         2, 2,
-        wspace=0.20,
+        wspace=0.10,          # reduced column gap
         hspace=0.08,
-        left=0.06, right=0.98,
+        left=0.06, right=0.83,   # leave right margin for legend
         top=0.92, bottom=0.10,
     )
 
@@ -398,6 +414,19 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
     # Remove x-axis tick labels from top row (shared with bottom row)
     for ax in axes[:2]:
         ax.set_xticklabels([])
+
+    # Legend — placed in the right margin
+    fig.legend(
+        handles=_legend_handles(),
+        loc="center left",
+        bbox_to_anchor=(0.85, 0.5),
+        fontsize=FONT_LEGEND,
+        frameon=True,
+        borderpad=0.9,
+        handlelength=1.6,
+        handletextpad=0.6,
+        labelspacing=0.7,
+    )
 
     fig.savefig(outpath, dpi=150, bbox_inches="tight")
     plt.close(fig)
