@@ -392,7 +392,7 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
     fig = plt.figure(figsize=(16, 10))
     gs  = fig.add_gridspec(
         2, 2,
-        wspace=0.10,          # reduced column gap
+        wspace=0.30,          # column gap wide enough for left-side y-axis labels
         hspace=0.08,
         left=0.06, right=0.83,   # leave right margin for legend
         top=0.92, bottom=0.10,
@@ -414,11 +414,6 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
     # Remove x-axis tick labels from top row (shared with bottom row)
     for ax in axes[:2]:
         ax.set_xticklabels([])
-
-    # Move right-column y-axes to the right so labels don't overlap left column
-    for ax in [axes[1], axes[3]]:
-        ax.yaxis.set_label_position("right")
-        ax.yaxis.tick_right()
 
     # Legend — placed in the right margin
     fig.legend(
