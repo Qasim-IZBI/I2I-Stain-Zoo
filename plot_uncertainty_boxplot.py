@@ -102,8 +102,9 @@ def pool_across_wsis(all_data: dict[str, dict[str, np.ndarray]]) -> dict[str, np
 
 def _apply_common_style(ax: plt.Axes, labels: list[str]) -> None:
     ax.set_xticks(range(1, len(labels) + 1))
-    ax.set_xticklabels(labels, fontsize=10)
-    ax.set_ylabel("Mean uncertainty per tile", fontsize=10)
+    ax.set_xticklabels(labels, fontsize=13)
+    ax.set_ylabel("Mean uncertainty per tile", fontsize=13)
+    ax.tick_params(axis="y", labelsize=13)
     ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.7)
     ax.set_axisbelow(True)
 
@@ -159,8 +160,7 @@ def plot_boxplot(data: dict[str, np.ndarray], title: str, out_path: Path) -> Non
         values,
         patch_artist=True,
         notch=False,
-        showfliers=True,
-        flierprops=dict(marker=".", markersize=1.5, alpha=0.3, color="gray"),
+        showfliers=False,
         medianprops=dict(color="black", linewidth=1.5),
         whiskerprops=dict(linewidth=1.0),
         capprops=dict(linewidth=1.0),
@@ -170,12 +170,8 @@ def plot_boxplot(data: dict[str, np.ndarray], title: str, out_path: Path) -> Non
         patch.set_facecolor(color)
         patch.set_alpha(0.7)
 
-    for i, (vals, med_line) in enumerate(zip(values, bp["medians"]), start=1):
-        ax.text(i, med_line.get_ydata()[1], f"{np.median(vals):.4f}",
-                ha="center", va="bottom", fontsize=7.5, color="black")
-
     _apply_common_style(ax, labels)
-    ax.set_title(title, fontsize=11)
+    ax.set_title(title, fontsize=14)
 
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -208,12 +204,8 @@ def plot_violin(data: dict[str, np.ndarray], title: str, out_path: Path) -> None
         parts[key].set_linewidth(1.2)
         parts[key].set_color("black")
 
-    for i, vals in enumerate(values, start=1):
-        ax.text(i, float(np.median(vals)), f"{np.median(vals):.4f}",
-                ha="center", va="bottom", fontsize=7.5, color="black")
-
     _apply_common_style(ax, labels)
-    ax.set_title(title, fontsize=11)
+    ax.set_title(title, fontsize=14)
 
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
