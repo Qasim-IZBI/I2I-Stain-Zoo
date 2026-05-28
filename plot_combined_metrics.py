@@ -51,7 +51,7 @@ MODEL_SIZE_LABELS  = {"small": "S generator", "medium": "M generator", "large": 
 
 FONT_TITLE  = 14
 FONT_LABEL  = 14
-FONT_TICK   = 13
+FONT_TICK   = 12
 FONT_LEGEND = 14
 
 EVAL_METRICS = {
@@ -213,7 +213,7 @@ def pick_best_psr(df: pd.DataFrame) -> pd.DataFrame:
 
 def _offsets():
     within_spacing = 0.055   # gap between model-size markers within one data group
-    group_spacing  = 0.22    # gap between data-fraction group centres
+    group_spacing  = 0.30    # gap between data-fraction group centres
     result = {}
     for gi, ds in enumerate(DATASIZES):
         group_center = (gi - 1) * group_spacing        # −0.22, 0, +0.22
