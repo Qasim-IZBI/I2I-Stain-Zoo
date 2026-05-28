@@ -49,10 +49,10 @@ MODEL_SIZE_MARKERS = {"small": "o", "medium": "s", "large": "^"}
 DATA_SIZE_LABELS   = {"small": "25% data", "medium": "50% data", "large": "100% data"}
 MODEL_SIZE_LABELS  = {"small": "S generator", "medium": "M generator", "large": "L generator"}
 
-FONT_TITLE  = 16
-FONT_LABEL  = 16
-FONT_TICK   = 16
-FONT_LEGEND = 16
+FONT_TITLE  = 14
+FONT_LABEL  = 14
+FONT_TICK   = 14
+FONT_LEGEND = 14
 
 EVAL_METRICS = {
     "patch_ssim": {
@@ -414,6 +414,11 @@ def plot_combined(eval_df: pd.DataFrame, eval_wsi: dict,
     # Remove x-axis tick labels from top row (shared with bottom row)
     for ax in axes[:2]:
         ax.set_xticklabels([])
+
+    # Move right-column y-axes to the right so labels don't overlap left column
+    for ax in [axes[1], axes[3]]:
+        ax.yaxis.set_label_position("right")
+        ax.yaxis.tick_right()
 
     # Legend — placed in the right margin
     fig.legend(
