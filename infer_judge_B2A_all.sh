@@ -52,7 +52,7 @@ PROJECT_ROOT=I2I-Stain-Zoo
 # -----------------------------
 # Fixed CycleGAN judge checkpoint (same for all 6 models)
 # -----------------------------
-JUDGE_CKPT="/work2/bz66izin-VSproject/ensemble/cyclegan/data_large/model_medium/models/model_01/checkpoints/step_750000.pt"
+JUDGE_CKPT="/work2/bz66izin-VSproject/Outputs_noamp/cyclegan/results/data_large/model_medium/checkpoints/step_750000.pt"
 
 DATA_RANGE="1,5"   # testA WSI folders 001–005
 
