@@ -9,7 +9,7 @@
 #SBATCH --partition=paula
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
-#SBATCH --array=0-29   # 30 jobs = 6 models × 5 ensemble members
+#SBATCH --array=0-59   # 60 jobs = 6 models × 10 ensemble members
 
 # Runs CycleGAN B2A (judge model) on the A→B inference output of every model.
 # Produces judge-reconstructed A' tiles used for judge_regen_error calibration.
@@ -23,12 +23,12 @@
 #   {MODEL_ROOT}/judge_B2A/model_{MEMBER}/{NNN}/images/*.tif  (judge A' tiles)
 #
 # Array layout
-# tasks 0–4   → cyclegan        (model_medium)  members 01–05
-# tasks 5–9   → unit            (model_medium)  members 01–05
-# tasks 10–14 → munit           (model_medium)  members 01–05
-# tasks 15–19 → dclgan          (model_small)   members 01–05
-# tasks 20–24 → uvcgan          (model_small)   members 01–05
-# tasks 25–29 → cyclediffusion  (model_small)   members 01–05
+# tasks  0–9  → cyclegan        (model_medium)  members 01–10
+# tasks 10–19 → unit            (model_medium)  members 01–10
+# tasks 20–29 → munit           (model_medium)  members 01–10
+# tasks 30–39 → dclgan          (model_small)   members 01–10
+# tasks 40–49 → uvcgan          (model_small)   members 01–10
+# tasks 50–59 → cyclediffusion  (model_small)   members 01–10
 
 set -eo pipefail
 
@@ -57,13 +57,13 @@ JUDGE_CKPT="/work2/bz66izin-VSproject/ensemble/cyclegan/data_large/model_medium/
 DATA_RANGE="1,5"   # testA WSI folders 001–005
 
 # -----------------------------
-# 2D decomposition: 6 models × 5 members
+# 2D decomposition: 6 models × 10 members
 # -----------------------------
-N_MEMBERS=5
+N_MEMBERS=10
 MODEL_IDX=$(( SLURM_ARRAY_TASK_ID / N_MEMBERS ))   # 0 … 5
-MEMBER_IDX=$(( SLURM_ARRAY_TASK_ID % N_MEMBERS ))  # 0 … 4
+MEMBER_IDX=$(( SLURM_ARRAY_TASK_ID % N_MEMBERS ))  # 0 … 9
 
-MEMBER=$(printf "%02d" $(( MEMBER_IDX + 1 )))      # 01 … 05
+MEMBER=$(printf "%02d" $(( MEMBER_IDX + 1 )))      # 01 … 10
 
 # Per-model config
 # Index:          0          1      2       3        4        5
