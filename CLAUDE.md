@@ -150,6 +150,25 @@ fractions in the scaling study. Epistemic variance is computed within a block.
 The last block needs folders 031–035, which are outside the 001–030 training
 set; a pre-flight check fails the job immediately with the missing paths rather
 than letting it die inside the dataloader hours later.
+
+Inference over the trained members — same 50-job decomposition, so array indices
+line up one-to-one with the training jobs:
+
+```bash
+sbatch scripts/infer_ensemble_cyclegan_ugac.sh       # A→B + aleatoric maps
+sbatch scripts/infer_ensemble_cyclegan_ugac_B2A.sh   # B→A, for regen error
+```
+
+| step | reads | writes |
+|---|---|---|
+| train | trainA/trainB block | `{block}/model_small/models/model_{NN}/` |
+| A2B | that checkpoint | `{block}/model_small/inference/model_{NN}/` + `aleatoric_npy/` |
+| B2A | the A2B tiles | `{block}/model_small/inference_B2A/model_{NN}/` |
+
+`--save_aleatoric` needs no architecture flag: `ugac` is restored from the
+checkpoint, and inference.py refuses a non-UGAC checkpoint rather than emitting
+garbage. Epistemic uncertainty is a separate step — run `uncertainty.py` across
+the ten `model_{01..10}` directories *within one block*.
 Kept separate from `ensemble/` because the UGAC objective differs from the
 vanilla runs stored there.
 
