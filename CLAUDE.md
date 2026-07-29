@@ -465,7 +465,7 @@ giving A' tiles needed for regen-error evaluation without re-running any model i
 at eval time. 18-job array: 6 models × 3 data sizes, `model_small` only.
 
 ```bash
-sbatch infer_B2A_all.sh
+sbatch scripts/infer_B2A_all.sh
 ```
 
 Input per job: `{INFER_BASE}/{model}/results/data_{datasize}/model_small/inference/` (flat B' tiles)
@@ -480,7 +480,7 @@ Computes cycle regen-error MAE for all 6 models using precomputed A' tiles from
 18-job array: 6 models × 3 data sizes, `model_small` only.
 
 ```bash
-sbatch eval_regen_B2A_all.sh
+sbatch scripts/eval_regen_B2A_all.sh
 ```
 
 Input: `inference_B2A/` flat A' tiles (from `infer_B2A_all.sh`); original testA tiles for pairing.
@@ -675,7 +675,7 @@ python aggregate_calibration.py \
     --outdir ./calibration_combined/
 
 # SLURM (single job — loops over all 6 models internally)
-sbatch aggregate_calibration.sh
+sbatch scripts/aggregate_calibration.sh
 ```
 
 Outputs per model in `{outdir}/{model}/`:
@@ -758,13 +758,13 @@ Segmentation uses tile mode with `--pad_border 256` (Dataset214_SR, folds 1–4)
 
 ```bash
 # Generated SR (54-job arrays — 6 models × 3 model sizes × 3 data sizes)
-sbatch infer_small_models.sh          # inference tiles → {inference}/{model}/.../inference/
-sbatch segment_psr_all_configs.sh     # tile segmentation (padded) → .../tile_masks/{NNN}/images/
-sbatch recon_masks_all_configs.sh     # stitch masks → .../psr_masks_wsi/*.tif
+sbatch scripts/infer_small_models.sh          # inference tiles → {inference}/{model}/.../inference/
+sbatch scripts/segment_psr_all_configs.sh     # tile segmentation (padded) → .../tile_masks/{NNN}/images/
+sbatch scripts/recon_masks_all_configs.sh     # stitch masks → .../psr_masks_wsi/*.tif
 
 # Real SR testB (single jobs)
-sbatch segment_psr_real.sh            # tile segmentation (padded) → psr_masks/real/tile_masks/
-sbatch recon_masks_real.sh            # stitch masks → psr_masks/real/psr_masks_wsi/*.tif
+sbatch scripts/segment_psr_real.sh            # tile segmentation (padded) → psr_masks/real/tile_masks/
+sbatch scripts/recon_masks_real.sh            # stitch masks → psr_masks/real/psr_masks_wsi/*.tif
 
 # Compare distributions (all generated models vs real)
 python compare_psr.py \
@@ -912,7 +912,7 @@ python plot_combined_metrics.py \
     --outdir     ./combined_metrics_plot/
 
 # SLURM
-sbatch plot_combined_metrics.sh
+sbatch scripts/plot_combined_metrics.sh
 ```
 
 Outputs in `--outdir`:
@@ -984,7 +984,7 @@ python plot_ranking_correlation.py \
     --csv    ./combined_metrics_plot/combined_metrics.csv \
     --outdir ./combined_metrics_plot/
 
-sbatch plot_ranking_correlation.sh
+sbatch scripts/plot_ranking_correlation.sh
 ```
 
 Outputs in `--outdir`:

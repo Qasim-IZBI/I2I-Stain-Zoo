@@ -123,7 +123,6 @@ if [ ! -f "${OUT_DIR}/fid.csv" ]; then
         --metric               fid \
         --path_real            "${TEST_B}" \
         --path_fake            "${FAKE_DIR}" \
-        --backend              inception \
         --device               cuda \
         --min_tissue_fraction  "${MIN_TISSUE_FRACTION}" \
         --save_csv             "${OUT_DIR}/fid.csv"

@@ -1,7 +1,6 @@
 # infer.py
 import os
 import argparse
-import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import DataLoader
@@ -10,132 +9,19 @@ from torchvision.utils import save_image
 from utils import get_device
 
 from datasets.single_domain_dataset import SingleDomainDataset
-from datasets.target_only_dataset import TargetOnlyDataset
 from datasets.transforms import default_train_transform
 
 from models.cyclegan import CycleGAN, CycleGANConfig
 from models.unit import UNIT, UNITConfig
 from models.munit import MUNIT, MUNITConfig
 from models.dclgan import DCLGAN, DCLGANConfig
-from models.miudiff import MIUDiff, MIUDiffConfig
 from models.uvcgan import UVCGAN, UVCGANConfig
-from models.unitddpm import UNITDDPM, UNITDDPMConfig
 from models.cyclediffusion import CycleDiffusion, CycleDiffusionConfig
-from models.unsb import UNSB, UNSBConfig
 
 
-# =============================================================================
-# Reinhard LAB colour transfer helpers
-# =============================================================================
-
-def _rgb_to_lab(img):
-    """[H,W,3] float32 [0,1] -> CIE LAB"""
-    img = img.clip(0, 1)
-    lin = np.where(img > 0.04045,
-                   ((img + 0.055) / 1.055) ** 2.4,
-                   img / 12.92)
-    M = np.array([[0.4124564, 0.3575761, 0.1804375],
-                  [0.2126729, 0.7151522, 0.0721750],
-                  [0.0193339, 0.1191920, 0.9503041]], dtype=np.float32)
-    xyz = (lin.reshape(-1, 3) @ M.T).reshape(img.shape)
-    xyz /= np.array([0.95047, 1.00000, 1.08883], dtype=np.float32)
-    eps, kappa = 0.008856, 903.3
-    f = np.where(xyz > eps, np.cbrt(xyz.clip(0)), (kappa * xyz + 16.0) / 116.0)
-    L = 116.0 * f[..., 1] - 16.0
-    a = 500.0 * (f[..., 0] - f[..., 1])
-    b = 200.0 * (f[..., 1] - f[..., 2])
-    return np.stack([L, a, b], axis=-1)
-
-
-def _lab_to_rgb(lab):
-    """CIE LAB [H,W,3] -> [H,W,3] float32 [0,1]"""
-    L, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
-    fy = (L + 16.0) / 116.0
-    fx = a / 500.0 + fy
-    fz = fy - b / 200.0
-    eps, kappa = 0.008856, 903.3
-    x = np.where(fx ** 3 > eps, fx ** 3, (116.0 * fx - 16.0) / kappa)
-    y = np.where(L > eps * kappa, ((L + 16.0) / 116.0) ** 3, L / kappa)
-    z = np.where(fz ** 3 > eps, fz ** 3, (116.0 * fz - 16.0) / kappa)
-    xyz = np.stack([x, y, z], axis=-1) * np.array([0.95047, 1.00000, 1.08883], dtype=np.float32)
-    M_inv = np.array([[ 3.2404542, -1.5371385, -0.4985314],
-                      [-0.9692660,  1.8760108,  0.0415560],
-                      [ 0.0556434, -0.2040259,  1.0572252]], dtype=np.float32)
-    lin = (xyz.reshape(-1, 3) @ M_inv.T).reshape(xyz.shape).clip(0, None)
-    rgb = np.where(lin > 0.0031308,
-                   1.055 * lin ** (1.0 / 2.4) - 0.055,
-                   12.92 * lin)
-    return rgb.clip(0, 1)
-
-
-def _load_color_ref_stats(path, data_range=None):
-    """Compute Reinhard LAB stats from a single image file or a directory of tiles.
-
-    Directory mode: if data_range=(start, end) is given, loads from
-    {path}/{i:03d}/images/ for i in [start, end] (same convention as --data_range).
-    Without data_range, walks all images/ subdirectories (excludes masks/);
-    falls back to a flat directory scan if no images/ subdirs are found.
-    Stats are the macro-average of per-tile means and stds.
-    """
-    supported = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.webp'}
-
-    if os.path.isfile(path):
-        img = np.array(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
-        lab = _rgb_to_lab(img)
-        flat = lab.reshape(-1, 3)
-        return {"mean": flat.mean(axis=0), "std": flat.std(axis=0) + 1e-6}
-
-    # --- directory ---
-    image_files = []
-    if data_range is not None:
-        start, end = data_range
-        for i in range(start, end + 1):
-            folder = os.path.join(path, f"{i:03d}", "images")
-            if os.path.isdir(folder):
-                for f in sorted(os.listdir(folder)):
-                    if os.path.splitext(f)[1].lower() in supported:
-                        image_files.append(os.path.join(folder, f))
-    else:
-        # prefer images/ subdirs to exclude binary mask tiles
-        for root, _, files in os.walk(path):
-            if os.path.basename(root) == "images":
-                for f in sorted(files):
-                    if os.path.splitext(f)[1].lower() in supported:
-                        image_files.append(os.path.join(root, f))
-        # fallback: flat directory
-        if not image_files:
-            for f in sorted(os.listdir(path)):
-                fp = os.path.join(path, f)
-                if os.path.isfile(fp) and os.path.splitext(f)[1].lower() in supported:
-                    image_files.append(fp)
-
-    if not image_files:
-        raise ValueError(f"--color_ref {path!r}: no supported image files found.")
-
-    means, stds = [], []
-    for fp in image_files:
-        img = np.array(Image.open(fp).convert("RGB"), dtype=np.float32) / 255.0
-        lab = _rgb_to_lab(img)
-        flat = lab.reshape(-1, 3)
-        means.append(flat.mean(axis=0))
-        stds.append(flat.std(axis=0))
-
-    mean = np.stack(means).mean(axis=0)
-    std  = np.stack(stds).mean(axis=0) + 1e-6
-    print(f"[color_ref] Computed LAB stats from {len(image_files)} tiles.")
-    return {"mean": mean, "std": std}
-
-
-def save_tile(y, path, color_ref_stats=None):
-    """Save a [-1,1] NCHW tensor tile with optional Reinhard colour normalisation."""
+def save_tile(y, path):
+    """Save a [-1,1] NCHW tensor tile as an image in [0,1]."""
     img = (y.squeeze(0).permute(1, 2, 0).cpu().float().numpy().clip(-1, 1) + 1.0) / 2.0
-    if color_ref_stats is not None:
-        lab = _rgb_to_lab(img)
-        for c in range(3):
-            m = lab[..., c].mean()
-            s = lab[..., c].std() + 1e-6
-            lab[..., c] = (lab[..., c] - m) / s * color_ref_stats["std"][c] + color_ref_stats["mean"][c]
-        img = _lab_to_rgb(lab)
     t = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).clamp(0, 1)
     save_image(t, path)
 
@@ -164,47 +50,9 @@ def load_model(args, device):
         cfg = DCLGANConfig(**saved_cfg) if saved_cfg else DCLGANConfig()
         model = DCLGAN(cfg)
 
-    elif args.model == "miudiff":
-        miu_stage = args.miu_stage
-        if saved_cfg:
-            ckpt_stage = saved_cfg.get("stage", "finetune")
-            if miu_stage == "finetune" and ckpt_stage == "pretrain":
-                print("[WARN] Checkpoint was saved at stage 'pretrain' but --miu_stage finetune "
-                      "was requested. eps_cond has random weights — output will be garbage. "
-                      "Did you mean --miu_stage pretrain?")
-            # Override runtime-only params from CLI args
-            saved_cfg["stage"] = miu_stage
-            saved_cfg["sample_steps"] = args.miu_steps
-            saved_cfg["guidance_scale"] = args.miu_guidance
-            saved_cfg["miu_pcl"] = args.miu_pcl
-            saved_cfg["pcl_refine_steps"] = args.pcl_refine_steps
-            saved_cfg["pcl_refine_lr"] = args.pcl_refine_lr
-            if args.miu_cond_type is not None:
-                saved_cfg["cond_type"] = args.miu_cond_type
-            cfg = MIUDiffConfig(**saved_cfg)
-        else:
-            cfg = MIUDiffConfig(
-                stage=miu_stage,
-                sample_steps=args.miu_steps,
-                guidance_scale=args.miu_guidance,
-                miu_pcl=args.miu_pcl,
-                pcl_refine_steps=args.pcl_refine_steps,
-                pcl_refine_lr=args.pcl_refine_lr,
-            )
-        model = MIUDiff(cfg)
-
     elif args.model == "uvcgan":
         cfg = UVCGANConfig(**saved_cfg) if saved_cfg else UVCGANConfig()
         model = UVCGAN(cfg)
-
-    elif args.model == "unitddpm":
-        if saved_cfg:
-            saved_cfg["stage"] = args.unitddpm_stage
-            saved_cfg["sample_steps"] = args.unitddpm_steps
-            cfg = UNITDDPMConfig(**saved_cfg)
-        else:
-            cfg = UNITDDPMConfig(stage=args.unitddpm_stage, sample_steps=args.unitddpm_steps)
-        model = UNITDDPM(cfg)
 
     elif args.model == "cyclediffusion":
         if saved_cfg:
@@ -214,14 +62,6 @@ def load_model(args, device):
             cfg = CycleDiffusionConfig(sample_steps=args.cd_steps)
         model = CycleDiffusion(cfg)
 
-    elif args.model == "unsb":
-        if saved_cfg:
-            saved_cfg["sample_steps"] = args.unsb_steps
-            cfg = UNSBConfig(**saved_cfg)
-        else:
-            cfg = UNSBConfig(sample_steps=args.unsb_steps)
-        model = UNSB(cfg)
-
     else:
         raise ValueError(args.model)
 
@@ -229,12 +69,7 @@ def load_model(args, device):
         print(f"Restored {args.model} config from checkpoint")
 
     sd = ckpt["model"] if "model" in ckpt else ckpt
-    # strict=False for diffusion models:
-    #   miudiff: pretrain ckpt lacks eps_cond keys; stage-3 ckpt has PCL nets not used at inference.
-    #   unitddpm: pretrain ckpt lacks eps_cond keys.
-    _non_strict = {"miudiff", "unitddpm"}
-    strict = args.model not in _non_strict
-    model.load_state_dict(sd, strict=strict)
+    model.load_state_dict(sd, strict=True)
     model.to(device).eval()
     return model
 
@@ -242,8 +77,8 @@ def load_model(args, device):
 def main():
     parser = argparse.ArgumentParser("Unified I2I Inference")
 
-    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "miudiff", "uvcgan",
-                                            "unitddpm", "cyclediffusion", "unsb"], required=True)
+    parser.add_argument("--model", choices=["cyclegan", "unit", "munit", "dclgan", "uvcgan",
+                                            "cyclediffusion"], required=True)
     parser.add_argument("--direction", choices=["A2B", "B2A"], required=True)
     parser.add_argument("--data", type=str, required=True)
     parser.add_argument("--data_range", type=str, default=None,
@@ -256,59 +91,18 @@ def main():
                              "most recently written tile (guards against partial writes "
                              "on interruption).")
 
-    # Colour normalisation (all models)
-    parser.add_argument("--color_ref", type=str, default=None,
-                        help="Path to a representative target-domain tile OR a directory of "
-                             "tiles. Single file: stats from that tile. Directory: macro-average "
-                             "of per-tile LAB stats (use --color_ref_data_range to limit WSIs). "
-                             "Reinhard LAB transfer is applied to every output tile.")
-    parser.add_argument("--color_ref_data_range", type=str, default=None,
-                        help="When --color_ref is a directory, limit to numbered WSI folders "
-                             "e.g. '1,10' loads 001/images/ through 010/images/.")
-
     # MUNIT
     parser.add_argument("--style_dim", type=int, default=8)
     parser.add_argument("--num_samples", type=int, default=1)
     parser.add_argument("--style_image", type=str, default=None,
                         help="Reference image to extract style from (MUNIT only)")
 
-    # MIU-Diff
-    parser.add_argument("--miu_cond_type", type=str, default=None,
-                        help="Override cond_type from checkpoint (gray|sobel). "
-                             "Usually not needed — restored automatically from the checkpoint.")
-    parser.add_argument("--miu_stage", choices=["pretrain", "finetune"], default="finetune",
-                        help="pretrain: unconditional sampling with eps_uncond only; "
-                             "finetune: conditional A→B with MI guidance (default)")
-    parser.add_argument("--miu_steps", type=int, default=300)
-    parser.add_argument("--miu_guidance", type=float, default=1.0)
-    parser.add_argument("--miu_pcl", action="store_true")
-    parser.add_argument("--pcl_refine_steps", type=int, default=0)
-    parser.add_argument("--pcl_refine_lr", type=float, default=0.05)
-    parser.add_argument("--num_uncond_samples", type=int, default=None,
-                        help="MIUDiff pretrain only: generate this many unconditional samples "
-                             "from pure noise instead of reading from --data")
-    parser.add_argument("--seed", type=int, default=None,
-                        help="Fix the global RNG seed for deterministic MIUDiff sampling.")
-    parser.add_argument("--miu_noise_level", type=float, default=1.0,
-                        help="SDEdit-style init for MIUDiff finetune (0–1). "
-                             "1.0 = pure noise (default). Note: values < 1.0 cause HE colour "
-                             "bleed for cross-domain (H&E→SR) translation; use --color_ref "
-                             "instead for colour consistency.")
-
-    # ---- UNIT-DDPM inference ----
-    parser.add_argument("--unitddpm_stage", choices=["pretrain", "finetune"], default="finetune",
-                        help="pretrain: unconditional sampling (eps_uncond); "
-                             "finetune: conditional A→B (eps_cond) [default]")
-    parser.add_argument("--unitddpm_steps", type=int, default=200,
-                        help="DDIM sampling steps for UNIT-DDPM")
-
     # ---- CycleDiffusion inference ----
     parser.add_argument("--cd_steps", type=int, default=200,
-                        help="DDIM inversion+decode steps for CycleDiffusion")
+                        help="DDIM inversion + decode steps for CycleDiffusion")
 
-    # ---- UNSB inference ----
-    parser.add_argument("--unsb_steps", type=int, default=200,
-                        help="DDIM sampling steps for UNSB")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Fix the global RNG seed for deterministic sampling.")
 
     args = parser.parse_args()
 
@@ -319,12 +113,6 @@ def main():
         torch.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
 
-    color_ref_range = None
-    if args.color_ref_data_range:
-        parts = args.color_ref_data_range.split(",")
-        color_ref_range = (int(parts[0]), int(parts[1]))
-    color_ref_stats = _load_color_ref_stats(args.color_ref, color_ref_range) if args.color_ref else None
-
     transform = default_train_transform(image_size=256)
 
     data_range = None
@@ -332,22 +120,8 @@ def main():
         parts = args.data_range.split(",")
         data_range = (int(parts[0]), int(parts[1]))
 
-    # MIUDiff pretrain with --num_uncond_samples: skip dataset entirely
-    uncond_count_mode = (
-        args.model == "miudiff"
-        and args.miu_stage == "pretrain"
-        and args.num_uncond_samples is not None
-    )
-
-    if uncond_count_mode:
-        loader = None
-    elif args.model == "miudiff" and args.miu_stage == "pretrain":
-        # Use TargetOnlyDataset so output filenames are anchored to real B tiles
-        dataset = TargetOnlyDataset(args.data, transform=transform, data_range=data_range)
-        loader = DataLoader(dataset, batch_size=1, shuffle=False)
-    else:
-        dataset = SingleDomainDataset(args.data, transform=transform, data_range=data_range)
-        loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    dataset = SingleDomainDataset(args.data, transform=transform, data_range=data_range)
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
     os.makedirs(args.outdir, exist_ok=True)
 
@@ -369,56 +143,29 @@ def main():
         else:
             print("[resume] No existing output tiles found; starting from the beginning.")
 
-    # ---- MIUDiff pretrain, count-based (no dataset) ----
-    if uncond_count_mode:
-        if args.miu_guidance != 1.0:
-            print("[WARN] --miu_guidance is ignored for --miu_stage pretrain.")
-        for i in range(args.num_uncond_samples):
-            y = model.sample_uncond(batch_size=1)
-            save_tile(y, f"{args.outdir}/uncond_{i:04d}.tif", color_ref_stats)
-        return
-
     with torch.no_grad():
         for i, batch in enumerate(loader):
-            # Unpack: SingleDomainDataset yields (tensor, path);
-            #         TargetOnlyDataset yields {"B": tensor, "path_B": str}
-            if isinstance(batch, dict):
-                x    = batch["B"].to(device)
-                path = batch["path_B"]
-            else:
-                x, path = batch
-                x = x.to(device)
+            # SingleDomainDataset yields (tensor, path)
+            x, path = batch
+            x = x.to(device)
 
             rel  = os.path.relpath(path[0], args.data)
             stem = os.path.splitext(rel)[0]   # e.g. "001/images/0000001"
             os.makedirs(os.path.join(args.outdir, os.path.dirname(stem)), exist_ok=True)
-
-            if resume_skip:
-                # Determine the primary output path for this tile so we can skip it.
-                if args.model == "miudiff" and args.miu_stage == "pretrain":
-                    _out = os.path.abspath(f"{args.outdir}/{stem}_uncond.tif")
-                elif args.model == "unitddpm" and args.unitddpm_stage == "pretrain":
-                    _out = os.path.abspath(f"{args.outdir}/{stem}_uncond.tif")
-                elif args.model == "munit" and args.num_samples > 1:
-                    _out = os.path.abspath(f"{args.outdir}/{stem}_0.tif")
-                else:
-                    _out = os.path.abspath(f"{args.outdir}/{stem}.tif")
-                if _out in resume_skip:
-                    continue
 
             if args.model == "cyclegan":
                 if args.direction == "A2B":
                     y = model.forward_A2B(x)
                 else:
                     y = model.forward_B2A(x)
-                save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
+                save_tile(y, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "unit":
                 if args.direction == "A2B":
                     y, _ = model.forward_A2B(x)
                 else:
                     y, _ = model.forward_B2A(x)
-                save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
+                save_tile(y, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "munit":
                 if args.direction == "A2B":
@@ -428,13 +175,13 @@ def main():
                         ref = ref.unsqueeze(0).to(device)
                         _, s = model.encode_B(ref)
                         y = model.decode_B(c, s)
-                        save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
+                        save_tile(y, f"{args.outdir}/{stem}.tif")
                     else:
                         for k in range(args.num_samples):
                             s = torch.randn(1, model.cfg.style_dim, device=device)
                             y = model.decode_B(c, s)
                             suffix = f"_{k}" if args.num_samples > 1 else ""
-                            save_tile(y, f"{args.outdir}/{stem}{suffix}.tif", color_ref_stats)
+                            save_tile(y, f"{args.outdir}/{stem}{suffix}.tif")
                 else:
                     c, _ = model.encode_B(x)
                     if args.style_image:
@@ -442,65 +189,34 @@ def main():
                         ref = ref.unsqueeze(0).to(device)
                         _, s = model.encode_A(ref)
                         y = model.decode_A(c, s)
-                        save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
+                        save_tile(y, f"{args.outdir}/{stem}.tif")
                     else:
                         for k in range(args.num_samples):
                             s = torch.randn(1, model.cfg.style_dim, device=device)
                             y = model.decode_A(c, s)
                             suffix = f"_{k}" if args.num_samples > 1 else ""
-                            save_tile(y, f"{args.outdir}/{stem}{suffix}.tif", color_ref_stats)
+                            save_tile(y, f"{args.outdir}/{stem}{suffix}.tif")
 
             elif args.model == "dclgan":
                 if args.direction == "A2B":
                     y = model.forward_A2B(x)
                 else:
                     y = model.forward_B2A(x)
-                save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
-
-            elif args.model == "miudiff":
-                if args.miu_stage == "pretrain":
-                    if args.miu_guidance != 1.0:
-                        print("[WARN] --miu_guidance is ignored for --miu_stage pretrain.")
-                    y = model.sample_uncond(batch_size=1)
-                    save_tile(y, f"{args.outdir}/{stem}_uncond.tif", color_ref_stats)
-                else:
-                    y = model.sample_A2B(x, noise_level=args.miu_noise_level)
-                    save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
+                save_tile(y, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "uvcgan":
                 if args.direction == "A2B":
                     y = model.forward_A2B(x)
                 else:
                     y = model.forward_B2A(x)
-                save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
-
-            elif args.model == "unitddpm":
-                if args.unitddpm_stage == "pretrain":
-                    y = model.forward_B2A(x)  # unconditional sample (ignores x content)
-                    save_tile(y, f"{args.outdir}/{stem}_uncond.tif", color_ref_stats)
-                else:
-                    if args.direction == "A2B":
-                        y = model.forward_A2B(x)
-                    else:
-                        y = model.forward_B2A(x)
-                    save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
+                save_tile(y, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "cyclediffusion":
                 if args.direction == "A2B":
                     y = model.forward_A2B(x)
                 else:
                     y = model.forward_B2A(x)
-                save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
-
-            elif args.model == "unsb":
-                if args.direction == "A2B":
-                    y = model.forward_A2B(x)
-                else:
-                    # B2A not supported (score net is directional); emit a warning
-                    print(f"[WARN] UNSB was trained A→B; B2A inference will produce domain-B outputs. "
-                          f"Train a separate B2A model for the reverse direction.")
-                    y = model.forward_A2B(x)
-                save_tile(y, f"{args.outdir}/{stem}.tif", color_ref_stats)
+                save_tile(y, f"{args.outdir}/{stem}.tif")
 
 
 

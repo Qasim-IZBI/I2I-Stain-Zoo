@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tifffile
-from scipy.stats import ks_2samp, wasserstein_distance, pearsonr, spearmanr
+from scipy.stats import pearsonr, spearmanr
 
 
 def compute_psr_fraction(mask_path: Path, label_tissue: int, label_psr: int):
@@ -38,18 +38,6 @@ def load_condition(mask_dir: Path, label_tissue: int, label_psr: int,
             continue
         records.append((normalize_stem(p.stem, strip_prefix), frac))
     return records
-
-
-def bootstrap_wasserstein(a: np.ndarray, b: np.ndarray, n: int = 1000, seed: int = 0):
-    """Bootstrap CI (2.5th, 50th, 97.5th percentile) for Wasserstein-1 distance.
-    Resampling is done at the WSI level to respect the correlation structure."""
-    rng = np.random.default_rng(seed)
-    stats = []
-    for _ in range(n):
-        sa = rng.choice(a, size=len(a), replace=True)
-        sb = rng.choice(b, size=len(b), replace=True)
-        stats.append(wasserstein_distance(sa, sb))
-    return np.percentile(stats, [2.5, 50, 97.5])
 
 
 def plot_paired_scatter(real_dict: dict, gen_dicts: dict, outpath: Path) -> None:
@@ -190,10 +178,10 @@ def plot_comparison(conditions: dict, real_label: str, outpath: Path) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare PSR-positive area fraction distributions between real and "
+        description="Compare PSR-positive area fraction (CPA) between real and "
                     "generated SR segmentation masks (output of segment_psr.py). "
-                    "Computes Wasserstein-1, KS test, and mean difference vs. real SR, "
-                    "with bootstrap confidence intervals on Wasserstein distance."
+                    "Reports paired CPA MAE, Pearson r and Spearman rho over WSIs "
+                    "matched by stem."
     )
     parser.add_argument("--masks_real", type=Path, required=True,
                         help="Directory of WSI mask TIFs for real SR (from segment_psr.py)")
@@ -209,8 +197,6 @@ def main():
                         help="nnUNet label index for tissue class [%(default)s]")
     parser.add_argument("--label_psr", type=int, default=2,
                         help="nnUNet label index for PSR-positive class [%(default)s]")
-    parser.add_argument("--n_bootstrap", type=int, default=1000,
-                        help="Bootstrap iterations for Wasserstein-1 CI [%(default)s]")
     parser.add_argument("--strip_prefix", action="store_true",
                         help="Strip the first '_'-delimited token from filenames before "
                              "matching (e.g. SR_slide.tif and HE_slide.tif both become "
@@ -276,14 +262,6 @@ def main():
     for label, fracs in conditions.items():
         if label == "real":
             continue
-        # distribution-level metrics (unpaired)
-        w1            = float(wasserstein_distance(real_fracs, fracs))
-        ci            = bootstrap_wasserstein(real_fracs, fracs, n=args.n_bootstrap)
-        ks_stat, ks_p = ks_2samp(real_fracs, fracs)
-        mean_diff     = float(fracs.mean() - real_fracs.mean())
-        real_std      = real_fracs.std(ddof=1) if len(real_fracs) > 1 else 0
-        std_ratio     = float(fracs.std(ddof=1) / real_std) if real_std > 0 and len(fracs) > 1 else None
-
         # paired metrics (matched by WSI stem)
         gen_dict     = gen_dicts[label]
         common_stems = sorted(set(real_dict) & set(gen_dict))
@@ -306,14 +284,6 @@ def main():
             r = r_p = rho = rho_p = mae_paired = mean_paired_diff = None
 
         pairwise[label] = {
-            "wasserstein_1":                          w1,
-            "wasserstein_bootstrap_95ci":             {"low": float(ci[0]),
-                                                       "median": float(ci[1]),
-                                                       "high": float(ci[2])},
-            "ks_statistic":                           float(ks_stat),
-            "ks_pvalue":                              float(ks_p),
-            "mean_diff_generated_minus_real":         mean_diff,
-            "std_ratio_generated_over_real":          std_ratio,
             "n_matched":                              n_matched,
             "pearson_r":                              float(r)   if r   is not None else None,
             "pearson_pvalue":                         float(r_p) if r_p is not None else None,

@@ -7,10 +7,9 @@ cycle-reconstruction error maps (from evaluation.py --metric regen_error
 Reports:
   - Within-tile Spearman/Pearson rho   "are uncertain pixels the wrong pixels?"
   - Across-tile Pearson/Spearman rho   "are uncertain tiles the wrong tiles?"
-  - AUSE + sparsification curve        standard depth-uncertainty metric
   - Reliability diagram + ECE          monotonicity of error vs uncertainty bin
 
-Outputs (mirrors compare_psr.py / cross_stain_consistency.py convention):
+Outputs (mirrors compare_psr.py convention):
   per_tile.csv, per_wsi.csv (if --tiles_metadata given),
   summary.json, calibration.png
 
@@ -129,34 +128,6 @@ def build_stem_to_wsi(tiles_metadata_root: Path) -> dict[str, str]:
 # Calibration metrics
 # ---------------------------------------------------------------------------
 
-def sparsification_curve(u: np.ndarray, e: np.ndarray, n_steps: int = 100) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return (fractions_removed, S_pred, S_oracle).
-
-    S_pred(k):   mean error on the (1-k) least-uncertain pixels.
-    S_oracle(k): mean error on the (1-k) lowest-error pixels (oracle ordering).
-    A perfectly calibrated u matches the oracle (AUSE = integral of S_pred - S_oracle = 0).
-    """
-    n = u.size
-    e_by_u = e[np.argsort(u)]      # ascending u → keep prefix as we remove top
-    e_by_e = e[np.argsort(e)]      # ascending e
-    fractions = np.linspace(0.0, 1.0, n_steps + 1)
-
-    # Cumulative means computed once via cumsum (O(n)) then indexed (O(n_steps))
-    csum_u = np.cumsum(e_by_u)
-    csum_e = np.cumsum(e_by_e)
-    s_pred = np.empty_like(fractions)
-    s_oracle = np.empty_like(fractions)
-    for i, k in enumerate(fractions):
-        keep = max(1, int(round((1.0 - k) * n)))
-        s_pred[i] = csum_u[keep - 1] / keep
-        s_oracle[i] = csum_e[keep - 1] / keep
-    return fractions, s_pred, s_oracle
-
-
-def ause(fractions: np.ndarray, s_pred: np.ndarray, s_oracle: np.ndarray) -> float:
-    return float(np.trapz(s_pred - s_oracle, fractions))
-
-
 def reliability_bins(
     u: np.ndarray,
     e: np.ndarray,
@@ -211,17 +182,13 @@ def make_plot(
     pearson_across: float,
     spearman_across: float,
     outpath: Path,
-    fractions: Optional[np.ndarray] = None,
-    s_pred_avg: Optional[np.ndarray] = None,
-    s_oracle_avg: Optional[np.ndarray] = None,
-    ause_mean: Optional[float] = None,
     title: str = "",
 ) -> None:
     prefix = f"{title}   " if title else ""
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
     # (a) Reliability diagram
-    ax = axes[0, 0]
+    ax = axes[0]
     ax.plot([0, 1], [0, 1], "k--", linewidth=1, alpha=0.6, label="y = x")
     ax.plot(bin_mean_u, bin_mean_e, "o-", color="C0", label="bin means")
     ax.set_xlabel("Mean uncertainty per tile (bin, normalised)")
@@ -230,23 +197,8 @@ def make_plot(
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-    # (b) Sparsification curve — omitted when --no_ause
-    ax = axes[0, 1]
-    if fractions is not None and s_pred_avg is not None and s_oracle_avg is not None:
-        ax.plot(fractions, s_pred_avg, color="C1", label="Predicted (sort by u)")
-        ax.plot(fractions, s_oracle_avg, color="gray", linestyle="--", label="Oracle (sort by e)")
-        ax.fill_between(fractions, s_pred_avg, s_oracle_avg, color="C1", alpha=0.2)
-        ax.set_xlabel("Fraction of pixels removed")
-        ax.set_ylabel("Mean residual error")
-        ax.set_title(f"{prefix}AUSE = {ause_mean:.4f}")
-        ax.legend(fontsize=8); ax.grid(alpha=0.3)
-    else:
-        ax.text(0.5, 0.5, "AUSE not computed\n(--no_ause)",
-                ha="center", va="center", transform=ax.transAxes, fontsize=12, color="gray")
-        ax.set_axis_off()
-
-    # (c) Histogram of within-tile Spearman rho
-    ax = axes[1, 0]
+    # (b) Histogram of within-tile Spearman rho
+    ax = axes[1]
     valid = rho_within[np.isfinite(rho_within)]
     ax.hist(valid, bins=30, color="C2", alpha=0.75, edgecolor="black", linewidth=0.5)
     ax.axvline(rho_within_mean, color="black", linestyle="--",
@@ -257,8 +209,8 @@ def make_plot(
     ax.set_title(f"{prefix}N = {len(valid)}   mean $\\rho$ = {rho_within_mean:.3f}")
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-    # (d) Across-tile scatter
-    ax = axes[1, 1]
+    # (c) Across-tile scatter
+    ax = axes[2]
     ax.scatter(mean_u_per_tile, mean_e_per_tile, s=15, alpha=0.6,
                edgecolors="black", linewidths=0.3, color="C3")
     ax.set_xlabel("Mean uncertainty per tile")
@@ -300,10 +252,6 @@ def main():
                     help="Output directory.")
     ap.add_argument("--n_bins", type=int, default=10,
                     help="Number of quantile bins for reliability diagram and ECE.")
-    ap.add_argument("--ause_steps", type=int, default=100,
-                    help="Number of fraction-removed steps for sparsification curve.")
-    ap.add_argument("--no_ause", action="store_true",
-                    help="Skip sparsification curve and AUSE computation.")
     ap.add_argument("--min_tissue_pixels", type=int, default=256,
                     help="Skip tiles with fewer tissue pixels than this.")
     ap.add_argument("--title", type=str, default="",
@@ -335,9 +283,6 @@ def main():
 
     # ---- per-tile pass ----
     rows: list[dict] = []
-    spar_per_tile_pred: list[np.ndarray] = []
-    spar_per_tile_oracle: list[np.ndarray] = []
-    fractions_grid: Optional[np.ndarray] = None
 
     for stem in tqdm(common, desc="Tiles"):
         u_full = np.load(args.uncertainty_dir / f"{stem}.npy").astype(np.float64)
@@ -373,17 +318,6 @@ def main():
             sp_rho, sp_p = float(sp.statistic), float(sp.pvalue)
             pe_rho, pe_p = float(pe.statistic), float(pe.pvalue)
 
-        # sparsification + AUSE (skipped when --no_ause)
-        if not args.no_ause:
-            fractions, s_pred, s_oracle = sparsification_curve(u, e, n_steps=args.ause_steps)
-            a = ause(fractions, s_pred, s_oracle)
-            spar_per_tile_pred.append(s_pred)
-            spar_per_tile_oracle.append(s_oracle)
-            if fractions_grid is None:
-                fractions_grid = fractions
-        else:
-            a = float("nan")
-
         rows.append({
             "tile_stem":     stem,
             "source_wsi":    stem_to_wsi.get(stem, ""),
@@ -394,7 +328,6 @@ def main():
             "pearson_pvalue_within": pe_p,
             "mean_u":        float(u.mean()),
             "mean_e":        float(e.mean()),
-            "ause":          a,
         })
 
     if not rows:
@@ -429,14 +362,6 @@ def main():
     )
     ece = expected_calibration_error(bin_u, bin_e, bin_counts)
 
-    # ---- average sparsification curve ----
-    if not args.no_ause and spar_per_tile_pred:
-        s_pred_avg = np.mean(np.stack(spar_per_tile_pred, axis=0), axis=0)
-        s_oracle_avg = np.mean(np.stack(spar_per_tile_oracle, axis=0), axis=0)
-    else:
-        s_pred_avg = None
-        s_oracle_avg = None
-
     # ---- summary aggregates ----
     rho_w = df["spearman_rho"].values
     rho_w_finite = rho_w[np.isfinite(rho_w)]
@@ -448,8 +373,6 @@ def main():
             "spearman_mean": float(rho_w_finite.mean()) if rho_w_finite.size else float("nan"),
             "spearman_std":  float(rho_w_finite.std(ddof=1)) if rho_w_finite.size > 1 else 0.0,
             "spearman_median": float(np.median(rho_w_finite)) if rho_w_finite.size else float("nan"),
-            "ause_mean":     float(df["ause"].mean()),
-            "ause_std":      float(df["ause"].std(ddof=1)) if len(df) > 1 else 0.0,
         },
         "across_tile": {
             "pearson":  across_pearson,
@@ -463,11 +386,6 @@ def main():
             "u_tile_mean_p1_p99":    [u_lo, u_hi],
             "e_tile_mean_p1_p99":    [e_lo, e_hi],
         },
-        "sparsification": None if args.no_ause else {
-            "fractions":      fractions_grid.tolist(),
-            "s_pred_avg":     s_pred_avg.tolist(),
-            "s_oracle_avg":   s_oracle_avg.tolist(),
-        },
         "params": {
             "uncertainty_dir":   str(args.uncertainty_dir),
             "error_dirs":        [str(d) for d in args.error_dirs],
@@ -475,9 +393,7 @@ def main():
             "mask_dir":          str(args.mask_dir) if args.mask_dir else None,
             "no_mask":           args.no_mask,
             "n_bins":            args.n_bins,
-            "ause_steps":        args.ause_steps,
             "reliability_granularity": "tile_means",
-            "no_ause":           args.no_ause,
             "min_tissue_pixels": args.min_tissue_pixels,
         },
     }
@@ -495,7 +411,6 @@ def main():
                 n_tiles=("tile_stem", "count"),
                 spearman_rho_mean=("spearman_rho", "mean"),
                 spearman_rho_std=("spearman_rho", "std"),
-                ause_mean=("ause", "mean"),
                 mean_u=("mean_u", "mean"),
                 mean_e=("mean_e", "mean"),
             ).reset_index()
@@ -515,10 +430,6 @@ def main():
         pearson_across=across_pearson,
         spearman_across=across_spearman,
         outpath=args.outdir / "calibration.png",
-        fractions=fractions_grid,
-        s_pred_avg=s_pred_avg,
-        s_oracle_avg=s_oracle_avg,
-        ause_mean=summary["within_tile"]["ause_mean"],
         title=args.title,
     )
 
@@ -529,7 +440,6 @@ def main():
           f"± {summary['within_tile']['spearman_std']:.4f}")
     print(f"Across-tile Pearson ρ    : {across_pearson:.4f}")
     print(f"Across-tile Spearman ρ   : {across_spearman:.4f}")
-    print(f"AUSE (mean)              : {summary['within_tile']['ause_mean']:.4f}")
     print(f"ECE (10-bin, p1–p99 norm): {ece:.4f}")
 
 

@@ -16,8 +16,6 @@ def main():
                         help="Size of square tiles extracted from the WSI")
     parser.add_argument("--resize_to", type=int, default=None,
                         help="Resize extracted tiles to this size before saving")
-    parser.add_argument("--overlap", type=float, default=0,
-                        help="Fractional overlap between tiles (0 to <1)")
     parser.add_argument("--tissue_threshold", type=float, default=0.5,
                         help="Minimum tissue fraction to keep a tile (for train sets)")
     parser.add_argument("--image_type", type=str, default="trainA",
@@ -33,7 +31,7 @@ def main():
         mask_folder_path=args.mask,
         tile_size=args.tile_size,
         resize_to=args.resize_to,
-        overlap=args.overlap,
+        overlap=0,   # paper protocol: non-overlapping tiling (stride == tile_size)
         tissue_threshold=args.tissue_threshold,
         image_type=args.image_type,
         num_workers=args.num_workers,

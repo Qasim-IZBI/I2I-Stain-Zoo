@@ -5,25 +5,13 @@ this script:
   1. Stacks RGB predictions per filename across ensemble members.
   2. Computes per-pixel sample variance (ddof=1) per channel.
   3. Reduces to a scalar uncertainty map: U = var_R + var_G + var_B.
-  4. Optionally applies log1p compression.
-  5. Computes global normalisation bounds (percentile-based) per architecture.
-  6. Saves raw / normalised .npy maps, heatmap PNGs, optional overlays, and
+  4. Computes global normalisation bounds (percentile-based) per architecture.
+  5. Saves raw .npy maps, heatmap PNGs, ensemble-mean RGB tiles, and
      a summary JSON with per-image statistics.
 
 Example usage
 -------------
-# Basic
 python uncertainty.py --model cyclegan --data /path/to/cyclegan/output --output ./uncertainty_out
-
-# With log compression and overlays
-python uncertainty.py \\
-    --model cyclegan \\
-    --data /path/to/cyclegan/output \\
-    --log-compress \\
-    --overlays \\
-    --lower-percentile 1 \\
-    --upper-percentile 99 \\
-    --output ./uncertainty_out
 """
 
 from __future__ import annotations
@@ -257,30 +245,6 @@ def save_heatmap(u_norm: np.ndarray, path: Path) -> None:
     plt.close(fig)
 
 
-def save_overlay(rgb: np.ndarray, u_norm: np.ndarray, path: Path, alpha: float = 0.5) -> None:
-    """Overlay a heatmap on the reference RGB image and save as PNG."""
-    # Normalise RGB to [0, 1] if needed
-    if rgb.max() > 1.0:
-        rgb_vis = rgb / 255.0 if rgb.max() > 1.0 else rgb.copy()
-    else:
-        rgb_vis = rgb.copy()
-    rgb_vis = np.clip(rgb_vis, 0.0, 1.0)
-
-    cmap = plt.get_cmap(CMAP)
-    heat = cmap(u_norm)[..., :3]  # (H, W, 3)
-    blended = (1 - alpha) * rgb_vis + alpha * heat
-
-    fig, ax = plt.subplots(1, 1, figsize=(6, 5))
-    ax.imshow(np.clip(blended, 0, 1))
-    ax.set_axis_off()
-    fig.savefig(str(path), dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-
-# ---------------------------------------------------------------------------
-# Per-image statistics
-# ---------------------------------------------------------------------------
-
 def image_stats(u: np.ndarray) -> dict:
     """Return summary statistics for a single uncertainty map."""
     return {
@@ -299,10 +263,8 @@ def process_architecture(
     name: str,
     root: Path,
     output_root: Path,
-    log_compress: bool,
     lower_pct: float,
     upper_pct: float,
-    save_overlays: bool,
     data_range: tuple[int, int] | None = None,
     mask_dir: Optional[Path] = None,
     min_tissue_fraction: float = 0.0,
@@ -334,12 +296,9 @@ def process_architecture(
     out = output_root / name
     dirs = {
         "raw_npy":  out / "raw_npy",
-        "norm_npy": out / "norm_npy",
         "heatmaps": out / "heatmaps",
         "mean_rgb": out / "mean_rgb",
     }
-    if save_overlays:
-        dirs["overlays"] = out / "overlays"
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
 
@@ -351,7 +310,6 @@ def process_architecture(
     # --- pass 1: compute raw uncertainty maps and mean prediction ---
     raw_maps:  dict[str, np.ndarray] = {}
     mean_maps: dict[str, np.ndarray] = {}
-    ref_images: dict[str, np.ndarray] = {}  # first ensemble member for overlays
 
     for fname in filenames:
         stack = []
@@ -361,8 +319,6 @@ def process_architecture(
         stack = np.stack(stack, axis=0)  # (N, H, W, 3)
 
         u = compute_uncertainty_map(stack)
-        if log_compress:
-            u = np.log1p(u)
 
         # Apply tissue mask: zero non-tissue pixels; skip sub-threshold tiles.
         # Matches evaluation.py build_tissue_filter: tiles with no mask are included.
@@ -379,7 +335,6 @@ def process_architecture(
 
         raw_maps[fname]  = u
         mean_maps[fname] = np.mean(stack, axis=0)   # (H, W, 3) mean prediction
-        ref_images[fname] = stack[0]
         print(f"  [{name}] computed uncertainty: {fname}")
 
     if n_skipped:
@@ -398,7 +353,6 @@ def process_architecture(
         "ensemble_root": str(root),
         "n_ensemble_members": len(ensemble_dirs),
         "n_images": len(filenames),
-        "log_compress": log_compress,
         "lower_percentile": lower_pct,
         "upper_percentile": upper_pct,
         "global_low": low,
@@ -420,11 +374,7 @@ def process_architecture(
             (base_dir / rel_stem).parent.mkdir(parents=True, exist_ok=True)
 
         np.save(str(dirs["raw_npy"] / rel_stem.with_suffix(".npy")), u_raw)
-        np.save(str(dirs["norm_npy"] / rel_stem.with_suffix(".npy")), u_norm)
         save_heatmap(u_norm, dirs["heatmaps"] / rel_stem.with_suffix(".png"))
-        if save_overlays:
-            save_overlay(ref_images[fname], u_norm,
-                         dirs["overlays"] / rel_stem.with_suffix(".png"))
 
         # Mean prediction — clamp to [0, 255] and save as uint8 TIF
         mean_uint8 = np.clip(mean_maps[fname], 0, 255).astype(np.uint8)
@@ -473,20 +423,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Root directory for all outputs (default: uncertainty_output).",
     )
     parser.add_argument(
-        "--log-compress", action="store_true",
-        help="Apply log1p compression to uncertainty maps before normalisation.",
-    )
-    parser.add_argument(
         "--lower-percentile", type=float, default=1.0,
         help="Lower percentile for global normalisation bounds (default: 1).",
     )
     parser.add_argument(
         "--upper-percentile", type=float, default=99.0,
         help="Upper percentile for global normalisation bounds (default: 99).",
-    )
-    parser.add_argument(
-        "--overlays", action="store_true",
-        help="Save overlay PNGs (heatmap blended on reference image).",
     )
     parser.add_argument(
         "--data_range", type=str, default=None,
@@ -533,10 +475,8 @@ def main(argv: list[str] | None = None) -> None:
         name=args.model,
         root=args.data,
         output_root=args.output,
-        log_compress=args.log_compress,
         lower_pct=args.lower_percentile,
         upper_pct=args.upper_percentile,
-        save_overlays=args.overlays,
         data_range=data_range,
         mask_dir=args.mask_dir,
         min_tissue_fraction=args.min_tissue_fraction,

@@ -28,7 +28,7 @@
 # tasks 40–49 → uvcgan          (model_small)   members 01–10
 # tasks 50–59 → cyclediffusion  (model_small)   members 01–10
 
-set -euo pipefail
+set -eo pipefail
 
 module purge
 module load Anaconda3

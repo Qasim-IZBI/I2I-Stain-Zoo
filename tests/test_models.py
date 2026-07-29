@@ -71,17 +71,11 @@ class TestDiscriminatorParameters:
 
     def test_nonempty_for_gan_models(self, model_and_cfg):
         name, model, _ = model_and_cfg
-        # MIUDiff has an empty discriminator param list by design
-        if "miudiff" in name:
-            pytest.skip("MIUDiff has no discriminator")
         params = model.discriminator_parameters()
         assert len(params) > 0
 
 
 class TestGeneratorLoss:
-    # Note: torch.no_grad() is NOT used here because MIUDiff calls .backward()
-    # internally on the MI estimator inside compute_generator_loss, which requires
-    # the autograd graph to be alive.
 
     def test_returns_triple(self, model_and_cfg, real_batch):
         _, model, _ = model_and_cfg
@@ -158,12 +152,6 @@ class TestDiscriminatorLoss:
 class TestCheckpointRoundTrip:
     def test_save_and_restore(self, model_and_cfg, real_batch):
         name, model, cfg = model_and_cfg
-
-        # MIUDiff calls .backward() inside compute_generator_loss (MI estimator opt step),
-        # making loss-based round-trip comparison unreliable. Its checkpoint fidelity is
-        # tested separately in test_miudiff.py::TestConfigRoundTrip.
-        if "miudiff" in name:
-            pytest.skip("MIUDiff checkpoint round-trip tested in test_miudiff.py")
 
         # Run forward before save — fix random seed so stochastic ops (MUNIT style
         # sampling, DCLGAN patch sampling) produce the same draws on both calls.

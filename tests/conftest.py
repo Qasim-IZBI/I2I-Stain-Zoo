@@ -22,7 +22,6 @@ from models.unit import UNIT, UNITConfig
 from models.munit import MUNIT, MUNITConfig
 from models.dclgan import DCLGAN, DCLGANConfig
 from models.uvcgan import UVCGAN, UVCGANConfig
-from models.miudiff import MIUDiff, MIUDiffConfig
 
 
 # ------------------------------------------------------------------ #
@@ -71,27 +70,6 @@ TINY_UVCGAN_CFG = UVCGANConfig(
     image_size=64,  # 64×64 → spatial=16, n_tokens=256 (matches pos_embed)
 )
 
-# base_channels=32 ensures GroupNorm32 divisibility:
-# With channel_mult=(1,2): channels are 32, 64; skip-concat in decoder gives 96, 128 — both % 32 == 0.
-# base_channels=16 would produce 48-channel inputs (16+32) where 48 % 32 ≠ 0.
-TINY_MIUDIFF_PRETRAIN_CFG = MIUDiffConfig(
-    stage="pretrain",
-    base_channels=32,
-    channel_mult=(1, 2),
-    sample_steps=2,
-    T=10,
-)
-
-TINY_MIUDIFF_FINETUNE_CFG = MIUDiffConfig(
-    stage="finetune",
-    base_channels=32,
-    channel_mult=(1, 2),
-    sample_steps=2,
-    T=10,
-    guidance_scale=0.0,  # 0 = use only eps_cond; faster and numerically simpler
-)
-
-
 # ------------------------------------------------------------------ #
 #  Registry of (name, model, cfg) tuples used for parametrized tests  #
 # ------------------------------------------------------------------ #
@@ -102,8 +80,6 @@ MODEL_REGISTRY = [
     ("munit",           MUNIT,     TINY_MUNIT_CFG),
     ("dclgan",          DCLGAN,    TINY_DCLGAN_CFG),
     ("uvcgan",          UVCGAN,    TINY_UVCGAN_CFG),
-    ("miudiff_pretrain",MIUDiff,   TINY_MIUDIFF_PRETRAIN_CFG),
-    ("miudiff_finetune",MIUDiff,   TINY_MIUDIFF_FINETUNE_CFG),
 ]
 
 

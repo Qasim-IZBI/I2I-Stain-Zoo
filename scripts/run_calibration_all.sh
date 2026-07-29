@@ -117,7 +117,6 @@ run_cmd python I2I-Stain-Zoo/uncertainty_calibration.py \
     --mask_dir            "${MASK_DIR}" \
     --tiles_metadata      "${TEST_A}" \
     --outdir              "${OUTDIR}" \
-    --no_ause \
     --min_tissue_pixels   256
 
 echo "Done. Calibration for ${MODEL} WSI ${WSI_FOLDER} saved to ${OUTDIR}"

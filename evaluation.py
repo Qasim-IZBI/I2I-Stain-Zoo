@@ -3,23 +3,15 @@
 Compute evaluation metrics between two image sets.
 
 Metrics:
-  - fid: Distribution-level Fréchet distance (unpaired, Inception or DINO features)
-  - ssim: Structural Similarity Index (paired, matched by filename)
+  - fid: Distribution-level Fréchet distance (unpaired, InceptionV3 pool3 2048-d features)
   - patch_ssim: Patch-based SSIM — extract random patches and compute SSIM per patch (paired)
   - lpips: Learned Perceptual Image Patch Similarity using VGG16 features (paired, lower=better)
   - regen_error: Cycle reconstruction MAE — translate A→B'→A' and measure |A−A'| per pixel;
                  requires --path_A, --model, --ckpt; optionally saves heatmap/overlay images
-                 via --overlay_dir. Not supported for MIUDiff (no B→A generator).
+                 via --overlay_dir.
 
-Feature backends (FID only):
-  - inception: torchvision InceptionV3 pool3 (2048-d), classic FID
-  - dino: DINOv2 ViT features (typically 768/1024-d depending on model)
-
-Example (classic FID):
-  python evaluation.py --metric fid --path_real data/CD13 --path_fake results/he_to_cd13 --backend inception --device cuda
-
-Example (SSIM):
-  python evaluation.py --metric ssim --path_real data/CD13 --path_fake results/he_to_cd13
+Example (FID):
+  python evaluation.py --metric fid --path_real data/CD13 --path_fake results/he_to_cd13 --device cuda
 
 Example (Patch SSIM):
   python evaluation.py --metric patch_ssim --path_real data/CD13 --path_fake results/he_to_cd13 --patch_size 64 --patches_per_image 16
@@ -29,8 +21,7 @@ Example (Cycle reconstruction error with overlays):
       --direction A2B --overlay_dir ./regen_overlays/ --device cuda
 
 Notes:
-- For DINO backend we still compute the same Fréchet distance formula; it's "FID-like" but not the canonical Inception FID.
-- SSIM and patch_ssim require paired images matched by filename.
+- patch_ssim requires paired images matched by filename.
 - Images are treated as RGB.
 - regen_error MAE is reported in [0, 255] pixel scale.
 """
@@ -116,39 +107,6 @@ class InceptionFeatureExtractor(nn.Module):
 def inception_transform():
     return transforms.Compose([
         transforms.Resize((299, 299), interpolation=transforms.InterpolationMode.BILINEAR),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-    ])
-
-
-# ============================================================
-# DINO backend (DINOv2 via torch.hub)
-# ============================================================
-
-class DINOv2FeatureExtractor(nn.Module):
-    """
-    DINOv2 ViT -> global embedding.
-    Uses torch.hub 'facebookresearch/dinov2' models.
-
-    Supported model names commonly include:
-      dinov2_vits14, dinov2_vitb14, dinov2_vitl14, dinov2_vitg14
-    """
-    def __init__(self, model_name: str = "dinov2_vits14"):
-        super().__init__()
-        # NOTE: requires internet the first time to download weights.
-        self.model = torch.hub.load("facebookresearch/dinov2", model_name)
-        self.model.eval()
-
-    @torch.no_grad()
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Returns [B, D]
-        return self.model(x)
-
-
-def dino_transform(image_size: int = 224):
-    # DINOv2 expects ImageNet normalization as well
-    return transforms.Compose([
-        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.ToTensor(),
         transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
     ])
@@ -374,32 +332,6 @@ def build_tissue_filter(
           f"{n_found} masks found, {n_pass} pass (≥{min_fraction:.2f}), "
           f"{n_low} below threshold, {n_no_mask} no mask (included)")
     return passing
-
-
-def compute_ssim(
-    path_real: str,
-    path_fake: str,
-    image_size: int = 256,
-    tissue_stems: Optional[set] = None,
-) -> Tuple[float, List[float]]:
-    """
-    Compute vanilla SSIM between paired images (matched by filename).
-    Returns (mean_ssim, list of per-image ssim values).
-    """
-    pairs = list_paired_images(path_real, path_fake, tissue_stems=tissue_stems)
-    tfm = transforms.Compose([
-        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BILINEAR),
-        transforms.ToTensor(),  # [0, 1]
-    ])
-
-    scores = []
-    for real_path, fake_path in pairs:
-        img_r = tfm(Image.open(real_path).convert("RGB")).unsqueeze(0) * 255.0
-        img_f = tfm(Image.open(fake_path).convert("RGB")).unsqueeze(0) * 255.0
-        ssim_map = compute_ssim_map(img_r, img_f)
-        scores.append(float(ssim_map.mean()))
-
-    return float(np.mean(scores)), scores
 
 
 def compute_patch_ssim(
@@ -640,195 +572,6 @@ def _cycle_forward(
             raise ValueError(f"Unsupported model for cycle forward: {model_name}")
 
     return b_prime, a_prime
-
-
-def _one_way_forward(
-    model,
-    model_name: str,
-    x: torch.Tensor,
-    direction: str,
-    device: torch.device,
-) -> torch.Tensor:
-    """
-    Run one half of a translation: x → G(x) in the requested direction.
-    Used by judge_regen_error to apply only the inverse generator of an
-    external judge model. Returns the translated tensor in [-1, 1].
-    """
-    with torch.no_grad():
-        if model_name == "cyclegan":
-            fwd = model.forward_A2B if direction == "A2B" else model.forward_B2A
-            return fwd(x)
-        elif model_name == "unit":
-            fwd = model.forward_A2B if direction == "A2B" else model.forward_B2A
-            out, _ = fwd(x)
-            return out
-        elif model_name == "munit":
-            if direction == "A2B":
-                c, _ = model.encode_A(x)
-                s = torch.randn(x.shape[0], model.cfg.style_dim, device=device)
-                return model.decode_B(c, s)
-            else:
-                c, _ = model.encode_B(x)
-                s = torch.randn(x.shape[0], model.cfg.style_dim, device=device)
-                return model.decode_A(c, s)
-        elif model_name == "dclgan":
-            if direction == "A2B":
-                out, _ = model.G_A2B(x)
-            else:
-                out, _ = model.G_B2A(x)
-            return out
-        elif model_name == "uvcgan":
-            fwd = model.forward_A2B if direction == "A2B" else model.forward_B2A
-            return fwd(x)
-        else:
-            raise ValueError(f"Unsupported judge model: {model_name}")
-
-
-def list_paired_images_by_relpath(path_A: str, path_B: str) -> List[Tuple[str, str, str]]:
-    """Match images by relative path under each root.
-
-    More robust than basename matching for multi-WSI tile trees where
-    tile names like 0000001.tif appear under multiple WSI subfolders.
-
-    Returns a list of (a_path, b_path, output_stem). output_stem is the
-    basename when basenames are globally unique; otherwise it is the
-    flattened relative path (e.g. "001_images_0000001") so that downstream
-    .npy files do not collide.
-    """
-    a_map = {os.path.splitext(os.path.relpath(p, path_A))[0]: p for p in list_images(path_A)}
-    b_map = {os.path.splitext(os.path.relpath(p, path_B))[0]: p for p in list_images(path_B)}
-    common = sorted(set(a_map) & set(b_map))
-    if not common:
-        raise FileNotFoundError(
-            f"No matching relative paths between {path_A} and {path_B}. "
-            "Both directories should mirror the same tile structure."
-        )
-    basenames = [os.path.basename(r) for r in common]
-    if len(set(basenames)) == len(basenames):
-        stems = basenames
-    else:
-        stems = [r.replace(os.sep, "_") for r in common]
-        print(f"[judge_regen_error] basename collisions detected; using flattened "
-              f"relative paths as output stems (e.g. {stems[0]})")
-    return [(a_map[r], b_map[r], s) for r, s in zip(common, stems)]
-
-
-def compute_judge_regen_error(
-    path_A: str,
-    path_B_generated: str,
-    judge_model,
-    judge_model_name: str,
-    judge_direction: str,
-    device: torch.device,
-    image_size: int = 256,
-    overlay_dir: Optional[str] = None,
-    save_error_npy: bool = False,
-    tissue_stems: Optional[set] = None,
-) -> Tuple[float, List[Tuple[str, float]]]:
-    """
-    Compute per-tile error |A − judge(B')| using an external judge model.
-
-    For each pair (A, B'), source A is loaded from path_A and the
-    pre-translated B' is loaded from path_B_generated. The judge model is
-    applied in `judge_direction` (typically 'B2A') to B', producing
-    A_judge. Per-pixel MAE = |A − A_judge| in [0, 255].
-
-    This metric is the model-independent counterpart to regen_error: it
-    works for any forward translator (including MIUDiff, which has no
-    inverse generator) because the inverse path comes from a fixed
-    external judge applied identically to every model under evaluation.
-
-    Outputs (when overlay_dir is set):
-      overlay_dir/heatmaps/<stem>.png   — error heatmap with colorbar (hot)
-      overlay_dir/overlays/<stem>.png   — 50/50 blend of heatmap and A
-    When save_error_npy=True (requires overlay_dir):
-      overlay_dir/error_npy/<stem>.npy  — raw [H, W] error map in [0, 255]
-
-    Returns (mean_mae, [(stem, mae), ...]).
-    """
-    from torchvision.utils import save_image as tv_save_image
-
-    tfm = transforms.Compose([
-        transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BILINEAR),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-    ])
-
-    pairs = list_paired_images_by_relpath(path_A, path_B_generated)
-    if tissue_stems is not None:
-        pairs = [(a, b, s) for a, b, s in pairs
-                 if os.path.splitext(os.path.relpath(a, path_A))[0] in tissue_stems]
-    print(f"[judge_regen_error] {len(pairs)} paired tiles "
-          f"(judge={judge_model_name}, direction={judge_direction})")
-
-    stems: List[str] = []
-    error_maps: List[np.ndarray] = []
-    orig_tensors: List[torch.Tensor] = []
-
-    for a_path, b_path, stem in pairs:
-        a_img = Image.open(a_path).convert("RGB")
-        b_img = Image.open(b_path).convert("RGB")
-        a_x = tfm(a_img).unsqueeze(0).to(device)
-        b_x = tfm(b_img).unsqueeze(0).to(device)
-
-        a_judge = _one_way_forward(judge_model, judge_model_name, b_x, judge_direction, device)
-
-        a_255       = (a_x + 1.0) * 127.5
-        a_judge_255 = (a_judge.clamp(-1.0, 1.0) + 1.0) * 127.5
-        err = torch.abs(a_255 - a_judge_255).mean(dim=1).squeeze(0)  # [H, W]
-
-        stems.append(stem)
-        error_maps.append(err.cpu().numpy())
-        orig_tensors.append(a_x.squeeze(0).cpu())
-
-    all_vals = np.concatenate([e.flatten() for e in error_maps])
-    vmin = float(np.percentile(all_vals, 1))
-    vmax = float(np.percentile(all_vals, 99))
-
-    if overlay_dir:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import matplotlib.cm as cm
-
-        heatmap_dir = os.path.join(overlay_dir, "heatmaps")
-        overlay_out_dir = os.path.join(overlay_dir, "overlays")
-        os.makedirs(heatmap_dir, exist_ok=True)
-        os.makedirs(overlay_out_dir, exist_ok=True)
-
-        cmap = cm.get_cmap("hot")
-
-        for stem, err_map, orig_t in zip(stems, error_maps, orig_tensors):
-            fig, ax = plt.subplots(figsize=(4, 4))
-            im = ax.imshow(err_map, cmap="hot", vmin=vmin, vmax=vmax)
-            plt.colorbar(im, ax=ax, label="MAE [0–255]")
-            ax.axis("off")
-            ax.set_title(f"Judge regen: {stem}", fontsize=8)
-            plt.tight_layout()
-            plt.savefig(os.path.join(heatmap_dir, f"{stem}.png"), dpi=150, bbox_inches="tight")
-            plt.close(fig)
-
-            err_norm = np.clip((err_map - vmin) / (vmax - vmin + 1e-8), 0.0, 1.0)
-            heat_rgb = torch.from_numpy(cmap(err_norm)[:, :, :3]).permute(2, 0, 1).float()
-            orig_rgb = (orig_t + 1.0) / 2.0
-            blend = (0.5 * heat_rgb + 0.5 * orig_rgb).clamp(0.0, 1.0)
-            tv_save_image(blend, os.path.join(overlay_out_dir, f"{stem}.png"))
-
-        print(f"[judge_regen_error] Saved heatmaps → {heatmap_dir}")
-        print(f"[judge_regen_error] Saved overlays → {overlay_out_dir}")
-
-    if save_error_npy:
-        if not overlay_dir:
-            raise ValueError("save_error_npy=True requires overlay_dir to be set")
-        npy_dir = os.path.join(overlay_dir, "error_npy")
-        os.makedirs(npy_dir, exist_ok=True)
-        for stem, err_map in zip(stems, error_maps):
-            np.save(os.path.join(npy_dir, f"{stem}.npy"), err_map.astype(np.float32))
-        print(f"[judge_regen_error] Saved error .npy maps → {npy_dir}")
-
-    results = [(s, float(e.mean())) for s, e in zip(stems, error_maps)]
-    mean_mae = float(np.mean([v for _, v in results]))
-    return mean_mae, results
 
 
 def compute_regen_error_precomputed(
@@ -1078,26 +821,18 @@ def _save_csv(path: str, fieldnames: List[str], rows: List[dict]):
 def main():
     ap = argparse.ArgumentParser("Evaluation metrics for image-to-image translation")
     ap.add_argument("--metric",
-                    choices=["fid", "ssim", "patch_ssim", "lpips", "regen_error", "judge_regen_error"],
+                    choices=["fid", "patch_ssim", "lpips", "regen_error"],
                     default="fid",
-                    help="Metric to compute: fid (unpaired), ssim/patch_ssim/lpips (paired), "
-                         "regen_error (cycle A→B'→A', requires --path_A --model --ckpt), "
-                         "judge_regen_error (|A − judge(B')|, requires --path_A --path_B_generated "
-                         "--judge_model --judge_ckpt; works for any model including MIUDiff)")
+                    help="Metric to compute: fid (unpaired), patch_ssim/lpips (paired), "
+                         "regen_error (cycle A→B'→A', requires --path_A --model --ckpt)")
     ap.add_argument("--path_real", default=None, type=str,
-                    help="Folder with real target-domain images (required for fid/ssim/patch_ssim/lpips)")
+                    help="Folder with real target-domain images (required for fid/patch_ssim/lpips)")
     ap.add_argument("--path_fake", default=None, type=str,
-                    help="Folder with generated images (required for fid/ssim/patch_ssim/lpips)")
-    ap.add_argument("--backend", choices=["inception", "dino"], default="inception",
-                    help="Feature backend for FID")
+                    help="Folder with generated images (required for fid/patch_ssim/lpips)")
 
     ap.add_argument("--batch_size", default=32, type=int)
     ap.add_argument("--num_workers", default=4, type=int)
     ap.add_argument("--device", default="cuda", type=str, choices=["cuda", "cpu"])
-
-    # DINO options
-    ap.add_argument("--dino_model", default="dinov2_vits14", type=str)
-    ap.add_argument("--dino_image_size", default=224, type=int)
 
     # SSIM / patch SSIM options
     ap.add_argument("--ssim_image_size", default=256, type=int,
@@ -1125,22 +860,9 @@ def main():
                     help="Directory to save error heatmaps and overlays (regen_error only)")
     ap.add_argument("--save_error_npy", action="store_true",
                     help="Save raw per-pixel error maps as .npy under "
-                         "<overlay_dir>/error_npy/ (regen_error / judge_regen_error; requires --overlay_dir)")
+                         "<overlay_dir>/error_npy/ (regen_error only; requires --overlay_dir)")
     ap.add_argument("--style_dim", type=int, default=8,
                     help="Style dimension for MUNIT (regen_error only, ignored if config in checkpoint)")
-
-    # judge_regen_error options
-    ap.add_argument("--path_B_generated", type=str, default=None,
-                    help="Folder of pre-translated B' tiles (output of inference.py for the model "
-                         "being evaluated; required for judge_regen_error)")
-    ap.add_argument("--judge_model", choices=["cyclegan", "unit", "munit", "dclgan", "uvcgan"], default=None,
-                    help="External judge model type for judge_regen_error (must have B→A direction; "
-                         "MIUDiff is not allowed as a judge)")
-    ap.add_argument("--judge_ckpt", type=str, default=None,
-                    help="Judge model checkpoint path for judge_regen_error")
-    ap.add_argument("--judge_direction", choices=["A2B", "B2A"], default="B2A",
-                    help="Direction the judge applies to the pre-translated tiles "
-                         "(default B2A: judge inverts B' → A_judge to compare against A)")
 
     # Tissue filtering
     ap.add_argument("--mask_dir", type=str, default=None,
@@ -1178,12 +900,8 @@ def main():
     if args.metric == "fid":
         device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
 
-        if args.backend == "inception":
-            extractor = InceptionFeatureExtractor().to(device).eval()
-            tfm = inception_transform()
-        else:
-            extractor = DINOv2FeatureExtractor(model_name=args.dino_model).to(device).eval()
-            tfm = dino_transform(image_size=args.dino_image_size)
+        extractor = InceptionFeatureExtractor().to(device).eval()
+        tfm = inception_transform()
 
         acts_real = compute_activations(args.path_real, extractor, device, tfm, args.batch_size, args.num_workers, tissue_stems=tissue_stems)
         acts_fake = compute_activations(args.path_fake, extractor, device, tfm, args.batch_size, args.num_workers, tissue_stems=tissue_stems)
@@ -1193,25 +911,14 @@ def main():
 
         fid_like = frechet_distance(mu_r, sig_r, mu_f, sig_f)
 
-        label = "FID" if args.backend == "inception" else "Fréchet(DINO)"
+        label = "FID"
         print(f"{label} (real={args.path_real} vs fake={args.path_fake}): {fid_like:.4f}")
         print(f"N_real={acts_real.shape[0]}, N_fake={acts_fake.shape[0]}, feat_dim={acts_real.shape[1]}")
 
         if args.save_csv:
-            _save_csv(args.save_csv, ["metric", "value", "backend", "n_real", "n_fake"],
-                      [{"metric": label, "value": f"{fid_like:.6f}", "backend": args.backend,
+            _save_csv(args.save_csv, ["metric", "value", "n_real", "n_fake"],
+                      [{"metric": label, "value": f"{fid_like:.6f}",
                         "n_real": acts_real.shape[0], "n_fake": acts_fake.shape[0]}])
-
-    elif args.metric == "ssim":
-        mean_ssim, per_image = compute_ssim(args.path_real, args.path_fake, image_size=args.ssim_image_size, tissue_stems=tissue_stems)
-        pairs = list_paired_images(args.path_real, args.path_fake, tissue_stems=tissue_stems)
-        print(f"SSIM (real={args.path_real} vs fake={args.path_fake}): {mean_ssim:.4f}")
-        print(f"N_pairs={len(per_image)}, image_size={args.ssim_image_size}")
-
-        if args.save_csv:
-            rows = [{"filename": os.path.basename(p[0]), "ssim": f"{s:.6f}"} for p, s in zip(pairs, per_image)]
-            rows.append({"filename": "MEAN", "ssim": f"{mean_ssim:.6f}"})
-            _save_csv(args.save_csv, ["filename", "ssim"], rows)
 
     elif args.metric == "patch_ssim":
         mean_pssim, per_image = compute_patch_ssim(
@@ -1291,43 +998,6 @@ def main():
             rows = [{"filename": f"{s}.tif", "regen_mae": f"{v:.6f}"} for s, v in per_image]
             rows.append({"filename": "MEAN", "regen_mae": f"{mean_mae:.6f}"})
             _save_csv(args.save_csv, ["filename", "regen_mae"], rows)
-
-    elif args.metric == "judge_regen_error":
-        required = [
-            (args.path_A, "--path_A"),
-            (args.path_B_generated, "--path_B_generated"),
-            (args.judge_model, "--judge_model"),
-            (args.judge_ckpt, "--judge_ckpt"),
-        ]
-        for flag, name in required:
-            if flag is None:
-                ap.error(f"judge_regen_error requires {name}")
-        if args.save_error_npy and not args.overlay_dir:
-            ap.error("--save_error_npy requires --overlay_dir to be set")
-
-        device = torch.device(args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu")
-        judge = _load_model_for_regen(args.judge_model, args.judge_ckpt, device, style_dim=args.style_dim)
-
-        mean_mae, per_image = compute_judge_regen_error(
-            path_A=args.path_A,
-            path_B_generated=args.path_B_generated,
-            judge_model=judge,
-            judge_model_name=args.judge_model,
-            judge_direction=args.judge_direction,
-            device=device,
-            image_size=args.ssim_image_size,
-            overlay_dir=args.overlay_dir,
-            save_error_npy=args.save_error_npy,
-            tissue_stems=tissue_stems,
-        )
-        print(f"Judge Regen Error MAE (judge={args.judge_model} {args.judge_direction}, "
-              f"A={args.path_A}, B'={args.path_B_generated}): {mean_mae:.4f}")
-        print(f"N_pairs={len(per_image)}, image_size={args.ssim_image_size}")
-
-        if args.save_csv:
-            rows = [{"filename": f"{s}.tif", "judge_regen_mae": f"{v:.6f}"} for s, v in per_image]
-            rows.append({"filename": "MEAN", "judge_regen_mae": f"{mean_mae:.6f}"})
-            _save_csv(args.save_csv, ["filename", "judge_regen_mae"], rows)
 
 
 if __name__ == "__main__":

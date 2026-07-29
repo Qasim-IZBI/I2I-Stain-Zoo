@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.miudiff import DDPMUNet, UNetConfig, DiffusionSchedule
+from base_models import DDPMUNet, UNetConfig, DiffusionSchedule
 
 
 @dataclass
