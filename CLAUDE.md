@@ -126,14 +126,15 @@ python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA 
     --outdir ./out/ --save_aleatoric
 ```
 
-A 5-member UGAC ensemble at the small generator size (both uncertainty
-components: aleatoric per member, epistemic across members):
+A 10-member UGAC ensemble at the small generator size (both uncertainty
+components: aleatoric per member, epistemic across members), matching K = 10
+in the vanilla ensembles:
 
 ```bash
-sbatch scripts/train_ensemble_cyclegan_ugac.sh   # --array=0-4, seeds 1-5
+sbatch scripts/train_ensemble_cyclegan_ugac.sh   # --array=0-9, seeds 1-10
 ```
 
-Output: `ensemble_ugac/cyclegan/data_large/model_small/models/model_{01..05}/`.
+Output: `ensemble_ugac/cyclegan/data_large/model_small/models/model_{01..10}/`.
 Kept separate from `ensemble/` because the UGAC objective differs from the
 vanilla runs stored there.
 

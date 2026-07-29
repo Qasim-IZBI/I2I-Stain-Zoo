@@ -10,16 +10,16 @@
 #SBATCH --exclude=clara[02,04-08]
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
-#SBATCH --array=0-4   # 5 ensemble members
+#SBATCH --array=0-9   # 10 ensemble members
 
-# Trains a 5-member CycleGAN ensemble with UGAC aleatoric uncertainty heads
+# Trains a 10-member CycleGAN ensemble with UGAC aleatoric uncertainty heads
 # (Upadhyay et al., NeurIPS 2021) at the SMALL generator size on the full
 # training set. Members differ only by --seed.
 #
 # Each member yields both uncertainty components:
 #   aleatoric  per-member, closed form from the GGD heads
 #              (inference.py --save_aleatoric)
-#   epistemic  variance across the 5 members (uncertainty.py)
+#   epistemic  variance across the 10 members (uncertainty.py)
 #
 # Note: --cyclegan_ugac replaces the L1 cycle loss with the GGD NLL, so these
 # checkpoints are NOT comparable to the vanilla ensemble in
@@ -48,8 +48,8 @@ mkdir -p logs_ensemble_ugac
 # -----------------------------
 # Config: small model, large data, UGAC
 # -----------------------------
-MEMBER=$(printf "%02d" $((SLURM_ARRAY_TASK_ID + 1)))   # 01 … 05
-SEED=$((SLURM_ARRAY_TASK_ID + 1))                       # 1  … 5
+MEMBER=$(printf "%02d" $((SLURM_ARRAY_TASK_ID + 1)))   # 01 … 10
+SEED=$((SLURM_ARRAY_TASK_ID + 1))                       # 1  … 10
 
 PROJECT_ROOT=I2I-Stain-Zoo
 DATA_DIR=/work2/bz66izin-VSproject/VS_Data
