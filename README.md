@@ -62,8 +62,8 @@ pytest tests/ -q          # 100 tests, ~2 s on CPU
 
 **Optional — collagen segmentation.** The task-specific CPA metric
 (Section 5.3) calls a frozen [nnU-Net v2](https://github.com/MIC-DKFZ/nnUNet)
-model through `segment_psr.py`, which invokes `nnUNetv2_predict` as a
-subprocess. It is only needed for CPA evaluation:
+model (`Dataset314_SR_light`) via `nnUNetv2_predict`. It is only needed for
+CPA evaluation:
 
 ```bash
 pip install nnunetv2
@@ -271,32 +271,40 @@ The primary biologically grounded metric. A frozen nnU-Net collagen segmenter
 is applied identically to real and virtual SR whole-slide images, and the
 CPA (fraction of tissue pixels labelled collagen) is compared per specimen.
 
-```bash
-# 1. Segment tiles (pad each tile so the model sees tissue against glass)
-python segment_psr.py \
-    --data   ./out/cyclegan/ \
-    --outdir ./psr/cyclegan/tile_masks/ \
-    --tile_mode --pad_border 256 \
-    --nnunet_results /path/to/nnunet/results \
-    --nnunet_dataset 214 --nnunet_config 2d --nnunet_folds "1 2 3 4"
+Segmentation runs on **reconstructed whole slides**, not tiles, using
+`Dataset314_SR_light` via a direct `nnUNetv2_predict` call.
 
-# 2. Stitch tile masks into WSI masks
+```bash
+# 1. Stitch translated tiles into whole slides
 python reconstruct.py --metadata /path/to/tiles/testA \
-    --tile_dir ./psr/cyclegan/tile_masks/ --output ./psr/cyclegan/wsi/ --mode rgb
+    --tile_dir ./out/cyclegan/ --output ./recon/cyclegan/
+
+# 2. Segment the reconstructed WSIs
+export nnUNet_results=/path/to/nnunet/nnUNet_results
+export nnUNet_raw=/path/to/nnunet/nnUNet_raw
+nnUNetv2_predict \
+    -d Dataset314_SR_light \
+    -i ./recon/cyclegan/ \
+    -o ./psr/cyclegan/wsi_masks/ \
+    -f 0 -tr nnUNetTrainer -c 2d -p nnUNetPlans \
+    -npp 1 -nps 1 -device cpu
 
 # 3. Compare against real SR
 python compare_psr.py \
-    --masks_real      ./psr/real/wsi/ \
-    --masks_generated ./psr/cyclegan/wsi/ ./psr/unit/wsi/ \
-    --labels          cyclegan unit \
+    --masks_real      ./psr/real/psr_masks_wsi_final/ \
+    --masks_generated ./psr/cyclegan/psr_masks_wsi_final/ \
+    --labels          cyclegan \
     --outdir          ./psr_comparison/
 ```
+
+On SLURM this is `scripts/recon_all_configs.sh` followed by
+`scripts/segment_psr_nn_light_all_configs.sh`.
 
 Mask labels: `0` background, `1` tissue, `2` collagen-positive.
 `compare_psr.py` reports paired CPA MAE (the headline number), Pearson r and
 Spearman ρ over WSIs matched by filename stem.
 
-Two post-processing steps run between (2) and (3) in the full pipeline —
+Two post-processing steps run between (2) and (3) —
 `apply_he_mask.py` (zeroes predictions outside the H&E tissue boundary) and
 `fill_tissue_holes.py` (fills enclosed background inside the tissue footprint).
 Both materially affect CPA; see `scripts/apply_he_mask_all_configs.sh` and
@@ -455,7 +463,6 @@ uncertainty_calibration.py  uncertainty vs. cycle error
 aggregate_calibration.py    pool per-WSI results per model
 plot_uncertainty_boxplot.py per-family σ̄ distribution
 
-segment_psr.py              nnU-Net collagen segmentation
 compare_psr.py              CPA agreement vs. real SR
 apply_he_mask.py            mask cleanup inside the CPA pipeline
 fill_tissue_holes.py        hole filling inside the CPA pipeline

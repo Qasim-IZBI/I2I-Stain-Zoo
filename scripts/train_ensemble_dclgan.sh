@@ -10,7 +10,7 @@
 #SBATCH --exclude=clara[02,04-08]
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
-#SBATCH --array=0-9   # 5 ensemble members
+#SBATCH --array=0-9   # 10 ensemble members
 
 set -eo pipefail
 

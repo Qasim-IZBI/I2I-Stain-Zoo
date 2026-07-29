@@ -378,39 +378,31 @@ Expects `per_tile.csv` at
 
 ### PSR Positive Area Segmentation
 
-Runs a frozen nnU-Net v2 model (Dataset214_SR, 512×512 patches, trained on full
-WSIs) over Sirius Red images to produce tissue and collagen-positive masks.
-
-**Tile mode (`--tile_mode`, the study path):** segments inference tiles directly.
-`--pad_border 256` pads each tile with white before nnU-Net so the model sees tissue
-against glass — without it, all-tissue tiles produce near-absent tissue
-segmentation. The prediction is cropped back automatically. A background thread
-streams finished predictions into `{outdir}/{NNN}/images/`. Crash-safe: a persistent
-`_nnunet_raw/` staging dir survives job failure and nnU-Net skips completed tiles on
-re-run.
+Collagen masks come from a frozen nnU-Net v2 model, **`Dataset314_SR_light`**,
+run in WSI mode on reconstructed whole slides via a direct `nnUNetv2_predict`
+call (no wrapper script). The same dataset is used for the scaling study and the
+ensemble study.
 
 ```bash
-# Step 1 — segment tiles
-python segment_psr.py --data /path/to/inference/ --tile_mode --pad_border 256 \
-    --data_range 1,5 --outdir ./psr_tile_masks/ \
-    --nnunet_results /path/to/nnunet/results \
-    --nnunet_dataset 214 --nnunet_config 2d --nnunet_folds "1 2 3 4"
+export nnUNet_results=/path/to/nnunet/nnUNet_results
+export nnUNet_raw=/path/to/nnunet/nnUNet_raw
 
-# Step 2 — stitch tile masks into WSI mask TIFs
-python reconstruct.py --metadata /path/to/tiles/testA \
-    --tile_dir ./psr_tile_masks/ --output ./psr_masks_wsi/ --mode rgb
+nnUNetv2_predict \
+    -d Dataset314_SR_light \
+    -i /path/to/reconstructed_wsis/ \
+    -o /path/to/wsi_masks/ \
+    -f 0 -tr nnUNetTrainer -c 2d -p nnUNetPlans \
+    -npp 1 -nps 1 -device cpu
 ```
 
+Inference tiles must be stitched into whole slides first (`reconstruct.py`, or
+`scripts/recon_all_configs.sh` for the 54-config grid).
+
 Label convention: `0` background, `1` tissue, `2` PSR-positive. `compare_psr.py`
-reads masks with `tifffile` and takes `[..., 0]` for 3-channel TIFs, so WSI masks
-stitched by `reconstruct.py --mode rgb` are handled correctly.
+reads masks with `tifffile` and takes `[..., 0]` for 3-channel TIFs.
 
-Flags: `--nnunet_trainer` overrides the trainer class; `--device cuda|cpu|mps`;
-`--npp`/`--nps` control nnU-Net worker counts (lower them on OOM); `--verbose`
-streams nnU-Net output live.
-
-WSI mode (omit `--tile_mode`) takes pre-reconstructed WSI TIFs but takes 7+ hours
-per job; not recommended.
+`-npp`/`-nps` are nnU-Net worker counts; keep them at 1 on constrained nodes —
+the committed scripts request 256 GB and run CPU-only on the `paula` partition.
 
 ### PSR Mask Post-Processing
 
@@ -504,15 +496,23 @@ interruption.
 ```bash
 sbatch scripts/infer_small_models.sh          # A→B tiles
 sbatch scripts/eval_all_configs.sh            # FID, patch-SSIM, LPIPS
-sbatch scripts/segment_psr_all_configs.sh     # tile segmentation (Dataset214, padded)
-sbatch scripts/recon_masks_all_configs.sh     # stitch → psr_masks_wsi/
+sbatch scripts/recon_all_configs.sh           # stitch tiles → reconstructed WSIs
+sbatch scripts/segment_psr_nn_light_all_configs.sh  # Dataset314_SR_light → wsi_masks/
 sbatch scripts/apply_he_mask_all_configs.sh   # → psr_masks_wsi_cleaned/
 sbatch scripts/fill_tissue_holes_all_configs.sh  # → psr_masks_wsi_final/
 sbatch scripts/compare_psr_all_configs.sh     # → CPA MAE per model
 ```
 
-Real SR reference: `scripts/segment_psr_real.sh` → `scripts/recon_masks_real.sh` →
-`scripts/apply_he_mask_real.sh` → `scripts/fill_tissue_holes_real.sh`.
+Real SR reference: `scripts/recon_real_psr.sh` (stitch real testB tiles) →
+**[no committed segmentation script]** → `scripts/apply_he_mask_real.sh` →
+`scripts/fill_tissue_holes_real.sh` → consumed by `scripts/compare_psr_all_configs.sh`
+as `psr_masks/real/psr_masks_wsi_final/`.
+
+The real-SR segmentation step has no script in the repository: run
+`nnUNetv2_predict` with `Dataset314_SR_light` over the output of
+`scripts/recon_real_psr.sh` by hand. Note that `scripts/apply_he_mask_real.sh` currently reads
+`psr_masks/real/psr_masks_wsi/`, so either write the predictions there or adjust
+that path.
 
 **Reverse inference and regen error:**
 
@@ -534,18 +534,14 @@ sbatch scripts/aggregate_calibration.sh          # pool tiles per model
 sbatch scripts/recon_ensemble_A2B.sh
 ```
 
-Ensemble CPA uses a different chain: `scripts/segment_psr_nn_light_ensemble.sh`
-(Dataset314_SR_light, WSI mode, CPU) → `scripts/apply_he_mask_ensemble.sh` →
-`scripts/fill_tissue_holes_ensemble.sh` → `scripts/compare_psr_ensemble.sh`.
+Ensemble CPA mirrors the same segmentation: `scripts/recon_ensemble_A2B.sh` →
+`scripts/segment_psr_nn_light_ensemble.sh` (Dataset314_SR_light) →
+`scripts/apply_he_mask_ensemble.sh` → `scripts/fill_tissue_holes_ensemble.sh` →
+`scripts/compare_psr_ensemble.sh`.
 
-**Known inconsistencies in the committed scripts** (verify against the cluster tree
-before trusting either):
-
-- Ensemble size K differs by family: `dclgan` and `cyclediffusion` use `--array=0-9`
-  (K = 10, as the paper reports), while `cyclegan`, `unit`, `munit` and `uvcgan` use
-  `--array=0-4` (K = 5). `scripts/apply_he_mask_ensemble.sh` assumes 10 members for all six.
-- The scaling study segments with **Dataset214_SR** while the ensemble study uses
-  **Dataset314_SR_light**, so CPA values from the two are not on the same footing.
+All six families use **K = 10** ensemble members (`--array=0-9` in the
+`train_ensemble_*` and `infer_ensemble_*` scripts; the CycleDiffusion inference
+scripts use `--array=0-49`, a 2D decomposition of 10 members × 5 test WSIs).
 
 ## Architecture
 

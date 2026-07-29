@@ -68,7 +68,7 @@ HE_MASKS_DIR=/work2/bz66izin-VSproject/HE_tissue
 
 # Reconstructed WSI-level PSR masks produced by recon_masks_all_configs.sh
 SEG_BASE=/work2/bz66izin-VSproject/psr_masks
-PSR_DIR=${SEG_BASE}/${MODEL}/results/data_${DATASIZE}/model_${SIZE}/psr_masks_wsi
+PSR_DIR=${SEG_BASE}/${MODEL}/results/data_${DATASIZE}/model_${SIZE}/wsi_masks
 
 # Output: cleaned masks with background signal zeroed out
 OUT_DIR=${SEG_BASE}/${MODEL}/results/data_${DATASIZE}/model_${SIZE}/psr_masks_wsi_cleaned

@@ -9,7 +9,7 @@
 #SBATCH --partition=paula
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
-#SBATCH --array=0-4   # 5 ensemble members
+#SBATCH --array=0-9   # 10 ensemble members
 
 set -eo pipefail
 
@@ -31,7 +31,7 @@ mkdir -p logs_ensemble
 # -----------------------------
 # Config
 # -----------------------------
-MEMBER=$(printf "%02d" $((SLURM_ARRAY_TASK_ID + 1)))   # 01 … 05
+MEMBER=$(printf "%02d" $((SLURM_ARRAY_TASK_ID + 1)))   # 01 … 10
 DATA_RANGE="1,5"   # testA has 5 folders (001–005) — use all for inference
 
 PROJECT_ROOT=I2I-Stain-Zoo
