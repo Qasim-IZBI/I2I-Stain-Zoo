@@ -1,1093 +1,617 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when working in this repository.
+
+For the user-facing walkthrough (install → data → training → inference →
+evaluation → uncertainty), see `README.md`. This file is the complete flag
+reference plus architecture and conventions.
 
 ## Project Overview
 
-I2I-Stain-Zoo is an image-to-image translation research codebase for virtual staining of histopathology images (H&E ↔ IHC). It implements 9 models with a unified training/inference interface: CycleGAN, UNIT, MUNIT, DCLGAN, UVCGAN, MIUDiff, UNIT-DDPM, CycleDiffusion, and UNSB (last three are diffusion-based).
+I2I-Stain-Zoo is an image-to-image translation research codebase for virtual
+staining of histopathology images (H&E → Sirius Red). It implements **six**
+unpaired architectures behind one training/inference interface: CycleGAN, UNIT,
+MUNIT, DCLGAN, UVCGAN, and CycleDiffusion (the only diffusion-based family).
+
+The repository backs a paper with two experiments:
+
+- **Scaling study** — 54 configurations (6 models × 3 generator sizes × 3 training
+  data fractions), each evaluated on Patch-SSIM, LPIPS, FID and CPA MAE.
+- **Uncertainty study** — the best configuration per family retrained as a deep
+  ensemble, reduced to per-pixel variance and calibrated against cycle error.
+
+Scope rule: the repository was pruned so that every entry point maps to a
+reported result. Do not reintroduce models, metrics or flags that no section of
+the paper uses.
 
 ## Commands
 
 ### Tiling
-Tiles are saved per-WSI into numbered subfolders (`001/`, `002/`, ...) under the output directory.
-Each folder contains `images/` (RGB tiles) and `masks/` (tissue mask tiles, if provided).
-Tile filenames are `{tile_id:07d}.tif`. Running tiling again on the same output directory
-automatically resumes from the next available index.
+
+Tiles are written per-WSI into numbered subfolders (`001/`, `002/`, …) under the
+output directory. Each holds `images/` (RGB) and `masks/` (tissue masks, if
+`--mask` given). Filenames are `{tile_id:07d}.tif`. Re-running on the same output
+directory resumes from the next free index.
+
+Tiling is **non-overlapping** (stride = tile size); this is the study protocol and
+is no longer configurable.
 
 ```bash
-# Basic tiling (256×256, no overlap, no mask filtering)
-python tile.py --rgb path/to/wsi --output path/to/tiles --image_type trainA --tile_size 256
-
-# Extract 512×512 tiles, resize to 256×256, with tissue masks and 25% overlap
+# Study protocol: 512×512 tiles downsampled to 256×256, tissue-filtered
 python tile.py --rgb path/to/wsi --output path/to/tiles --mask path/to/masks \
-    --tile_size 512 --resize_to 256 --image_type trainA --overlap 0.25
+    --tile_size 512 --resize_to 256 --image_type trainA --tissue_threshold 0.5
 
-# Test set tiling with overlap (all tiles kept, no tissue filtering)
+# Test set — keep all tiles (no tissue filtering)
 python tile.py --rgb path/to/wsi --output path/to/tiles --image_type testA \
-    --tile_size 256 --overlap 0.25
+    --tile_size 512 --resize_to 256 --tissue_threshold 0
 ```
 
 Output structure:
+
 ```
 path/to/tiles/
   trainA/
     001/
-      images/            ← 0000001.tif, 0000002.tif, ...
-      masks/             ← 0000001.tif, ... (only if --mask provided)
+      images/            ← 0000001.tif, 0000002.tif, …
+      masks/             ← only if --mask provided
       tiles_metadata.csv ← stride, overlap, x/y positions for this WSI
     002/
-      images/
-      masks/
-      tiles_metadata.csv
 ```
+
+`tiles_metadata.csv` retains `stride` and `overlap` columns for compatibility with
+already-released tilings; `reconstruct.py` does not read them.
 
 ### Training
-Training is step-based (not epoch-based) so comparisons across different dataset sizes are fair.
-Logs are printed every `--log_steps` steps with wall time for that interval. Checkpoints are saved every `--save_steps` steps.
+
+Step-based, not epoch-based, so runs are comparable across data fractions with
+different tile counts. Logs print every `--log_steps` with wall time for the
+interval; checkpoints save every `--save_steps`.
 
 ```bash
-# GAN models (cyclegan, unit, munit, dclgan) — all tiles under trainA/trainB
+# Single-stage models (cyclegan, unit, munit, dclgan, cyclediffusion)
 python train.py --model cyclegan --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
-    --steps 5000000 --amp --output ./results/
+    --steps 750000 --amp --output ./results/
 
-# Train on a subset of WSIs (folders 001–006 only)
-python train.py --model cyclegan --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
-    --data_range 1,6 --steps 5000000 --amp --output ./results/
+# Train on a subset of WSIs (folders 001–007 = 25% data fraction)
+python train.py --model cyclegan --dataA ... --dataB ... \
+    --data_range 1,7 --steps 750000 --amp --output ./results/
 
 # Custom log and checkpoint frequency
-python train.py --model cyclegan --dataA ... --dataB ... --steps 5000000 --amp \
+python train.py --model cyclegan --dataA ... --dataB ... --steps 750000 --amp \
     --log_steps 500 --save_steps 100000 --output ./results/
 
-# Resume/initialise any model from a pretrained checkpoint
-python train.py --model cyclegan --dataA ... --dataB ... --steps 5000000 \
+# Initialise from a pretrained checkpoint (any model)
+python train.py --model cyclegan --dataA ... --dataB ... --steps 750000 \
     --init_ckpt ./prev_run/checkpoints/step_250000.pt --output ./new_run/
 
-# MIUDiff (3-stage): each stage must be a separate --output directory.
-# Stage 1 — train eps_uncond: unconditional DDPM on domain B only (no domain A needed,
-#            but --dataA is still required by the parser; it is not read during pretrain).
-#            Builds a prior over target domain appearance.
-python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp \
-    --miu_stage pretrain --output ./stage1/
+# Deterministic run (ensemble members differ only by seed)
+python train.py --model cyclegan --dataA ... --dataB ... --steps 750000 --amp \
+    --seed 1 --output ./ensemble/model_01/
 
-# Stage 2 — train eps_cond: conditional translation A→B with MI guidance.
-#            --miu_init_ckpt copies the stage-1 eps_uncond weights into eps_cond
-#            as a warm start (all except the extra conditioning input channel).
-python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp \
-    --miu_stage finetune \
-    --miu_init_ckpt ./stage1/checkpoints/step_500000.pt \
-    --output ./stage2/
+# UVCGAN (2-stage): masked-image pretrain → cycle-consistent finetune
+python train.py --model uvcgan --uvcgan_stage pretrain --dataA ... --dataB ... \
+    --steps 250000 --amp --output ./uvcgan/stage1/
+python train.py --model uvcgan --uvcgan_stage finetune \
+    --uvcgan_init_ckpt ./uvcgan/stage1/checkpoints/step_250000.pt \
+    --dataA ... --dataB ... --steps 500000 --amp --output ./uvcgan/stage2/
 
-# Stage 2 with structural reconstruction loss (recommended for structure preservation).
-# --miu_lambda_struct adds L1(extract_struct(x0_pred), x_struct) at every timestep,
-# giving eps_cond a direct gradient to follow the HE conditioning input.
-python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp \
-    --miu_stage finetune --miu_lambda_struct 1.0 \
-    --miu_init_ckpt ./stage1/checkpoints/step_500000.pt \
-    --output ./stage2/
-
-# Stage 3 — finetune with patch contrastive loss (PCL) for structural sharpness.
-#            PCL is now applied at ALL timesteps during training (t0_prime is
-#            inference-only). --miu_lambda_struct can be combined with PCL.
-#            --miu_init_ckpt loads the fully-trained stage-2 checkpoint directly
-#            (does NOT re-copy eps_uncond → eps_cond).
-python train.py --model miudiff --dataA ... --dataB ... --steps 500000 --amp \
-    --miu_stage finetune --miu_pcl --lambda_pcl 0.1 --miu_lambda_struct 1.0 \
-    --miu_init_ckpt ./stage2/checkpoints/step_500000.pt \
-    --output ./stage3/
-
-# MIUDiff UNet architecture controls
-# Option A (default): original channel multipliers, 2 ResBlocks per level
-python train.py --model miudiff --miu_base_channels 64 --miu_channel_mult 1,2,2,4 --miu_num_res_blocks 2 \
-    --dataA ... --dataB ... --steps 500000 --amp --miu_stage pretrain --output ./out/
-
-# Option B: simpler 3-level, 1 ResBlock per level (more stable, faster per step)
-python train.py --model miudiff --miu_base_channels 112 --miu_channel_mult 1,2,4 --miu_num_res_blocks 1 \
-    --dataA ... --dataB ... --steps 500000 --amp --miu_stage pretrain --output ./out/
-
-# MIUDiff conditioning feature type (--miu_cond_type, finetune stages only)
-# Controls what structure map is extracted from the source image xA and fed to eps_cond.
-# 'gray'  (default) — grayscale of xA;  1 output channel
-# 'sobel'           — Sobel gradient magnitude of grayscale xA;  1 output channel
-# cond_type is saved in the checkpoint and restored automatically at inference — no
-# inference flag needed.  To add a new type: add a branch in MIUDiff._extract_struct
-# (models/miudiff.py) and update the --miu_cond_type help string in train.py.
-python train.py --model miudiff --miu_stage finetune --miu_cond_type sobel \
-    --miu_init_ckpt ./stage1/checkpoints/step_700000.pt \
-    --dataA ... --dataB ... --steps 900000 --amp --output ./stage2/
-
-# UVCGAN (2-stage): optional pretrain → finetune
-python train.py --model uvcgan --uvcgan_stage pretrain --dataA ... --dataB ... --steps 1000000 --amp --output ./uvcgan_pt/
-python train.py --model uvcgan --uvcgan_stage finetune --uvcgan_init_ckpt ./uvcgan_pt/checkpoints/step_1000000.pt \
-    --dataA ... --dataB ... --steps 5000000 --amp --output ./uvcgan/
-
-# UVCGAN ViT architecture controls (original: vit_n_blocks=12, vit_features=384)
-python train.py --model uvcgan --uvcgan_vit_blocks 6 --uvcgan_vit_features 192 \
-    --dataA ... --dataB ... --steps 5000000 --amp --output ./uvcgan/
+# Report A→B parameter count without training
+python train.py --model cyclegan --cyclegan_ngf 128 --cyclegan_n_blocks 10 --count_params
 ```
 
-### Inference
+**AMP:** `--amp` is silently disabled for `cyclediffusion` — its UNet runs fp32
+internally and `GradScaler` overflows around 56k steps. A notice is printed.
+
+#### Generator size configurations
+
+Targets are ~10 M (S), ~50 M (M), ~100 M (L) A→B parameters.
+
 ```bash
-# All tiles under testA/
+# CycleGAN / DCLGAN
+--cyclegan_ngf 64  --cyclegan_n_blocks 8     # S
+--cyclegan_ngf 128 --cyclegan_n_blocks 10    # M
+--cyclegan_ngf 192 --cyclegan_n_blocks 9     # L
+
+# UNIT (adds shared bottleneck blocks)
+--unit_ngf 64  --unit_n_blocks 8  --unit_n_blocks_shared 2   # S
+--unit_ngf 128 --unit_n_blocks 10 --unit_n_blocks_shared 2   # M
+--unit_ngf 192 --unit_n_blocks 9  --unit_n_blocks_shared 3   # L
+
+# MUNIT
+--munit_ngf 64  --munit_n_content_blocks 3   # S
+--munit_ngf 128 --munit_n_content_blocks 5   # M
+--munit_ngf 192 --munit_n_content_blocks 4   # L
+
+# UVCGAN
+--uvcgan_ngf 48  --uvcgan_vit_features 96  --uvcgan_vit_blocks 6    # S
+--uvcgan_ngf 96  --uvcgan_vit_features 384 --uvcgan_vit_blocks 6    # M
+--uvcgan_ngf 128 --uvcgan_vit_features 384 --uvcgan_vit_blocks 17   # L
+
+# CycleDiffusion (count covers both eps_A and eps_B; both needed at inference)
+--cd_base_channels 48  --cd_channel_mult 1,2,2,4 --cd_num_res_blocks 1   # S
+--cd_base_channels 84  --cd_channel_mult 1,2,2,4 --cd_num_res_blocks 2   # M
+--cd_base_channels 128 --cd_channel_mult 1,2,4   --cd_num_res_blocks 2   # L
+```
+
+Shared hyperparameters: Adam, lr `2e-4`, β = (0.5, 0.999), batch size 1, linear LR
+decay from the halfway point to zero. Loss weights: CycleGAN/UVCGAN λ_cyc 10,
+λ_id 0.5; UNIT λ_GAN 1, λ_recon 10, λ_KL 0.01; MUNIT λ_img 10, λ_c 1, λ_s 1;
+DCLGAN λ_cyc 10, λ_id 0, λ_DCL 1; CycleDiffusion ε-prediction only.
+
+### Inference
+
+```bash
+# GAN models — single forward pass per tile
 python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA \
     --ckpt model.pt --outdir ./output/
 
-# Subset of WSIs (folders 001–003 only)
+# Subset of WSIs (folders 001–003)
 python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA \
     --data_range 1,3 --ckpt model.pt --outdir ./output/
 
+# CycleDiffusion — DDIM inversion with eps_A, decode with eps_B
+python inference.py --model cyclediffusion --direction A2B --data path/to/tiles/testA \
+    --ckpt model.pt --cd_steps 200 --outdir ./output/
+
+# B→A is symmetric for CycleDiffusion (invert with eps_B, decode with eps_A)
+python inference.py --model cyclediffusion --direction B2A --data path/to/tiles/testB \
+    --ckpt model.pt --cd_steps 200 --outdir ./output_B2A/
+
 # MUNIT with random style sampling
 python inference.py --model munit --direction A2B --data path/to/tiles/testA \
-    --ckpt model.pt --num_samples 3
+    --ckpt model.pt --num_samples 3 --outdir ./output/
 
-# MUNIT with style extracted from a reference image
+# MUNIT with style from a reference image
 python inference.py --model munit --direction A2B --data path/to/tiles/testA \
-    --ckpt model.pt --style_image ref.png
+    --ckpt model.pt --style_image ref.png --outdir ./output/
 
-# ---- MIUDiff inference (3 modes) ----
+# Deterministic output (all models)
+python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA \
+    --ckpt model.pt --seed 42 --outdir ./output/
 
-# Stage 1 — unconditional sampling from domain B (pretrain checkpoint).
-# Reads tiles from a domain B directory; each real tile provides a filename anchor.
-# Output: {outdir}/{stem}_uncond.tif  (one generated sample per B tile found)
-python inference.py --model miudiff --miu_stage pretrain --direction A2B \
-    --data path/to/tiles/testB --ckpt stage1.pt --miu_steps 200 --outdir ./uncond_out/
-
-# Stage 1 — unconditional sampling, count-based (no domain B directory needed).
-# Output: {outdir}/uncond_0000.tif, uncond_0001.tif, ...
-python inference.py --model miudiff --miu_stage pretrain --direction A2B \
-    --data path/to/tiles/testB --ckpt stage1.pt --num_uncond_samples 50 \
-    --miu_steps 200 --outdir ./uncond_out/
-
-# Stage 2/3 — conditional A→B translation (finetune checkpoint, default behaviour).
-# Uses eps_cond with optional MI guidance and PCL refinement.
-# --miu_stage finetune is the default and can be omitted.
-python inference.py --model miudiff --miu_stage finetune --direction A2B \
-    --data path/to/tiles/testA --ckpt stage2.pt --miu_steps 200 \
-    --miu_guidance 1.0 --outdir ./cond_out/
-
-# Stage 2/3 with PCL latent refinement enabled
-python inference.py --model miudiff --miu_stage finetune --direction A2B \
-    --data path/to/tiles/testA --ckpt stage3.pt --miu_steps 200 \
-    --miu_pcl --pcl_refine_steps 3 --outdir ./cond_pcl_out/
-
-# Deterministic output — same input always produces the same tile (all models)
-python inference.py --model miudiff --miu_stage finetune --direction A2B \
-    --data path/to/tiles/testA --ckpt stage3.pt --miu_steps 200 \
-    --seed 42 --outdir ./cond_out/
+# Resume an interrupted job — skips written tiles, redoes the most recent one
+python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA \
+    --ckpt model.pt --outdir ./output/ --resume
 ```
 
-**MIUDiff inference notes:**
-- `--miu_stage pretrain` uses only `eps_uncond` (unconditional DDPM on target domain B). No source image is fed into the network; samples are drawn from pure noise. MI guidance and PCL refinement are not applicable and are silently ignored.
-- `--miu_stage finetune` (default) uses `eps_cond` conditioned on the grayscale source image, with optional MI guidance (`--miu_guidance`) and optional PCL latent refinement (`--miu_pcl --pcl_refine_steps`).
-- `--miu_steps` controls the number of DDIM denoising steps for both stages (fewer = faster but lower quality; 200–300 is typical).
-- `--seed INT` fixes the global torch RNG before sampling, making all `torch.randn` calls (initial noise + MI guidance) deterministic. Identical runs produce pixel-identical outputs.
-- `--miu_noise_level FLOAT` (default 1.0) initialises the starting noise from a partially-noised source image (SDEdit-style) instead of pure Gaussian noise. Not recommended for H&E→SR: values below 1.0 cause HE colour bleed into the output. Use `--color_ref` for colour consistency instead.
-- `--miu_cond_type` is not needed at inference — `cond_type` is saved in the checkpoint and restored automatically.
-- Pretrain checkpoints contain random-weight `eps_cond` parameters. Passing `--miu_stage finetune` to a pretrain checkpoint will produce garbage — a warning is printed if this is detected.
-- Finetune checkpoints have a fully-trained `eps_uncond` (updated alongside `eps_cond`). Running `--miu_stage pretrain` on a finetune checkpoint is valid and samples from the updated unconditional model.
-
-### UNIT-DDPM Training and Inference
-
-Two-stage conditional diffusion (unconditional prior + conditional translation).
-Architecture is identical to MIUDiff but without MI guidance, without PCL, and with
-optional full RGB source conditioning (vs. grayscale-only in MIUDiff).
-
-```bash
-# Stage 1 — unconditional DDPM on domain B (builds target domain prior)
-python train.py --model unitddpm --unitddpm_stage pretrain \
-    --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
-    --steps 500000 --output ./unitddpm_stage1/
-
-# Stage 2 — conditional A→B translation (RGB source conditioning, default)
-python train.py --model unitddpm --unitddpm_stage finetune \
-    --unitddpm_init_ckpt ./unitddpm_stage1/checkpoints/step_500000.pt \
-    --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
-    --steps 500000 --output ./unitddpm_stage2/
-
-# Stage 2 with structural regularisation (recommended: 0.5–1.0)
-python train.py --model unitddpm --unitddpm_stage finetune \
-    --unitddpm_init_ckpt ./unitddpm_stage1/checkpoints/step_500000.pt \
-    --unitddpm_lambda_struct 1.0 \
-    --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
-    --steps 500000 --output ./unitddpm_stage2/
-
-# Stage 2 with grayscale conditioning (lower capacity; faster)
-python train.py --model unitddpm --unitddpm_stage finetune --unitddpm_cond_type gray \
-    --unitddpm_init_ckpt ./unitddpm_stage1/checkpoints/step_500000.pt \
-    --dataA ... --dataB ... --steps 500000 --output ./unitddpm_stage2/
-
-# Inference — conditional A→B
-python inference.py --model unitddpm --unitddpm_stage finetune --direction A2B \
-    --data path/to/tiles/testA --ckpt unitddpm_stage2.pt \
-    --unitddpm_steps 200 --outdir ./unitddpm_out/
-```
-
-**UNIT-DDPM architecture sizing** (A→B params = eps_cond only; eps_uncond adds the same again to the total):
-```bash
-# Small  (~9.5M A→B)  — base=64,  4 levels, 1 ResBlock
-python train.py --model unitddpm --unitddpm_base_channels 64 --unitddpm_channel_mult 1,2,2,4 --unitddpm_num_res_blocks 1 ...
-
-# Medium (~50M A→B)   — base=128, 3 levels, 2 ResBlocks
-python train.py --model unitddpm --unitddpm_base_channels 128 --unitddpm_channel_mult 1,2,4 --unitddpm_num_res_blocks 2 ...
-
-# Large  (~100M A→B)  — base=168, 4 levels, 2 ResBlocks
-python train.py --model unitddpm --unitddpm_base_channels 168 --unitddpm_channel_mult 1,2,2,4 --unitddpm_num_res_blocks 2 ...
-```
-
-**UNIT-DDPM notes:**
-- `--unitddpm_stage` controls which UNet is used: `pretrain` = eps_uncond (unconditional), `finetune` = eps_cond (conditioned on source).
-- `--unitddpm_cond_type rgb` (default) concatenates the full 3-ch source image to the noisy target (6-ch input). Use `gray` or `sobel` for lighter 4-ch conditioning.
-- `--unitddpm_lambda_struct` applies L1 loss between grayscale of x0_pred and grayscale of xA at every timestep — provides direct structural guidance. Recommended when training without MI guidance.
-- Finetune warm-start: `--unitddpm_init_ckpt` loads a pretrain checkpoint and initialises eps_cond RGB channels from eps_uncond weights (extra cond channel initialised from mean).
-
-### CycleDiffusion Training and Inference
-
-Two unconditional DDPMs (one per domain) trained jointly. Translation is done via
-DDIM inversion: xA is encoded to a noise code with eps_A, then decoded with eps_B.
-No discriminator, no stages — train both simultaneously.
-
-```bash
-# Joint training (single run, no stages)
-python train.py --model cyclediffusion \
-    --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
-    --steps 1000000 --output ./cyclediffusion/
-
-# Smaller / faster variant (3 levels, 1 ResBlock)
-python train.py --model cyclediffusion \
-    --cd_base_channels 112 --cd_channel_mult 1,2,4 --cd_num_res_blocks 1 \
-    --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
-    --steps 1000000 --output ./cyclediffusion/
-
-# Inference A→B (DDIM-invert with eps_A, decode with eps_B)
-python inference.py --model cyclediffusion --direction A2B \
-    --data path/to/tiles/testA --ckpt cyclediffusion.pt \
-    --cd_steps 200 --outdir ./cyclediffusion_out/
-
-# Inference B→A (symmetric; DDIM-invert with eps_B, decode with eps_A)
-python inference.py --model cyclediffusion --direction B2A \
-    --data path/to/tiles/testB --ckpt cyclediffusion.pt \
-    --cd_steps 200 --outdir ./cyclediffusion_B2A_out/
-```
-
-**CycleDiffusion architecture sizing** (A→B params = eps_A + eps_B = full model; both UNets needed at inference):
-```bash
-# Small  (~10.7M A→B) — base=48, 4 levels, 1 ResBlock
-python train.py --model cyclediffusion --cd_base_channels 48 --cd_channel_mult 1,2,2,4 --cd_num_res_blocks 1 ...
-
-# Medium (~50.3M A→B) — base=84, 4 levels, 2 ResBlocks
-python train.py --model cyclediffusion --cd_base_channels 84 --cd_channel_mult 1,2,2,4 --cd_num_res_blocks 2 ...
-
-# Large  (~100M A→B)  — base=128, 3 levels, 2 ResBlocks
-python train.py --model cyclediffusion --cd_base_channels 128 --cd_channel_mult 1,2,4 --cd_num_res_blocks 2 ...
-```
-
-**CycleDiffusion notes:**
-- Both domains are trained jointly in a single run; no `--init_ckpt` warm-start is required.
-- Translation quality depends on how well eps_A inverts a test image into the shared noise space. More DDIM steps (`--cd_steps`) improves inversion fidelity at the cost of speed.
-- Because both directions are symmetric and there is no domain-specific conditioning, colour/style transfer is implicit through the shared noise latent. Use `--color_ref` for explicit colour alignment.
-
-### UNSB Training and Inference
-
-Schrödinger Bridge-inspired adversarial diffusion. The forward process starts
-from xA (not Gaussian noise): x_t = sqrt(ᾱ_t)·xA + sqrt(1−ᾱ_t)·ε.
-A score network predicts ε conditioned on xA; an adversarial discriminator pushes
-the predicted x0 toward domain B.
-
-```bash
-# Single-stage training (no pretrain needed)
-python train.py --model unsb \
-    --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
-    --steps 1000000 --output ./unsb/
-
-# Tune adversarial vs. score weighting
-python train.py --model unsb --unsb_lambda_adv 0.2 --unsb_lambda_score 1.0 \
-    --dataA ... --dataB ... --steps 1000000 --output ./unsb/
-
-# Inference A→B
-python inference.py --model unsb --direction A2B \
-    --data path/to/tiles/testA --ckpt unsb.pt \
-    --unsb_steps 200 --outdir ./unsb_out/
-```
-
-**UNSB architecture sizing** (A→B params = z_theta only; discriminator adds ~3M to total but is training-only):
-```bash
-# Small  (~9.5M A→B)  — base=64,  4 levels, 1 ResBlock
-python train.py --model unsb --unsb_base_channels 64 --unsb_channel_mult 1,2,2,4 --unsb_num_res_blocks 1 ...
-
-# Medium (~50M A→B)   — base=128, 3 levels, 2 ResBlocks
-python train.py --model unsb --unsb_base_channels 128 --unsb_channel_mult 1,2,4 --unsb_num_res_blocks 2 ...
-
-# Large  (~100M A→B)  — base=168, 4 levels, 2 ResBlocks
-python train.py --model unsb --unsb_base_channels 168 --unsb_channel_mult 1,2,2,4 --unsb_num_res_blocks 2 ...
-```
-
-**UNSB notes:**
-- Single training stage — no pretrain/finetune split.
-- UNSB is directional: the score network is trained A→B only. For B→A, train a separate model with `--dataA` and `--dataB` swapped.
-- `--unsb_lambda_adv` controls the adversarial push toward domain B. Too high → training instability (GANs); too low → poor domain transfer. Start at 0.1 and adjust.
-- `--unsb_lambda_score` controls the diffusion regularisation. Setting this to 0 degrades to a pure GAN; recommended ≥ 0.5.
-- At inference, sampling starts from a heavily-noised version of xA (SB initial distribution) and denoises conditioned on xA. Fewer `--unsb_steps` is faster but may lose fine detail.
-
-**Colour normalisation (all models)**
-
-Applies Reinhard LAB colour transfer to every output tile so its colour statistics
-match a reference target-domain image or dataset. Useful when the model produces
-structurally correct but colour-inconsistent outputs (e.g. MIUDiff colour-mode drift).
-
-```bash
-# Single reference tile
-python inference.py --model miudiff ... \
-    --color_ref path/to/trainB/001/images/0000001.tif --outdir ./out/
-
-# Entire trainB dataset as reference (macro-average of per-tile LAB stats)
-python inference.py --model miudiff ... \
-    --color_ref path/to/trainB/ --outdir ./out/
-
-# Limit reference to a subset of WSIs
-python inference.py --model miudiff ... \
-    --color_ref path/to/trainB/ --color_ref_data_range 1,10 --outdir ./out/
-```
-
-- Works with all 9 models; combine freely with `--seed` and other flags.
-- Directory mode: walks `images/` subdirectories (excludes binary `masks/` tiles); falls back to a flat directory scan if no `images/` subdirs are found.
-- `--color_ref_data_range` uses the same `start,end` format as `--data_range` and is only relevant when `--color_ref` is a directory.
+More `--cd_steps` improves DDIM inversion fidelity at proportional cost; 200 each
+way is the study setting.
 
 ### Evaluation
+
 ```bash
-# FID (unpaired, distribution-level)
-python evaluation.py --metric fid --path_real real_images/ --path_fake generated_images/ --backend inception --device cuda
-# Backends: inception (InceptionV3 pool3 2048-d) or dino (DINOv2 768/1024-d)
+# FID — InceptionV3 pool3, 2048-d (unpaired, distribution-level)
+python evaluation.py --metric fid --path_real real/ --path_fake generated/ --device cuda
 
-# SSIM (paired, matched by filename)
-python evaluation.py --metric ssim --path_real real_images/ --path_fake generated_images/
+# Patch-based SSIM (paired, matched by filename)
+python evaluation.py --metric patch_ssim --path_real real/ --path_fake generated/ \
+    --patch_size 64 --patches_per_image 16
 
-# Patch-based SSIM (paired)
-python evaluation.py --metric patch_ssim --path_real real_images/ --path_fake generated_images/ --patch_size 64 --patches_per_image 16
+# LPIPS — VGG16 perceptual distance, lower is better (paired)
+python evaluation.py --metric lpips --path_real real/ --path_fake generated/ --device cuda
 
-# LPIPS (paired, VGG16 perceptual distance, lower=better)
-python evaluation.py --metric lpips --path_real real_images/ --path_fake generated_images/ --device cuda
-
-# Cycle reconstruction error A→B'→A' (MAE in [0,255]; correlates with uncertainty)
+# Cycle reconstruction error A→B'→A' (MAE in [0,255])
 python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ckpt model.pt \
     --direction A2B --device cuda
 
-# Regen error with error heatmaps and overlays saved
+# …with heatmaps, overlays and raw per-pixel maps for calibration
 python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ckpt model.pt \
-    --direction A2B --overlay_dir ./regen_overlays/ --save_csv regen.csv --device cuda
+    --direction A2B --overlay_dir ./regen/ --save_error_npy --device cuda
 
-# Regen error with raw per-pixel error maps as .npy (consumed by uncertainty_calibration.py)
-python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ckpt model.pt \
-    --direction A2B --overlay_dir ./regen_overlays/ --save_error_npy --device cuda
-# Writes <overlay_dir>/error_npy/<stem>.npy alongside heatmaps/ and overlays/.
-# --save_error_npy requires --overlay_dir.
-
-# Regen error from precomputed A' tiles — no model inference re-run (works for all models)
-# Use when B→A tiles are already on disk (e.g. from infer_B2A_all.sh).
+# Regen error from precomputed A' tiles — no model inference re-run
 python evaluation.py --metric regen_error \
-    --path_A      data/HE \
-    --path_A_regen ./inference_B2A/ \
-    --overlay_dir ./regen_overlays/ --save_error_npy
-# --path_A_regen is a flat directory of precomputed A' .tif tiles, matched to testA by stem.
-# --model and --ckpt are not required in this mode.
+    --path_A data/HE --path_A_regen ./inference_B2A/ \
+    --overlay_dir ./regen/ --save_error_npy
 
-# Judge regen error |A − judge(B')| (model-independent error proxy; required for MIUDiff)
-# Loads precomputed B' tiles from --path_B_generated (no forward inference here),
-# runs an external judge model in --judge_direction (typically B2A) to produce A_judge,
-# and computes |A − A_judge|. Pair to A by relative path under each root.
-python evaluation.py --metric judge_regen_error \
-    --path_A data/HE \
-    --path_B_generated ./inference_miudiff/ \
-    --judge_model cyclegan --judge_ckpt judge_cyclegan.pt --judge_direction B2A \
-    --overlay_dir ./judge_err_miudiff/ --save_error_npy --device cuda
-# The judge must be a GAN (cyclegan, unit, munit, dclgan, uvcgan); MIUDiff cannot judge.
-# For paper symmetry, use the SAME judge across all 6 architectures under evaluation.
+# Save results to CSV (any metric)
+python evaluation.py --metric patch_ssim --path_real real/ --path_fake generated/ \
+    --save_csv results.csv
 
-# Save results to CSV (works with any metric)
-python evaluation.py --metric ssim --path_real real_images/ --path_fake generated_images/ --save_csv results.csv
-
-# Tissue-only evaluation — auto-detect masks from tile structure (images/ → masks/ sibling)
+# Tissue-only evaluation — masks auto-detected (images/ → masks/ sibling)
 python evaluation.py --metric patch_ssim --path_real testB/tiles/testB \
     --path_fake ./inference/ --min_tissue_fraction 0.1
-
-# Tissue-only FID with explicit mask directory
-python evaluation.py --metric fid --path_real testB/tiles/testB \
-    --path_fake ./inference/ --backend inception --device cuda \
-    --mask_dir testB/tiles/testB --min_tissue_fraction 0.1 --save_csv fid.csv
 ```
 
-**Tissue filtering flags (all metrics):**
-- `--min_tissue_fraction FLOAT` — minimum fraction [0–1] of non-zero mask pixels required to include a tile (default 0 = all tiles). Set e.g. `0.1` to skip background-only tiles.
-- `--mask_dir PATH` — explicit root directory of tissue masks (walked recursively, matched by stem). If omitted, masks are auto-detected from the tile structure by replacing the `images/` path component with `masks/`. Tiles with no matching mask are always included (backward compatible with WSI/flat-dir evaluation).
+`--save_error_npy` writes `<overlay_dir>/error_npy/<stem>.npy` and requires
+`--overlay_dir`. `--path_A_regen` mode needs neither `--model` nor `--ckpt`, and
+works for every family including CycleDiffusion.
+
+**Tissue filtering (all metrics):** `--min_tissue_fraction FLOAT` sets the minimum
+fraction of non-zero mask pixels for a tile to count (default 0 = all). `--mask_dir`
+overrides mask auto-detection. Tiles with no matching mask are always included.
+
+**Available metrics are `fid`, `patch_ssim`, `lpips`, `regen_error` only.** Full-image
+SSIM, the DINOv2 FID backend and the external-judge error proxy were removed: the
+paper uses patch-SSIM, InceptionV3, and each model's own inverse generator.
 
 ### Reconstruction
-Reconstructed files are saved with the **original WSI filename** (e.g. `slide_001.tif`).
-Mask outputs are saved as `{stem}_mask.tif`. Overlapping tiles are averaged by default.
+
+Reconstructed files keep the original WSI filename. Mask outputs are
+`{stem}_mask.tif`. Overlapping regions are averaged by default.
 
 ```bash
-# Reconstruct WSI from original tiles — pass the dataset directory; all per-WSI CSVs are found automatically
+# Pass the dataset directory — all per-WSI CSVs are found automatically
 python reconstruct.py --metadata path/to/tiles/trainA --output ./reconstructed/
 
-# Reconstruct from translated tiles (e.g. inference output directory)
+# Reconstruct from translated tiles (inference output)
 python reconstruct.py --metadata path/to/tiles/testA \
     --tile_dir ./inference_output/ --output ./reconstructed/
 
-# Or pass a single per-WSI CSV directly
-python reconstruct.py --metadata path/to/tiles/trainA/001/tiles_metadata.csv --output ./reconstructed/
+# Or a single per-WSI CSV
+python reconstruct.py --metadata path/to/tiles/trainA/001/tiles_metadata.csv \
+    --output ./reconstructed/
 
-# Reconstruct both RGB and mask, with average blending for overlapping tiles
+# Both RGB and mask, averaging overlaps
 python reconstruct.py --metadata path/to/tiles_metadata.csv --output ./reconstructed/ \
     --mode rgb_and_mask --blend average
 ```
 
-### Batch Inference — All 54 Runs (SLURM)
-Runs `inference.py` for every combination of model, model size, and data size as
-a 54-job SLURM array. Each job finds the latest checkpoint automatically and
-writes translated tiles to `{MODEL_DIR}/inference/`.
-
-```bash
-sbatch infer_all_54.sh
-
-# Run only a subset of the array (e.g. first 6 jobs, one per model at small/small)
-sbatch --array=0-5 infer_all_54.sh
-```
-
-Checkpoint resolution:
-- Single-stage models (cyclegan, unit, munit, dclgan): highest `step_*.pt` under `checkpoints/`
-- miudiff: highest `step_*.pt` under `stage3/checkpoints/`
-- uvcgan:  highest `step_*.pt` under `stage2/checkpoints/`
-
-Output per run: `{BASE}/{model}/results/data_{datasize}/model_{size}/inference/`
-Logs: `logs_infer/infer_{jobid}_{taskid}.out / .err`
-MIUDiff DDIM steps are set by `MIU_STEPS=200` at the top of the script.
-
-### Batch B→A Reverse Inference (SLURM)
-Runs B→A inference on the A→B translated tiles produced by `infer_small_models.sh`,
-giving A' tiles needed for regen-error evaluation without re-running any model inference
-at eval time. 18-job array: 6 models × 3 data sizes, `model_small` only.
-
-```bash
-sbatch scripts/infer_B2A_all.sh
-```
-
-Input per job: `{INFER_BASE}/{model}/results/data_{datasize}/model_small/inference/` (flat B' tiles)
-Output per job: `{INFER_BASE}/{model}/results/data_{datasize}/model_small/inference_B2A/` (flat A' tiles)
-Logs: `logs_infer_B2A/infer_{jobid}_{taskid}.out / .err`
-
-Skip guard: tiles counted; job exits if `n_out == n_in` and both are > 0.
-
-### Batch Regen Error from Precomputed A' Tiles (SLURM)
-Computes cycle regen-error MAE for all 6 models using precomputed A' tiles from
-`infer_B2A_all.sh`. No model or GPU needed — CPU-only pass over tile pairs.
-18-job array: 6 models × 3 data sizes, `model_small` only.
-
-```bash
-sbatch scripts/eval_regen_B2A_all.sh
-```
-
-Input: `inference_B2A/` flat A' tiles (from `infer_B2A_all.sh`); original testA tiles for pairing.
-Output per job in `{REGEN_EVAL_DIR}/{model}/data_{datasize}/model_small/`:
-- `regen_mae.csv` — per-tile MAE + dataset MEAN row
-- `overlays/heatmaps/` — hot-colormap error heatmaps
-- `overlays/overlays/` — 50/50 blend of heatmap and original A tile
-- `overlays/error_npy/` — raw `[H,W]` float32 error maps (consumed by `uncertainty_calibration.py`)
-
-Logs: `logs_regen_eval/regen_{jobid}_{taskid}.out / .err`
-Prerequisites: `infer_small_models.sh` and `infer_B2A_all.sh` must have completed first.
-
-### Visual Inference Grid (all 54 runs)
-Runs A→B inference on a sample of testA tiles for every combination of model,
-model size, and data size, then saves one 6-row (model type) × 3-col figure per
-size level. Checkpoints are located automatically from the standard output tree.
-
-```bash
-# Default: 3 figures (one per model size), columns = data sizes, 3 tiles/cell
-python vis_inference.py
-
-# Flip axes: 3 figures (one per data size), columns = model sizes
-python vis_inference.py --group_by model_size
-
-# Show source image row above translated row in each cell
-python vis_inference.py --show_source
-
-# More tiles per cell and faster MIUDiff diffusion
-python vis_inference.py --num_images 5 --miu_steps 30
-
-# Generate only specific size levels (model sizes when --group_by data_size)
-python vis_inference.py --sizes small large
-
-# Dry-run: print which checkpoints would be used without running inference
-python vis_inference.py --dry_run
-
-# Custom paths
-python vis_inference.py --base /path/to/Outputs --data /path/to/testA --outdir ./vis_out/
-```
-
-Output files: `{outdir}/vis_{group_by}_{size}.png` — 3 files total (one per small/medium/large).
-Multi-stage models: miudiff uses `stage3/`, uvcgan uses `stage2/` checkpoints.
-Missing checkpoints render as a grey placeholder so the grid always completes.
-
-### Loss Plots — All 54 Runs
-Reads `loss_log.csv` files from every combination of model, model size, and data
-size and produces a single 2×3 figure (one subplot per model type). Color encodes
-model size; line style encodes data size. Multi-stage models (miudiff, uvcgan)
-have their stage losses concatenated on a single x-axis.
-
-```bash
-# Plot all 54 runs with default base path
-python plot_all_losses.py
-
-# Custom output path
-python plot_all_losses.py --out /path/to/all_losses.png
-```
-
-Output: one PNG at `--out` (default: `$BASE/all_losses.png`).
-Legend: color = model size (blue/orange/green), line style = data size (solid/dashed/dotted).
-
-### Training Summary & Loss Plots
-```bash
-# Plot losses and save hyperparameters from a training run
-python plot_training.py --run ./results/
-# Outputs: ./results/losses.png, ./results/training_summary.json
-```
+`--mode` is `rgb` | `mask` | `rgb_and_mask` | `auto`; `--blend` is `average` | `overwrite`.
 
 ### Uncertainty Maps
-```bash
-# Compute epistemic uncertainty from deep ensemble outputs
-python uncertainty.py --model cyclegan --data /path/to/cyclegan/output --output ./uncertainty_out
 
-# With log compression, overlays, and custom percentile bounds
-python uncertainty.py --model cyclegan --data /path/to/cyclegan/output --output ./uncertainty_out \
-    --log-compress --overlays --lower-percentile 1 --upper-percentile 99
+```bash
+python uncertainty.py --model cyclegan --data /path/to/ensemble_outputs/ \
+    --output ./uncertainty_out
+
+# Tissue-masked, custom normalisation bounds, WSI subset
+python uncertainty.py --model cyclegan --data /path/to/ensemble_outputs/ \
+    --output ./uncertainty_out --mask_dir path/to/tiles/testA \
+    --min_tissue_fraction 0.001 --data_range 1,5 \
+    --lower-percentile 1 --upper-percentile 99
 ```
-- Expects ensemble member directories named `model_01/`, `model_02/`, etc. under `--data`
-- Computes per-pixel variance (ddof=1) across ensemble RGB predictions, summed across channels
-- Global percentile-based normalisation ensures comparable maps across images
-- Outputs: `raw_npy/`, `norm_npy/`, `heatmaps/` (magma colormap with colorbar), optional `overlays/`, `summary.json`
+
+- Expects ensemble member directories `model_01/`, `model_02/`, … under `--data`;
+  members are discovered by globbing `model_*`, so K is whatever exists.
+- Per-pixel value is **√(Σ per-channel sample variance)** (ddof=1) in 0–255
+  intensity units — i.e. already a standard deviation, not a variance.
+- Outputs: `raw_npy/` (the input to every downstream step), `heatmaps/` (magma PNGs,
+  qualitative only), `mean_rgb/` (ensemble mean, used as the virtual stain),
+  `summary.json`.
+- The percentile flags affect `heatmaps/` only; `raw_npy/` is never rescaled.
+
+Reduce to per-tile σ̄ and plot the per-family distribution:
+
+```bash
+python aggregate_uncertainty.py \
+    --uncertainty_dir ./uncertainty_out/cyclegan/raw_npy/ \
+    --tiles_metadata  path/to/tiles/testA \
+    --mask_dir        path/to/tiles/testA \
+    --min_tissue_fraction 0.001 \
+    --outdir          ./uncertainty_out/cyclegan/per_wsi_csv/
+
+python plot_uncertainty_boxplot.py --base /path/to/ensemble --outdir ./uncertainty_boxplot/
+```
+
+`aggregate_uncertainty.py` writes one CSV per WSI (`tile_name, mean_uncertainty`),
+deriving WSI membership from the `NNN/` component of the npy path so tile IDs
+repeating across WSIs do not collide.
 
 ### Uncertainty Calibration
-Pairs ensemble uncertainty maps with cycle-reconstruction error and reduces both
-heatmaps to numerical calibration scores: within-tile Spearman ρ, across-tile
-Pearson/Spearman, AUSE + sparsification curve, reliability diagram + ECE.
-See `uncertainty_notes.md` for the full methodology and paper-writing notes.
 
-**Prerequisite:** the test set should be tiled with `--overlap 0` to avoid
-pixel double-counting in pooled metrics (ECE, across-tile ρ). See
-`uncertainty_notes.md` §6 for details.
+Pairs ensemble uncertainty with cycle-reconstruction error and reduces both to
+scalar scores: within-tile Spearman ρ, across-tile Pearson/Spearman, and a
+tile-level reliability diagram with ECE.
 
-End-to-end workflow (per architecture):
+**Prerequisite:** re-tile the test set with zero overlap so border pixels are not
+double-counted in pooled ECE and across-tile statistics.
 
 ```bash
-# (a) Train N ensemble members with different --seed.
-python train.py --model cyclegan --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
-    --steps 5000000 --amp --seed 1 --output ./ensemble/cyclegan/model_01/
-# Repeat for --seed 2 ... N into model_02/, model_03/, ...
-
-# (b) Run inference for each member, mirroring the model_01/, model_02/, ... layout.
-for i in 01 02 03 04 05; do
-  python inference.py --model cyclegan --direction A2B \
-      --data path/to/tiles/testA --ckpt ./ensemble/cyclegan/model_${i}/checkpoints/step_5000000.pt \
-      --outdir ./ensemble_outputs/cyclegan/model_${i}/
-done
-
-# (c) Compute per-pixel ensemble variance (uncertainty maps).
-python uncertainty.py --model cyclegan \
-    --data ./ensemble_outputs/cyclegan/ \
+# (a) Train K members with different --seed into model_01/ … model_NN/
+# (b) Run inference per member, mirroring that layout
+# (c) Per-pixel ensemble variance
+python uncertainty.py --model cyclegan --data ./ensemble_outputs/cyclegan/ \
     --output ./uncertainty_out/
 
-# (d) Compute per-pixel error maps. Two variants:
-#
-#  (d-self) Self-cycle (only for models with both directions: cyclegan, unit, munit,
-#           dclgan, uvcgan). Each member judges its own translation.
+# (d) Per-pixel error maps — self-cycle, per member
 python evaluation.py --metric regen_error \
     --path_A path/to/tiles/testA \
-    --model cyclegan --ckpt ./ensemble/cyclegan/model_01/checkpoints/step_5000000.pt \
-    --direction A2B \
-    --overlay_dir ./regen_cyclegan_m01/ --save_error_npy --device cuda
-# For ensemble-mean error, repeat (d-self) per member with distinct --overlay_dir.
-#
-#  (d-judge) External judge — required for MIUDiff (no inverse generator) and
-#            recommended for cross-model symmetry: every model judged by the same
-#            fixed inverter. Loads pre-translated B' tiles from inference output.
-python evaluation.py --metric judge_regen_error \
-    --path_A path/to/tiles/testA \
-    --path_B_generated ./ensemble_outputs/cyclegan/model_01/ \
-    --judge_model cyclegan --judge_ckpt ./judge_cyclegan.pt --judge_direction B2A \
-    --overlay_dir ./judge_err_cyclegan_m01/ --save_error_npy --device cuda
-# Use the SAME judge checkpoint across all 6 architectures so error maps are
-# directly comparable. The judge must be a GAN (any of cyclegan/unit/munit/
-# dclgan/uvcgan); pick one trained model and freeze it.
+    --model cyclegan --ckpt ./ensemble/cyclegan/model_01/checkpoints/step_750000.pt \
+    --direction A2B --overlay_dir ./regen_cyclegan_m01/ --save_error_npy --device cuda
 
-# (e) Run calibration analysis (tissue-only).
+# (e) Calibration
 python uncertainty_calibration.py \
     --uncertainty_dir ./uncertainty_out/cyclegan/raw_npy/ \
-    --error_dirs     ./regen_cyclegan_m01/error_npy/ \
-    --mask_dir       ./tissue_masks_flat/ \
-    --tiles_metadata path/to/tiles/testA \
-    --outdir         ./calibration_cyclegan/
+    --error_dirs      ./regen_cyclegan_m01/error_npy/ \
+    --mask_dir        ./tissue_masks_flat/ \
+    --tiles_metadata  path/to/tiles/testA \
+    --outdir          ./calibration_cyclegan/
 
-# (e′) Ensemble-mean error variant: pass all member error dirs to --error_dirs.
+# (e′) Ensemble-mean error — pass every member's error dir; averaged per-pixel
 python uncertainty_calibration.py \
     --uncertainty_dir ./uncertainty_out/cyclegan/raw_npy/ \
-    --error_dirs     ./regen_cyclegan_m01/error_npy/ ./regen_cyclegan_m02/error_npy/ \
-                     ./regen_cyclegan_m03/error_npy/ ./regen_cyclegan_m04/error_npy/ \
-                     ./regen_cyclegan_m05/error_npy/ \
-    --mask_dir       ./tissue_masks_flat/ \
-    --tiles_metadata path/to/tiles/testA \
-    --outdir         ./calibration_cyclegan/
+    --error_dirs      ./regen_cyclegan_m01/error_npy/ ./regen_cyclegan_m02/error_npy/ \
+                      ./regen_cyclegan_m03/error_npy/ \
+    --mask_dir ./tissue_masks_flat/ --tiles_metadata path/to/tiles/testA \
+    --outdir ./calibration_cyclegan/
 ```
 
-Inputs to `uncertainty_calibration.py`:
-- `--uncertainty_dir` — flat directory of `<stem>.npy` from `uncertainty.py` (use `raw_npy/`, **not** `norm_npy/` which is clipped at p1/p99).
-- `--error_dirs` — one or more flat directories of `<stem>.npy` from `evaluation.py --save_error_npy`. Multiple dirs are averaged per-pixel before calibration.
-- `--mask_dir` — flat directory of tissue mask `<stem>.tif` files (any non-zero pixel = tissue). Required unless `--no_mask` is passed; background inflates Spearman/ECE spuriously.
-- `--tiles_metadata` *(optional)* — dataset root containing per-WSI `tiles_metadata.csv` files. Enables `per_wsi.csv` rollup via the `source_file` column.
+Inputs:
 
-Key flags:
-- `--n_bins 10` — quantile bins for the reliability diagram and ECE.
-- `--no_ause` — skip sparsification curve and AUSE computation (saves runtime; sparsification panel is blanked in the figure).
-- `--ause_steps 100` — fraction-removed steps in the sparsification curve (ignored when `--no_ause`).
-- `--min_tissue_pixels 256` — skip tiles with fewer tissue pixels than this.
+- `--uncertainty_dir` — flat directory of `<stem>.npy` from `uncertainty.py`. Use
+  `raw_npy/`.
+- `--error_dirs` — one or more flat directories of `<stem>.npy` from
+  `evaluation.py --save_error_npy`; multiple are averaged per-pixel first.
+- `--mask_dir` — flat directory of tissue mask `<stem>.tif` (any non-zero = tissue).
+  Required unless `--no_mask`; background inflates ρ and ECE spuriously.
+- `--tiles_metadata` *(optional)* — dataset root with per-WSI `tiles_metadata.csv`,
+  enabling the `per_wsi.csv` rollup via the `source_file` column.
+
+Other flags: `--n_bins 10` (quantile bins for reliability/ECE),
+`--min_tissue_pixels 256` (skip near-empty tiles), `--title` (figure prefix).
 
 Outputs in `--outdir`:
-- `per_tile.csv` — tile_stem, source_wsi, n_tissue_pixels, spearman_rho, pearson_rho_within, mean_u, mean_e, ause
-- `per_wsi.csv` — per-WSI rollup (only when `--tiles_metadata` provided)
-- `summary.json` — dataset aggregates: within-tile Spearman mean/std/median, across-tile Pearson/Spearman, AUSE mean/std, ECE, reliability bins, sparsification curve arrays, parameter record
-- `calibration.png` — 2×2 figure: reliability diagram (tile-mean based), sparsification curve (or blank if `--no_ause`), within-tile ρ histogram, across-tile mean(U) vs mean(E) scatter
 
-**Reliability diagram note:** ECE and the reliability diagram are computed from per-tile `mean_u` / `mean_e` values (one point per tile), not from subsampled pixels. This answers the tile-level question "do tiles with higher uncertainty have higher error?" — the within-tile Spearman ρ already captures the pixel-level spatial calibration.
+- `per_tile.csv` — tile_stem, source_wsi, n_tissue_pixels, spearman_rho,
+  pearson_rho_within, mean_u, mean_e
+- `per_wsi.csv` — per-WSI rollup (only with `--tiles_metadata`)
+- `summary.json` — within-tile Spearman mean/std/median, across-tile
+  Pearson/Spearman, ECE, reliability bins, parameter record
+- `calibration.png` — 1×3 figure: reliability diagram, within-tile ρ histogram,
+  across-tile mean(U) vs mean(E) scatter
 
-Interpretation cheatsheet:
-- Within-tile Spearman ρ → +1 = uncertain pixels are wrong pixels; ≈0 = uninformative; <0 = anti-calibrated.
-- AUSE → 0 = optimal; > 0 = predicted ranking misses high-error pixels.
-- ECE → 0 = bins lie on the y=x diagonal after p1–p99 normalisation.
-- Across-tile ρ → catches the case where uncertainty is locally calibrated but flat at tile level (useless for triage).
+Interpretation: within-tile ρ → +1 means uncertain pixels are wrong pixels, ≈0
+uninformative, <0 anti-calibrated. Across-tile ρ catches the case where uncertainty
+is locally calibrated but flat at tile level (useless for triage). ECE → 0 means bins
+lie on y = x after p1–p99 normalisation.
+
+Cycle error is a **proxy**, not ground truth: when forward and inverse generators
+share a bias, both may ignore the same feature and the round trip still reconstructs
+the source despite a poor forward translation.
 
 ### Aggregate Calibration — Per-Model Summaries
-Pools the per-WSI `per_tile.csv` files written by `run_calibration_all.sh` (6 models × 5 WSIs)
-and recomputes all calibration metrics on the full tile pool per model. This gives
-statistically correct per-model statistics: within-tile Spearman distribution,
-across-tile correlations, and reliability diagram / ECE are computed from all tiles
-together rather than averaged over per-WSI summaries.
+
+Pools the per-WSI `per_tile.csv` files from `scripts/run_calibration_all.sh` and recomputes
+every metric on the full tile pool per model, so the Spearman distribution,
+across-tile correlations and reliability diagram come from all tiles together rather
+than an average of per-WSI summaries.
 
 ```bash
-# Direct invocation
-python aggregate_calibration.py \
-    --base   /work2/bz66izin-VSproject/ensemble \
-    --outdir ./calibration_combined/
-
-# SLURM (single job — loops over all 6 models internally)
+python aggregate_calibration.py --base /path/to/ensemble --outdir ./calibration_combined/
 sbatch scripts/aggregate_calibration.sh
 ```
 
-Outputs per model in `{outdir}/{model}/`:
-- `summary.json` — within-tile Spearman mean/std/median, across-tile Pearson/Spearman, ECE, reliability bins
-- `calibration.png` — 4-panel figure: reliability diagram, within-tile ρ histogram, across-tile mean(U) vs mean(E) scatter (same layout as per-WSI)
-
-Outputs overall:
-- `{outdir}/all_models.csv` — one row per model with all key metrics for side-by-side comparison
-
-Key flag:
-- `--n_bins INT` — quantile bins for the reliability diagram and ECE (default: 10)
-
-**Note:** run after `run_calibration_all.sh` completes all 30 jobs. The script expects
-`per_tile.csv` files at `ensemble/{MODEL}/data_large/{MODEL_SIZE}/calibration/{MODEL}/wsi{NNN}/`.
+Outputs `{outdir}/{model}/summary.json`, `{outdir}/{model}/calibration.png`, and
+`{outdir}/all_models.csv`. `--n_bins` sets the quantile bin count (default 10).
+Expects `per_tile.csv` at
+`ensemble/{MODEL}/data_large/{MODEL_SIZE}/calibration/{MODEL}/wsi{NNN}/`.
 
 ### PSR Positive Area Segmentation
-Runs a nnUNet v2 segmentation model (Dataset214_SR, patch size 512×512, trained on
-full WSIs) on Sirius Red images to produce tissue and PSR-positive area masks. Two modes:
 
-**Tile mode (`--tile_mode`, recommended):** segments inference tiles directly. Use
-`--pad_border 256` to pad each tile with white pixels before nnUNet — the model was
-trained on full WSIs and needs to see tissue against glass background to correctly
-classify the tissue class; without padding all-tissue tiles produce near-absent tissue
-segmentation. The prediction is cropped back to the original tile size automatically.
-A background thread streams completed predictions into `{outdir}/{NNN}/images/` as
-nnUNet writes them. Crash-safe: a persistent `_nnunet_raw/` staging dir survives job
-failures and nnUNet automatically skips already-done tiles on re-run. Use
-`reconstruct.py --tile_dir` afterward to stitch tile masks into WSI TIFs.
+Runs a frozen nnU-Net v2 model (Dataset214_SR, 512×512 patches, trained on full
+WSIs) over Sirius Red images to produce tissue and collagen-positive masks.
 
-**WSI mode (default):** takes pre-reconstructed WSI TIFs. Not recommended — the model
-was trained on ~14k×15k slides and WSI-mode inference takes 7+ hours per job.
+**Tile mode (`--tile_mode`, the study path):** segments inference tiles directly.
+`--pad_border 256` pads each tile with white before nnU-Net so the model sees tissue
+against glass — without it, all-tissue tiles produce near-absent tissue
+segmentation. The prediction is cropped back automatically. A background thread
+streams finished predictions into `{outdir}/{NNN}/images/`. Crash-safe: a persistent
+`_nnunet_raw/` staging dir survives job failure and nnU-Net skips completed tiles on
+re-run.
 
 ```bash
-# Segment inference tiles (tile mode — recommended)
-# Step 1: segment tiles → per-tile masks streamed to {NNN}/images/ as nnUNet runs
-python segment_psr.py \
-    --data       /path/to/cyclegan/inference/ \
-    --tile_mode \
-    --data_range 1,5 \
-    --pad_border 256 \
-    --outdir     ./psr_tile_masks_cyclegan/ \
+# Step 1 — segment tiles
+python segment_psr.py --data /path/to/inference/ --tile_mode --pad_border 256 \
+    --data_range 1,5 --outdir ./psr_tile_masks/ \
     --nnunet_results /path/to/nnunet/results \
     --nnunet_dataset 214 --nnunet_config 2d --nnunet_folds "1 2 3 4"
 
-# Step 2: stitch tile masks → WSI-level mask TIFs (consumed by compare_psr.py)
-python reconstruct.py \
-    --metadata /path/to/tiles/testA \
-    --tile_dir ./psr_tile_masks_cyclegan/ \
-    --output   ./psr_masks_cyclegan/ \
-    --mode     rgb
-
-# Stream nnUNet stdout/stderr live
-python segment_psr.py --data ./inference/ --outdir ./masks/ \
-    --tile_mode --pad_border 256 \
-    --nnunet_results /path/to/nnunet/results --nnunet_dataset 214 \
-    --nnunet_folds "1 2 3 4" --verbose
+# Step 2 — stitch tile masks into WSI mask TIFs
+python reconstruct.py --metadata /path/to/tiles/testA \
+    --tile_dir ./psr_tile_masks/ --output ./psr_masks_wsi/ --mode rgb
 ```
 
-Output mask TIF label convention:
-- `0` — background
-- `1` — tissue (Tissue class)
-- `2` — PSR-positive area
+Label convention: `0` background, `1` tissue, `2` PSR-positive. `compare_psr.py`
+reads masks with `tifffile` and takes `[..., 0]` for 3-channel TIFs, so WSI masks
+stitched by `reconstruct.py --mode rgb` are handled correctly.
 
-`compare_psr.py` reads masks with `tifffile` and takes `[..., 0]` for 3-channel TIFs, so
-WSI masks reconstructed from tile masks (3-channel output of `reconstruct.py --mode rgb`)
-are handled correctly.
+Flags: `--nnunet_trainer` overrides the trainer class; `--device cuda|cpu|mps`;
+`--npp`/`--nps` control nnU-Net worker counts (lower them on OOM); `--verbose`
+streams nnU-Net output live.
 
-Key flags:
-- `--tile_mode` — segment inference tiles directly; `--data` must have `{NNN}/images/` structure
-- `--pad_border N` — (tile mode) pad each tile with N white pixels before nnUNet and crop after; use 256 to fix tissue class detection on all-tissue tiles
-- `--data_range START,END` — (tile mode) limit to WSI folders e.g. `1,5`
-- `--nnunet_results` sets `nnUNet_results`; can be omitted if already set in the environment
-- `--nnunet_trainer` overrides the nnUNet trainer class (uses nnUNet default if omitted)
-- `--device cuda|cpu|mps` (default: cuda)
+WSI mode (omit `--tile_mode`) takes pre-reconstructed WSI TIFs but takes 7+ hours
+per job; not recommended.
 
-### PSR Evaluation Pipeline (SLURM)
-Full end-to-end pipeline from inference tiles to PSR distribution comparison.
-Each script has a pre-flight skip guard — safe to re-submit if a job is interrupted.
-Segmentation uses tile mode with `--pad_border 256` (Dataset214_SR, folds 1–4).
+### PSR Mask Post-Processing
+
+Both steps run between segmentation and comparison and materially affect CPA.
 
 ```bash
-# Generated SR (54-job arrays — 6 models × 3 model sizes × 3 data sizes)
-sbatch scripts/infer_small_models.sh          # inference tiles → {inference}/{model}/.../inference/
-sbatch scripts/segment_psr_all_configs.sh     # tile segmentation (padded) → .../tile_masks/{NNN}/images/
-sbatch scripts/recon_masks_all_configs.sh     # stitch masks → .../psr_masks_wsi/*.tif
+# Zero out PSR predictions outside the H&E tissue boundary
+python apply_he_mask.py --psr_masks ./psr_masks_wsi/ --he_masks ./he_tissue_masks/ \
+    --outdir ./psr_masks_wsi_cleaned/
 
-# Real SR testB (single jobs)
-sbatch scripts/segment_psr_real.sh            # tile segmentation (padded) → psr_masks/real/tile_masks/
-sbatch scripts/recon_masks_real.sh            # stitch masks → psr_masks/real/psr_masks_wsi/*.tif
-
-# Compare distributions (all generated models vs real)
-python compare_psr.py \
-    --masks_real   /work2/bz66izin-VSproject/psr_masks/real/psr_masks_wsi/ \
-    --masks_generated \
-        /work2/bz66izin-VSproject/psr_masks/cyclegan/results/data_small/model_small/psr_masks_wsi/ \
-        /work2/bz66izin-VSproject/psr_masks/unit/results/data_small/model_small/psr_masks_wsi/ \
-    --labels cyclegan unit \
-    --outdir ./psr_comparison/
+# Fill enclosed background inside the tissue footprint (labels 1+2 as foreground)
+python fill_tissue_holes.py --masks ./psr_masks_wsi_cleaned/ \
+    --outdir ./psr_masks_wsi_final/
 ```
 
-Output directory layout under `/work2/bz66izin-VSproject/`:
-```
-inference/{model}/results/data_{d}/model_{s}/
-  inference/              ← translated tiles from infer_small_models.sh
+`apply_he_mask.py` accepts a directory (matched by stem) or a single TIF pair;
+multi-channel TIFs use the `[..., 0]` slice, and an HE mask of different spatial size
+is resized nearest-neighbour. PSR files with no matching HE mask are warned and
+skipped.
 
-psr_masks/{model}/results/data_{d}/model_{s}/
-  tile_masks/{NNN}/images/  ← per-tile nnUNet predictions (segment_psr_all_configs.sh)
-  psr_masks_wsi/            ← reconstructed WSI masks (recon_masks_all_configs.sh)
-
-psr_masks/real/
-  tile_masks/{NNN}/images/  ← per-tile nnUNet predictions (segment_psr_real.sh)
-  psr_masks_wsi/            ← reconstructed WSI masks (recon_masks_real.sh)
-```
-
-### Apply HE Tissue Mask to PSR Masks
-Removes spurious nnUNet predictions in background regions of translated SR images by
-zeroing out any PSR mask pixel that falls outside the HE tissue boundary. The model
-was trained on full WSIs with a white glass background; translated tiles lack that
-context, causing over-estimated tissue/PSR+ signal in background areas.
-
-```bash
-# Directory mode — files matched by stem name
-python apply_he_mask.py \
-    --psr_masks  ./psr_masks_wsi/ \
-    --he_masks   ./he_tissue_masks/ \
-    --outdir     ./psr_masks_cleaned/
-
-# Single-file pair
-python apply_he_mask.py \
-    --psr_masks  ./psr_masks_wsi/slide_001.tif \
-    --he_masks   ./he_tissue_masks/slide_001.tif \
-    --outdir     ./psr_masks_cleaned/
-```
-
-Output masks keep the original label convention (0=background, 1=tissue, 2=PSR+) inside
-the HE tissue boundary; all pixels outside are forced to 0. Pass `--outdir` output to
-`compare_psr.py` or `cross_stain_consistency.py` as usual.
-
-Key flags:
-- `--psr_masks` — directory of PSR mask TIFs or a single TIF
-- `--he_masks` — directory of HE tissue mask TIFs (matched by stem) or a single TIF
-- `--outdir` — output directory for cleaned masks
-
-Notes:
-- Multi-channel TIFs are handled via `[..., 0]` slice (first channel used)
-- If HE and PSR masks differ in spatial size, the HE mask is resized with nearest-neighbour interpolation
-- PSR files with no matching HE mask are warned and skipped; a summary count is printed
+`fill_tissue_holes.py` treats the **union** of labels 1 and 2 as foreground —
+filling only label 1 would mark every PSR-positive pixel as a hole and relabel it.
 
 ### PSR Distribution Comparison
-Compares PSR-positive area fraction distributions between real SR and one or more sets of
-generated SR masks (output of `segment_psr.py`). Reports both **paired** metrics (matched
-by WSI stem, primary) and **distributional** metrics (unpaired, secondary) vs. real SR.
+
+Compares collagen proportionate area between real SR and one or more generated
+mask sets, matched by WSI stem.
 
 ```bash
-# Compare one generated condition against real SR
-python compare_psr.py \
-    --masks_real ./psr_masks_real/ \
-    --masks_generated ./psr_masks_cyclegan/ \
-    --labels cyclegan \
-    --outdir ./psr_comparison/
-
-# Compare multiple models at once (produces a single combined plot)
-python compare_psr.py \
-    --masks_real ./psr_masks_real/ \
-    --masks_generated ./masks_cyclegan/ ./masks_unit/ ./masks_munit/ ./masks_dclgan/ \
-    --labels cyclegan unit munit dclgan \
-    --outdir ./psr_comparison/
+python compare_psr.py --masks_real ./psr_masks_real/ \
+    --masks_generated ./masks_cyclegan/ ./masks_unit/ \
+    --labels cyclegan unit --outdir ./psr_comparison/
 ```
 
-Outputs in `--outdir`:
-- `per_wsi.csv` — one row per WSI: wsi stem, condition, psr_fraction
-- `summary.json` — per-condition stats (mean, std, median, min, max) and pairwise metrics vs real
-- `comparison.png` — box + individual data point plot, one column per condition
-- `paired_scatter.png` — one subplot per generated condition: real PSR fraction (x) vs. generated (y), one dot per matched WSI stem, annotated with Pearson r and Spearman ρ
-- `paired_metrics.png` — 2×2 scatter plot: Pearson r and Spearman ρ (single dot per condition, top row); MAE and mean paired diff with per-WSI jitter scatter and mean ± std error bar (bottom row)
+Outputs: `per_wsi.csv` (wsi, condition, psr_fraction), `summary.json` (per-condition
+stats and paired metrics vs real), `comparison.png` (box + points),
+`paired_scatter.png` (real vs generated per WSI, annotated with r and ρ),
+`paired_metrics.png`.
 
-Key flags:
-- `--label_tissue INT` / `--label_psr INT` — nnUNet label indices (default: 1 / 2)
-- `--n_bootstrap INT` — bootstrap iterations for Wasserstein CI (default: 1000)
-- `--strip_prefix` — strip the first `_`-delimited token before stem matching (e.g. `SR_slide.tif` and `HE_slide.tif` both become `slide`); use when real and generated masks have different filename prefixes
+Paired metrics vs real SR — the primary comparison, since testA/testB are serial
+sections of the same blocks: `n_matched`, `pearson_r`/`pearson_pvalue`,
+`spearman_rho`/`spearman_pvalue`, `mae_paired` (the headline CPA MAE), and
+`mean_paired_diff_generated_minus_real` (signed bias; positive = over-estimates).
 
-Pairwise metrics reported (each generated condition vs. real SR):
+Flags: `--label_tissue` / `--label_psr` (default 1 / 2), `--strip_prefix` (drop the
+first `_`-delimited token before stem matching, e.g. `SR_slide.tif` ↔ `HE_slide.tif`).
 
-**Paired metrics** (WSIs matched by stem — primary comparison since testA/testB are serially sectioned from the same tissue blocks):
-- `n_matched` — number of WSIs matched by stem between real and generated
-- `pearson_r` / `pearson_pvalue` — linear correlation of matched PSR fractions
-- `spearman_rho` / `spearman_pvalue` — rank correlation of matched PSR fractions
-- `mae_paired` — mean absolute error per matched WSI
-- `mean_paired_diff_generated_minus_real` — signed bias; positive = model over-estimates PSR
+Unpaired distributional metrics (Wasserstein, KS, std ratio) were removed — the
+paper reports paired CPA MAE.
 
-**Distributional metrics** (unpaired — secondary, captures variance collapse and global shift):
-- Wasserstein-1 distance + bootstrap 95% CI (WSI-level resampling)
-- KS test statistic and p-value
-- Mean difference (generated − real): positive = over-estimates PSR
-- Std ratio (generated / real): <1 = collapsed variance (mode failure)
-
-### Rank PSR Configs — Best Config per Model Family
-Reads the `summary.json` files produced by `compare_psr_all_configs.sh` (one per model)
-and identifies the best model-size / data-size combination within each model family.
-Ranking criterion: lowest MAE, tiebreak highest Pearson r.
+### Combined Metric Figures
 
 ```bash
-# Direct invocation
-python rank_psr_configs.py \
-    --indir /work2/bz66izin-VSproject/psr_comparison/ \
-    --outdir ./psr_best_config/
-
-# SLURM array (6 jobs — one per model, output under psr_best_config/{model}/)
-sbatch rank_psr_configs.sh
-```
-
-Outputs in `--outdir`:
-- `best_per_model.csv` — one row per model: best config + Spearman ρ, MAE, Pearson r, n_matched
-- `all_configs.csv` — all 54 configs with paired metrics (for inspection)
-- `best_per_model.png` — single grouped-scatter panel: x = model family, y = MAE ±1 std;
-  9 configs per model group (colour = data size blue/orange/green, marker = model size o/s/^),
-  horizontal offset separates configs within each group, no cross-model connecting lines,
-  star = best config per model family (lowest MAE)
-
-`--indir` must contain one subdirectory per model (cyclegan/, unit/, etc.), each holding
-a `summary.json` from `compare_psr.py`. Missing model directories are warned and skipped.
-
-### Combined Metric Figure — All Four Metrics
-Produces a single 2×2 figure (Patch-SSIM, LPIPS, FID, PSR-MAE) with a shared
-compact legend to the right of the top-right subplot and light vertical separator
-lines between model groups. Requires eval metric CSVs and PSR `summary.json` files.
-Also writes `combined_metrics.csv` (used as input by the correlation scripts below).
-
-```bash
-# Direct invocation
-python plot_combined_metrics.py \
-    --eval_indir /work2/bz66izin-VSproject/Eval \
-    --psr_indir  /work2/bz66izin-VSproject/psr_comparison \
-    --outdir     ./combined_metrics_plot/
-
-# SLURM
+python plot_combined_metrics.py --eval_indir /path/to/Eval --psr_indir /path/to/psr_comparison \
+    --outdir ./combined_metrics_plot/
 sbatch scripts/plot_combined_metrics.sh
 ```
 
-Outputs in `--outdir`:
-- `combined_metrics.png` — 2×2 grouped-scatter figure
-- `combined_metrics.csv` — outer join of all four metrics, one row per (model, model_size, data_size)
-
-Visual encoding: colour = data size, marker shape = model size, error bars = ±1 std across WSIs,
-semi-transparent scatter = per-WSI points; star in PSR-MAE panel = best config per model (lowest MAE, large data only).
-
-### PSR Spearman Correlation — Per Model Type
-> **Scope: within-model.** This plot asks whether image quality metrics agree with
-> PSR-MAE *inside a single architecture* when tuning model size and data size.
-> Contrast with the Ranking Correlation Table below, which asks the same question
-> *across all architectures simultaneously*.
-
-**What is being measured:** For each model family separately (CycleGAN, UNIT, etc.),
-the 9 configs (3 model sizes × 3 data sizes) are ranked by PSR-MAE and by each image
-quality metric (Patch-SSIM, LPIPS, FID). The Spearman rank correlation ρ between the
-two orderings is computed, giving one bar per metric per model — 18 bars total.
-
-**What the result answers:** Within a given architecture, if you tune the model size
-or training data size, do better image quality scores also mean more accurate PSR+
-area fractions? A high |ρ| for a particular model means that metric can guide
-hyperparameter selection for that architecture without running the expensive PSR
-segmentation pipeline. A ρ near zero means the two metrics are decoupled within that
-architecture — picking the config with the best SSIM, for example, gives no
-information about which config will best reproduce PSR+ distributions. The plot also
-reveals whether the relationship is consistent across architectures or model-specific.
-Expected signs: Patch-SSIM negative (higher SSIM → lower MAE), LPIPS and FID positive
-(higher = worse on both).
+Writes `combined_metrics.png` (2×2: Patch-SSIM, LPIPS, FID, CPA MAE) and
+`combined_metrics.csv` (outer join, one row per model × model_size × data_size).
+Colour = data size, marker = model size, error bars = ±1 std across WSIs, star =
+best config per model.
 
 ```bash
-python plot_psr_spearman.py \
-    --csv    ./combined_metrics_plot/combined_metrics.csv \
+python plot_ranking_correlation.py --csv ./combined_metrics_plot/combined_metrics.csv \
     --outdir ./combined_metrics_plot/
-
-sbatch plot_psr_spearman.sh
-```
-
-Outputs in `--outdir`:
-- `psr_spearman.png` — grouped bar chart; significance markers (* p<0.05, ** p<0.01)
-- `psr_spearman.csv` — Spearman ρ, p-value, and n per (model, metric)
-
-### Ranking Correlation Table — All Configs
-> **Scope: cross-model.** This table asks whether image quality metrics agree with
-> PSR-MAE *across the entire model zoo* (all architectures, sizes, and data sizes
-> pooled). Contrast with the PSR Spearman plot above, which asks the same question
-> separately for each architecture.
-
-**What is being measured:** All 54 configurations are ranked globally by each metric
-independently, then the Spearman rank correlation between every pair of ranking vectors
-is computed. This produces a 4×4 matrix of ρ values covering all pairwise
-relationships among Patch-SSIM, LPIPS, FID, and PSR-MAE across the full design space.
-Ranking is direction-aware: rank 1 = best (ascending for FID/LPIPS/PSR-MAE, descending
-for Patch-SSIM).
-
-**What the result answers:** When choosing the best overall model — comparing not just
-configs within one architecture but across all six — do image quality metrics and
-PSR-MAE agree on the winner? This is the critical question for model selection at
-publication time. If image quality metrics strongly correlate with PSR-MAE globally,
-they can substitute for the full PSR pipeline as a selection criterion. If FID, LPIPS,
-and Patch-SSIM agree with each other but not with PSR-MAE, it means all three
-standard metrics share the same blind spot: they reward perceptual realism but miss
-biological content accuracy, and any model chosen solely on image quality grounds may
-be the wrong choice for downstream pathological analysis.
-
-```bash
-python plot_ranking_correlation.py \
-    --csv    ./combined_metrics_plot/combined_metrics.csv \
-    --outdir ./combined_metrics_plot/
-
 sbatch scripts/plot_ranking_correlation.sh
 ```
 
-Outputs in `--outdir`:
-- `ranking_correlation.png` — colour-coded 4×4 table (RdYlGn, −1 to +1); significance markers
-- `ranking_correlation.csv` — Spearman ρ matrix
-- `ranking_correlation_pvalues.csv` — p-value matrix
+Ranks all 54 configurations by each metric independently (rank 1 = best,
+direction-aware) and computes the pairwise Spearman matrix. Writes
+`ranking_correlation.png` (4×4, RdYlGn), `ranking_correlation.csv`, and
+`ranking_correlation_pvalues.csv`. This answers whether image-quality metrics can
+substitute for the CPA pipeline when selecting a model across the whole zoo.
 
-### Cross-stain Consistency
-Measures spatial agreement between acellular eosinophilic regions in the H&E input
-(collagen proxy, via colour deconvolution) and PSR-positive regions in the generated SR
-mask. Because H&E and generated SR tiles are pixel-aligned by construction, no
-registration is needed. Requires no real SR images.
+### SLURM Pipelines
+
+All job scripts live in `scripts/`. They resolve Python through
+`PROJECT_ROOT=I2I-Stain-Zoo`, a path relative to the **submit directory**, and never
+`cd` — so submit from the parent of the repository:
 
 ```bash
-# Reconstruct H&E testA tiles into WSIs first
-python reconstruct.py --metadata /path/to/tiles/testA --output ./wsis_he/
-
-# Then run cross-stain consistency (PSR masks from segment_psr.py on generated SR)
-python cross_stain_consistency.py \
-    --he_wsis    ./wsis_he/ \
-    --psr_masks  ./psr_masks_cyclegan/ \
-    --outdir     ./cross_stain_cyclegan/
-
-# Save H&E collagen proxy masks for visual threshold inspection
-python cross_stain_consistency.py \
-    --he_wsis ./wsis_he/ --psr_masks ./psr_masks_cyclegan/ \
-    --outdir ./cross_stain_cyclegan/ --save_collagen_masks
-
-# Tune deconvolution thresholds if collagen proxy looks wrong
-python cross_stain_consistency.py \
-    --he_wsis ./wsis_he/ --psr_masks ./psr_masks_cyclegan/ \
-    --outdir ./cross_stain_cyclegan/ \
-    --eosin_thresh 0.08 --haem_thresh 0.05 --nuclear_dilation 10
+sbatch I2I-Stain-Zoo/scripts/infer_small_models.sh
 ```
 
-Outputs in `--outdir`:
-- `per_wsi.csv` — wsi stem, Dice, IoU, collagen fraction, PSR+ fraction
-- `summary.json` — mean/std Dice and IoU, parameter record
-- `consistency.png` — Dice per WSI (dot plot) + H&E collagen fraction vs PSR+ fraction (scatter)
-- `collagen_masks/` — H&E collagen proxy TIFs (only with `--save_collagen_masks`)
+Every script has a pre-flight skip guard and is safe to re-submit after an
+interruption.
 
-Collagen proxy pipeline (colour deconvolution + nuclear exclusion):
-1. Macenko colour deconvolution → haematoxylin (H) and eosin (E) channels
-2. `E > eosin_thresh` → eosinophilic mask (collagen + cytoplasm)
-3. Dilate `H > haem_thresh` → nuclear+cytoplasm exclusion mask
-4. Subtract exclusion mask → acellular ECM (collagen proxy)
+**Scaling study (54 configs):**
 
-Key tuning flags:
-- `--eosin_thresh` — higher = stricter, fewer regions classified as eosinophilic [default: 0.05]
-- `--nuclear_dilation` — larger = more cytoplasm excluded around nuclei [default: 8 px]
-- `--min_area` — minimum blob size retained in collagen mask [default: 100 px]
+```bash
+sbatch scripts/infer_small_models.sh          # A→B tiles
+sbatch scripts/eval_all_configs.sh            # FID, patch-SSIM, LPIPS
+sbatch scripts/segment_psr_all_configs.sh     # tile segmentation (Dataset214, padded)
+sbatch scripts/recon_masks_all_configs.sh     # stitch → psr_masks_wsi/
+sbatch scripts/apply_he_mask_all_configs.sh   # → psr_masks_wsi_cleaned/
+sbatch scripts/fill_tissue_holes_all_configs.sh  # → psr_masks_wsi_final/
+sbatch scripts/compare_psr_all_configs.sh     # → CPA MAE per model
+```
+
+Real SR reference: `scripts/segment_psr_real.sh` → `scripts/recon_masks_real.sh` →
+`scripts/apply_he_mask_real.sh` → `scripts/fill_tissue_holes_real.sh`.
+
+**Reverse inference and regen error:**
+
+```bash
+sbatch scripts/infer_B2A_all.sh        # B'→A' tiles, for regen error without re-inference
+sbatch scripts/eval_regen_B2A_all.sh   # CPU-only MAE pass over tile pairs
+```
+
+**Ensemble / uncertainty:**
+
+```bash
+sbatch scripts/train_ensemble_cyclegan.sh        # one per family; array size sets K
+sbatch scripts/infer_ensemble_cyclegan.sh        # A→B per member
+sbatch scripts/infer_ensemble_cyclegan_B2A.sh    # B→A per member
+sbatch scripts/compute_ensemble_uncertainty.sh   # per-pixel variance
+sbatch scripts/compute_ensemble_regen_error.sh   # per-member error maps
+sbatch scripts/run_calibration_all.sh            # calibration per model per WSI
+sbatch scripts/aggregate_calibration.sh          # pool tiles per model
+sbatch scripts/recon_ensemble_A2B.sh
+```
+
+Ensemble CPA uses a different chain: `scripts/segment_psr_nn_light_ensemble.sh`
+(Dataset314_SR_light, WSI mode, CPU) → `scripts/apply_he_mask_ensemble.sh` →
+`scripts/fill_tissue_holes_ensemble.sh` → `scripts/compare_psr_ensemble.sh`.
+
+**Known inconsistencies in the committed scripts** (verify against the cluster tree
+before trusting either):
+
+- Ensemble size K differs by family: `dclgan` and `cyclediffusion` use `--array=0-9`
+  (K = 10, as the paper reports), while `cyclegan`, `unit`, `munit` and `uvcgan` use
+  `--array=0-4` (K = 5). `scripts/apply_he_mask_ensemble.sh` assumes 10 members for all six.
+- The scaling study segments with **Dataset214_SR** while the ensemble study uses
+  **Dataset314_SR_light**, so CPA values from the two are not on the same footing.
 
 ## Architecture
 
 ### Model Interface
 
-All models implement a common interface consumed by `BaseTrainer` (`trainer/base_trainer.py`):
-- `generator_parameters()` → params for generator optimizer
-- `discriminator_parameters()` → params for discriminator optimizer (optional)
+All models implement the interface consumed by `BaseTrainer`
+(`trainer/base_trainer.py`):
+
+- `generator_parameters()` → params for the generator optimiser
+- `discriminator_parameters()` → params for the discriminator optimiser (may be empty)
 - `compute_generator_loss(batch)` → `(loss, log_dict, visuals_dict)`
 - `compute_discriminator_loss(batch, visuals)` → `(loss, log_dict)`
 
 ### Shared Components (`base_models.py`)
 
-Reusable building blocks across all GAN models:
-- `Encoder` → `ResnetBottleneck` → `Decoder` pipeline (with `ResnetBlock` internals)
-- `NLayerDiscriminator` — PatchGAN (70×70 receptive field)
-- `ImagePool` — replay buffer for discriminator stability
-- Diffusion components: `DiffusionSchedule`, `DDPMUNet`, `AttentionBlock`, `ResBlock` — defined in `models/miudiff.py` (not `base_models.py`); imported by UNIT-DDPM, CycleDiffusion, and UNSB as `from models.miudiff import DDPMUNet, UNetConfig, DiffusionSchedule`.
+GAN building blocks: `Encoder` → `ResnetBottleneck` → `Decoder` (with `ResnetBlock`),
+`NLayerDiscriminator` (70×70 PatchGAN), `ImagePool`, `GANLoss`, `init_weights`,
+`info_nce`, `PatchSampler`, `discriminator_loss`, `identity_loss`.
+
+Diffusion blocks (used by CycleDiffusion): `DiffusionSchedule`, `timestep_embedding`,
+`UNetConfig`, `DDPMUNet`, `ResBlock`, `AttentionBlock`, `Downsample`, `Upsample`,
+`GroupNorm32`, `SiLU`, `ZeroModule`. These previously lived in `models/miudiff.py`
+and were moved here when MIUDiff was removed — CycleDiffusion imports them from
+`base_models`.
 
 ### Model-Specific Notes
 
-| Model | Key Mechanism |
-|-------|--------------|
+| Model | Key mechanism |
+|---|---|
 | CycleGAN | Cycle-consistency loss, paired Enc→Bn→Dec generators |
-| UNIT | Shared bottleneck + KL divergence on variational latent |
+| UNIT | Shared bottleneck + KL divergence on a variational latent |
 | MUNIT | Content/style decomposition with AdaIN; style sampling at inference |
-| DCLGAN | Patch-level contrastive feature matching |
-| UVCGAN | UNet-ViT hybrid with cycle-consistency; optional masked image pretrain |
-| MIUDiff | Conditional DDPM with MI guidance, 3-stage training, optional PCL refinement |
-| UNIT-DDPM | 2-stage conditional DDPM; full RGB or grayscale source conditioning; DDIM decode |
-| CycleDiffusion | Two unconditional DDPMs; DDIM inversion of source → shared noise code → decode |
-| UNSB | Schrödinger Bridge: SB forward from xA; adversarial + score-matching generator loss |
+| DCLGAN | Dual patch-level contrastive (InfoNCE) feature matching |
+| UVCGAN | UNet–ViT hybrid with cycle-consistency; masked-image pretrain stage |
+| CycleDiffusion | Two unconditional DDPMs; DDIM inversion of the source into a shared noise code, then decode |
 
 ### Data Pipeline
 
-- `datasets/unpaired_dataset.py` — training (A+B folders, pseudo-random pairing); supports `data_range`
-- `datasets/single_domain_dataset.py` — inference (single folder); supports `data_range`
-- `datasets/target_only_dataset.py` — MIUDiff stage 1 pretraining; supports `data_range`
-- `datasets/transforms.py` — resize to 256×256, normalize to [-1, 1]
-- Supported formats: .png, .jpg, .jpeg, .tif, .tiff, .bmp, .webp
-- When `data_range=(start, end)` is given, datasets load from `root/{i:03d}/images/` for `i` in `[start, end]`
-- Without `data_range`, datasets walk the entire root directory (backward-compatible)
+- `datasets/unpaired_dataset.py` — training (A+B folders, pseudo-random pairing)
+- `datasets/single_domain_dataset.py` — inference (single folder)
+- `datasets/target_only_dataset.py` — domain-B-only loading (retained; no current
+  model uses it since the pretrain-on-B stages were removed)
+- `datasets/transforms.py` — resize to 256×256, normalise to [-1, 1]
+- Formats: `.png .jpg .jpeg .tif .tiff .bmp .webp`
+- With `data_range=(start, end)` datasets load `root/{i:03d}/images/` for `i` in
+  `[start, end]`; without it they walk the whole root
 
 ### Key Conventions
 
-- All images normalized to [-1, 1] during training; denormalized to [0, 1] for saving
-- AMP (automatic mixed precision) supported via `--amp` flag
-- Checkpoints saved as `{"model": state_dict, "config": asdict(cfg), "model_name": str, ...}` in `output/checkpoints/step_<N>.pt`
-- Config is auto-restored from checkpoint on `--init_ckpt` (train) and `--ckpt` (inference); old checkpoints without `"config"` fall back to CLI args/defaults
-- **Step-based training**: `--steps` (default 5,000,000) controls total optimiser updates; `--save_steps` (default 250,000) controls checkpoint frequency; `--log_steps` (default 1,000) controls loss logging frequency. This keeps model updates constant across different dataset sizes.
-- **Auto-resume**: `BaseTrainer.train()` automatically scans `output/checkpoints/` for `step_*.pt` files at startup and resumes from the latest — no extra flags needed. If the target step count is already reached, training exits immediately.
-- **Training time tracking**: elapsed time is accumulated across resume sessions and stored in each checkpoint. After every checkpoint save and at the end of training, `output/training_meta.json` is updated with `accumulated_seconds`, `human_readable` (e.g. `2h 15m 30s`), `last_updated_step`, and `avg_seconds_per_1k_steps`.
-- **Log format**: `[S00001000 |   12.3s] loss_G:0.4017 ...` — step number and wall time elapsed since the previous log.
-- No external diffusion libraries — DDPM/DDIM sampling implemented from scratch in `models/miudiff.py`
-- No requirements.txt — core deps: torch, torchvision, numpy, PIL, tifffile, tqdm, pandas, matplotlib
+- Images normalised to [-1, 1] for training, denormalised to [0, 1] for saving.
+- AMP via `--amp` (disabled for CycleDiffusion, see above).
+- Checkpoints: `{"model": state_dict, "config": asdict(cfg), "model_name": str, …}`
+  at `output/checkpoints/step_<N>.pt`.
+- Config auto-restores from the checkpoint on `--init_ckpt` (train) and `--ckpt`
+  (inference); checkpoints without `"config"` fall back to CLI args and defaults.
+- **Step-based training:** `--steps` total optimiser updates, `--save_steps` (default
+  250,000) checkpoint frequency, `--log_steps` (default 1,000) logging frequency.
+- **Auto-resume:** `BaseTrainer.train()` scans `output/checkpoints/` for `step_*.pt`
+  at startup and resumes from the latest — no flag needed. If the target step count
+  is already reached it exits immediately.
+- **Training time tracking:** elapsed time accumulates across resumes and is stored
+  in each checkpoint; `output/training_meta.json` records `accumulated_seconds`,
+  `human_readable`, `last_updated_step`, `avg_seconds_per_1k_steps`.
+- **Log format:** `[S00001000 |   12.3s] loss_G:0.4017 …` — step number and wall time
+  since the previous log.
+- No external diffusion libraries — DDPM/DDIM sampling is implemented from scratch.
+- No `requirements.txt`. Dependencies: torch, torchvision, numpy, scipy, pandas,
+  matplotlib, pillow, tifffile, tqdm, pytest (plus nnU-Net v2 for CPA only).
+- Test suite: `pytest tests/ -q` — 100 tests, CPU-only, ~2 s.
