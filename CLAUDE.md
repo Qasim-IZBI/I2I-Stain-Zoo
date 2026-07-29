@@ -126,6 +126,17 @@ python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA 
     --outdir ./out/ --save_aleatoric
 ```
 
+A 5-member UGAC ensemble at the small generator size (both uncertainty
+components: aleatoric per member, epistemic across members):
+
+```bash
+sbatch scripts/train_ensemble_cyclegan_ugac.sh   # --array=0-4, seeds 1-5
+```
+
+Output: `ensemble_ugac/cyclegan/data_large/model_small/models/model_{01..05}/`.
+Kept separate from `ensemble/` because the UGAC objective differs from the
+vanilla runs stored there.
+
 `--save_aleatoric` writes `{outdir}/aleatoric_npy/<stem>.npy` as `[H,W]` float32
 **standard deviations** — the same convention as `uncertainty.py`'s `raw_npy/`,
 so the maps feed `uncertainty_calibration.py` unchanged.
