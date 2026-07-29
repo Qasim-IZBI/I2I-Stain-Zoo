@@ -126,15 +126,30 @@ python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA 
     --outdir ./out/ --save_aleatoric
 ```
 
-A 10-member UGAC ensemble at the small generator size (both uncertainty
-components: aleatoric per member, epistemic across members), matching K = 10
-in the vanilla ensembles:
+UGAC ensembles at the small generator size, K = 10 members per data block,
+over five **disjoint** 7-specimen blocks (50 jobs):
 
 ```bash
-sbatch scripts/train_ensemble_cyclegan_ugac.sh   # --array=0-9, seeds 1-10
+sbatch scripts/train_ensemble_cyclegan_ugac.sh          # --array=0-49
+sbatch --array=0-49%10 scripts/train_ensemble_cyclegan_ugac.sh   # cap concurrency
+sbatch --array=10-19 scripts/train_ensemble_cyclegan_ugac.sh     # one block only
 ```
 
-Output: `ensemble_ugac/cyclegan/data_large/model_small/models/model_{01..10}/`.
+| tasks | folders | output |
+|---|---|---|
+| 0–9   | 001–007 | `ensemble_ugac/cyclegan/data_001_007/model_small/models/model_{01..10}/` |
+| 10–19 | 008–014 | `…/data_008_014/…` |
+| 20–29 | 015–021 | `…/data_015_021/…` |
+| 30–39 | 022–028 | `…/data_022_028/…` |
+| 40–49 | 029–035 | `…/data_029_035/…` |
+
+Blocks are disjoint rather than nested, so differences across them reflect
+*which* slides were seen, not how many — the opposite of the nested 25/50/100%
+fractions in the scaling study. Epistemic variance is computed within a block.
+
+The last block needs folders 031–035, which are outside the 001–030 training
+set; a pre-flight check fails the job immediately with the missing paths rather
+than letting it die inside the dataloader hours later.
 Kept separate from `ensemble/` because the UGAC objective differs from the
 vanilla runs stored there.
 
