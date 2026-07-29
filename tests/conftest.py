@@ -30,6 +30,9 @@ from models.uvcgan import UVCGAN, UVCGANConfig
 
 TINY_CYCLEGAN_CFG = CycleGANConfig(ngf=16, n_blocks=2, ndf=16)
 
+# UGAC variant: 3-head decoders + GGD NLL cycle loss
+TINY_CYCLEGAN_UGAC_CFG = CycleGANConfig(ngf=16, n_blocks=2, ndf=16, ugac=True)
+
 TINY_UNIT_CFG = UNITConfig(
     ngf=16,
     z_dim=64,
@@ -76,6 +79,7 @@ TINY_UVCGAN_CFG = UVCGANConfig(
 
 MODEL_REGISTRY = [
     ("cyclegan",        CycleGAN,  TINY_CYCLEGAN_CFG),
+    ("cyclegan_ugac",   CycleGAN,  TINY_CYCLEGAN_UGAC_CFG),
     ("unit",            UNIT,      TINY_UNIT_CFG),
     ("munit",           MUNIT,     TINY_MUNIT_CFG),
     ("dclgan",          DCLGAN,    TINY_DCLGAN_CFG),

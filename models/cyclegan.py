@@ -8,8 +8,8 @@ import torch
 import torch.nn as nn
 
 from base_models import GANLoss, NLayerDiscriminator, ImagePool
-from base_models import Encoder, Decoder, ResnetBottleneck
-from base_models import discriminator_loss, identity_loss
+from base_models import Encoder, Decoder, Decoder3Head, ResnetBottleneck
+from base_models import discriminator_loss, identity_loss, ggd_nll, ggd_aleatoric_var
 
 
 @dataclass
@@ -28,6 +28,11 @@ class CycleGANConfig:
     gan_mode: str = "lsgan"         # "lsgan" or "vanilla"
     lambda_cycle: float = 10.0
     lambda_identity: float = 0.5    # typical CycleGAN uses 0.5; set 0 to disable
+
+    # UGAC (Upadhyay et al., NeurIPS 2021) — aleatoric uncertainty heads.
+    # False reproduces vanilla CycleGAN exactly; True swaps the decoders for
+    # 3-head variants and replaces the L1 cycle loss with the GGD NLL.
+    ugac: bool = False
 
     # misc
     pool_size: int = 50
@@ -57,8 +62,9 @@ class CycleGAN(nn.Module):
         self.Bn_A = ResnetBottleneck(Cc, n_blocks=cfg.n_blocks)
         self.Bn_B = ResnetBottleneck(Cc, n_blocks=cfg.n_blocks)
 
-        self.Dec_A = Decoder(Cc, cfg.output_nc, ngf=cfg.ngf, n_up=cfg.n_up)
-        self.Dec_B = Decoder(Cc, cfg.output_nc, ngf=cfg.ngf, n_up=cfg.n_up)
+        dec_cls = Decoder3Head if cfg.ugac else Decoder
+        self.Dec_A = dec_cls(Cc, cfg.output_nc, ngf=cfg.ngf, n_up=cfg.n_up)
+        self.Dec_B = dec_cls(Cc, cfg.output_nc, ngf=cfg.ngf, n_up=cfg.n_up)
 
         # ----- Discriminators -----
         self.D_A = NLayerDiscriminator(cfg.input_nc, ndf=cfg.ndf, n_layers=cfg.n_layers_D)
@@ -85,15 +91,42 @@ class CycleGAN(nn.Module):
 
     # ---------------- Forward helpers ----------------
 
-    def forward_A2B(self, xA: torch.Tensor) -> torch.Tensor:
-        z = self.Enc_A(xA)
-        z = self.Bn_A(z)
+    def _decode_A2B(self, xA: torch.Tensor):
+        z = self.Bn_A(self.Enc_A(xA))
         return self.Dec_B(z)
 
-    def forward_B2A(self, xB: torch.Tensor) -> torch.Tensor:
-        z = self.Enc_B(xB)
-        z = self.Bn_B(z)
+    def _decode_B2A(self, xB: torch.Tensor):
+        z = self.Bn_B(self.Enc_B(xB))
         return self.Dec_A(z)
+
+    def forward_A2B(self, xA: torch.Tensor) -> torch.Tensor:
+        """Translated image only — unchanged contract in both modes."""
+        out = self._decode_A2B(xA)
+        return out[0] if self.cfg.ugac else out
+
+    def forward_B2A(self, xB: torch.Tensor) -> torch.Tensor:
+        out = self._decode_B2A(xB)
+        return out[0] if self.cfg.ugac else out
+
+    # ---------------- UGAC inference ----------------
+
+    @torch.no_grad()
+    def forward_A2B_uncertainty(self, xA: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return (translated image, per-pixel aleatoric variance [N,1,H,W]).
+
+        Closed form — a single forward pass, no sampling. Requires cfg.ugac.
+        """
+        if not self.cfg.ugac:
+            raise RuntimeError("forward_A2B_uncertainty() requires a model trained with ugac=True")
+        mu, inv_alpha, beta = self._decode_A2B(xA)
+        return mu, ggd_aleatoric_var(inv_alpha, beta)
+
+    @torch.no_grad()
+    def forward_B2A_uncertainty(self, xB: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not self.cfg.ugac:
+            raise RuntimeError("forward_B2A_uncertainty() requires a model trained with ugac=True")
+        mu, inv_alpha, beta = self._decode_B2A(xB)
+        return mu, ggd_aleatoric_var(inv_alpha, beta)
 
     # ---------------- Losses ----------------
 
@@ -101,23 +134,31 @@ class CycleGAN(nn.Module):
         real_A = batch["A"]
         real_B = batch["B"]
 
-        # Translate
-        fake_B = self.forward_A2B(real_A)
-        fake_A = self.forward_B2A(real_B)
+        if self.cfg.ugac:
+            # UGAC Eq. 9: the cycle pass emits the GGD parameters that are supervised.
+            fake_B = self.forward_A2B(real_A)
+            fake_A = self.forward_B2A(real_B)
+            rec_A, inv_alpha_A, beta_A = self._decode_B2A(fake_B)
+            rec_B, inv_alpha_B, beta_B = self._decode_A2B(fake_A)
+        else:
+            fake_B = self.forward_A2B(real_A)
+            fake_A = self.forward_B2A(real_B)
+            rec_A = self.forward_B2A(fake_B)
+            rec_B = self.forward_A2B(fake_A)
 
-        # Cycle
-        rec_A = self.forward_B2A(fake_B)
-        rec_B = self.forward_A2B(fake_A)
-
-        # Identity (optional)
+        # Identity (optional) — always on mu; forward_* returns the image in both modes
         loss_idt = identity_loss(self.l1, self.forward_A2B, self.forward_B2A,
                                  real_A, real_B, self.cfg.lambda_identity)
 
         # GAN
         loss_gan = self.gan(self.D_B(fake_B), True) + self.gan(self.D_A(fake_A), True)
 
-        # Cycle
-        loss_cycle = self.l1(rec_A, real_A) + self.l1(rec_B, real_B)
+        # Cycle — GGD NLL (UGAC Eq. 7/8) or plain L1
+        if self.cfg.ugac:
+            loss_cycle = (ggd_nll(rec_A, real_A, inv_alpha_A, beta_A)
+                          + ggd_nll(rec_B, real_B, inv_alpha_B, beta_B))
+        else:
+            loss_cycle = self.l1(rec_A, real_A) + self.l1(rec_B, real_B)
 
         loss_G = loss_gan + self.cfg.lambda_cycle * loss_cycle + self.cfg.lambda_identity * loss_idt
 
@@ -127,6 +168,12 @@ class CycleGAN(nn.Module):
             "loss_cycle": float(loss_cycle.detach().cpu()),
             "loss_idt": float(loss_idt.detach().cpu()),
         }
+        if self.cfg.ugac:
+            # L1 cycle is logged alongside so UGAC and vanilla runs stay comparable
+            with torch.no_grad():
+                logs["cycle_l1"] = float((self.l1(rec_A, real_A) + self.l1(rec_B, real_B)).cpu())
+                logs["alpha_mean"] = float((1.0 / inv_alpha_A).mean().cpu())
+                logs["beta_mean"] = float(beta_A.mean().cpu())
 
         visuals = {
             "real_A": real_A,

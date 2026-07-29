@@ -103,6 +103,7 @@ def _build_default_gan_config(args):
         return CycleGANConfig(
             ngf=args.cyclegan_ngf,
             n_blocks=args.cyclegan_n_blocks,
+            ugac=args.cyclegan_ugac,
         )
     elif args.model == "unit":
         n_shared = args.unit_n_blocks_shared
@@ -221,6 +222,10 @@ def main():
     # ---- CycleGAN architecture ----
     parser.add_argument("--cyclegan_ngf", type=int, default=64,
                         help="Generator base channels for CycleGAN")
+    parser.add_argument("--cyclegan_ugac", action="store_true",
+                    help="Enable UGAC aleatoric uncertainty heads (Upadhyay et al., NeurIPS 2021): "
+                         "3-head decoders predicting (mu, 1/alpha, beta) of a generalized Gaussian, "
+                         "with the L1 cycle loss replaced by the GGD NLL. Omit for vanilla CycleGAN.")
     parser.add_argument("--cyclegan_n_blocks", type=int, default=9,
                         help="ResNet blocks in CycleGAN bottleneck")
 

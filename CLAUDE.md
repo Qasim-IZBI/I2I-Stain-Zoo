@@ -102,6 +102,52 @@ python train.py --model cyclegan --cyclegan_ngf 128 --cyclegan_n_blocks 10 --cou
 **AMP:** `--amp` is silently disabled for `cyclediffusion` — its UNet runs fp32
 internally and `GradScaler` overflows around 56k steps. A notice is printed.
 
+#### UGAC — aleatoric uncertainty (CycleGAN, experimental)
+
+`--cyclegan_ugac` enables the UGAC heads of Upadhyay et al., *Robustness via
+Uncertainty-aware Cycle Consistency* (NeurIPS 2021). The decoders become
+`Decoder3Head`, predicting the parameters of a zero-mean generalized Gaussian
+over the per-pixel cycle residual: mu (the image), 1/alpha (scale) and beta
+(shape). The L1 cycle loss is replaced by the GGD negative log-likelihood
+(`ggd_nll`, paper Eq. 8), weighted by `lambda_cycle` as before.
+
+```bash
+# UGAC
+python train.py --model cyclegan --cyclegan_ugac \
+    --dataA ... --dataB ... --steps 750000 --amp --output ./runs/cyclegan_ugac/
+
+# vanilla (default; omit the flag)
+python train.py --model cyclegan --dataA ... --dataB ... --steps 750000 --amp \
+    --output ./runs/cyclegan/
+
+# per-pixel aleatoric SD alongside the translated tiles
+python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA \
+    --ckpt ./runs/cyclegan_ugac/checkpoints/step_750000.pt \
+    --outdir ./out/ --save_aleatoric
+```
+
+`--save_aleatoric` writes `{outdir}/aleatoric_npy/<stem>.npy` as `[H,W]` float32
+**standard deviations** — the same convention as `uncertainty.py`'s `raw_npy/`,
+so the maps feed `uncertainty_calibration.py` unchanged.
+
+Notes:
+
+- `ugac` is stored in the checkpoint config and restored automatically, so
+  inference needs no flag. Loading a vanilla checkpoint with `--save_aleatoric`
+  exits with an error rather than emitting garbage.
+- Aleatoric variance is closed-form, `sigma^2 = alpha^2 * Gamma(3/beta) / Gamma(1/beta)`
+  (`ggd_aleatoric_var`) — one forward pass, no sampling. This is complementary to
+  the ensemble epistemic term: total `sigma^2 = sigma^2_ale + sigma^2_epi`.
+- At `(alpha, beta) = (1, 1)` the NLL is exactly L1, so UGAC strictly generalises
+  the vanilla objective. Verified in `tests/test_ugac.py`.
+- Positivity uses softplus plus a floor rather than the paper's ReLU, which can
+  emit exactly zero and make `log(inv_alpha)` and `lgamma(1/beta)` diverge.
+  `beta` is clamped to [0.2, 4.0] and the power term is evaluated in log space.
+- Head overhead is ~6.3k parameters (<0.06% of the A->B generator), so the S/M/L
+  budgets are unaffected.
+- **Changes what the model learns** — a UGAC run is not comparable to an existing
+  vanilla checkpoint without retraining.
+
 #### Generator size configurations
 
 Targets are ~10 M (S), ~50 M (M), ~100 M (L) A→B parameters.

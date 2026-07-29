@@ -309,8 +309,127 @@ class Decoder(nn.Module):
         return (h, feats) if self.return_features else h
 
 
+class Decoder3Head(nn.Module):
+    """Decoder with three output heads for UGAC (Upadhyay et al., NeurIPS 2021).
+
+    Shares the upsampling trunk with `Decoder`, then splits into three heads that
+    parameterise a zero-mean generalized Gaussian over the per-pixel residual:
+
+      mu        the image itself          (tanh, matches `Decoder`)
+      inv_alpha 1 / scale                 (softplus + floor)
+      beta      shape                     (softplus + floor, clamped)
+
+    Following the paper the network predicts 1/alpha rather than alpha for
+    numerical stability. Positivity is enforced with softplus rather than the
+    paper's ReLU: ReLU can emit exactly zero, which makes log(inv_alpha) and the
+    1/beta in lgamma diverge.
+
+    With (alpha, beta) = (1, 1) the GGD NLL reduces to the L1 cycle loss, so a
+    UGAC model is a strict generalisation of the vanilla one.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        output_nc: int,
+        ngf: int = 64,
+        n_up: int = 2,
+        norm_layer: nn.Module = nn.InstanceNorm2d,
+        min_inv_alpha: float = 1e-2,
+        min_beta: float = 0.2,
+        max_beta: float = 4.0,
+    ):
+        super().__init__()
+        self.min_inv_alpha = min_inv_alpha
+        self.min_beta = min_beta
+        self.max_beta = max_beta
+
+        mult = in_channels // ngf
+        if mult < 1:
+            raise ValueError(f"in_channels ({in_channels}) must be >= ngf ({ngf})")
+
+        trunk: List[nn.Module] = []
+        for _ in range(n_up):
+            trunk += [
+                nn.ConvTranspose2d(ngf * mult, ngf * mult // 2, 3, stride=2, padding=1, output_padding=1, bias=True),
+                norm_layer(ngf * mult // 2),
+                nn.ReLU(True),
+            ]
+            mult //= 2
+        self.trunk = nn.Sequential(*trunk)
+
+        def _head(out_nc: int) -> nn.Module:
+            return nn.Sequential(
+                nn.ReflectionPad2d(3),
+                nn.Conv2d(ngf, out_nc, 7, padding=0, bias=True),
+            )
+
+        # mu keeps the vanilla head exactly (conv + tanh)
+        self.head_mu = _head(output_nc)
+        # alpha / beta are single-channel: one scale and one shape per pixel
+        self.head_inv_alpha = _head(1)
+        self.head_beta = _head(1)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        h = self.trunk(x)
+        mu = torch.tanh(self.head_mu(h))
+        inv_alpha = F.softplus(self.head_inv_alpha(h)) + self.min_inv_alpha
+        beta = F.softplus(self.head_beta(h)) + self.min_beta
+        beta = beta.clamp(max=self.max_beta)
+        return mu, inv_alpha, beta
+
+
+def ggd_nll(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    inv_alpha: torch.Tensor,
+    beta: torch.Tensor,
+    mask: Optional[torch.Tensor] = None,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Generalized Gaussian negative log-likelihood — UGAC Eq. 8.
+
+        L = mean[ (|pred - target| / alpha)^beta - log(beta / alpha) + lgamma(1/beta) ]
+
+    Written in terms of the predicted `inv_alpha` = 1/alpha:
+
+        (|r| * inv_alpha)^beta - log(beta) - log(inv_alpha) + lgamma(1/beta)
+
+    `inv_alpha` and `beta` are [N,1,H,W] and broadcast over the residual's colour
+    channels. `mask` (if given) restricts the mean to selected pixels, which
+    UVCGAN's masked cycle loss needs.
+
+    The power term is evaluated in log space and clamped: |r| can reach 2.0 on
+    [-1,1] images and beta up to 4, so a naive pow overflows in fp16.
+    """
+    r = (pred - target).abs()
+    log_term = torch.log(r * inv_alpha + eps)
+    power = torch.exp((beta * log_term).clamp(max=20.0))
+
+    nll = power - torch.log(beta) - torch.log(inv_alpha) + torch.lgamma(1.0 / beta)
+
+    if mask is not None:
+        mask = mask.expand_as(nll)
+        denom = mask.sum().clamp(min=1.0)
+        return (nll * mask).sum() / denom
+    return nll.mean()
+
+
+def ggd_aleatoric_var(inv_alpha: torch.Tensor, beta: torch.Tensor) -> torch.Tensor:
+    """Closed-form aleatoric variance of a generalized Gaussian (UGAC Sec. 3.2).
+
+        sigma^2 = alpha^2 * Gamma(3/beta) / Gamma(1/beta)
+
+    Needs no sampling — one forward pass gives the full map. Returns the same
+    shape as `inv_alpha`, i.e. [N,1,H,W].
+    """
+    alpha_sq = (1.0 / inv_alpha) ** 2
+    ratio = torch.exp(torch.lgamma(3.0 / beta) - torch.lgamma(1.0 / beta))
+    return alpha_sq * ratio
+
+
 # ============================================================
-# Resnet Generator (Encoder + Bottleneck + Decoder) 
+# Resnet Generator (Encoder + Bottleneck + Decoder)
 # ============================================================
 
 class ResnetGenerator(nn.Module):

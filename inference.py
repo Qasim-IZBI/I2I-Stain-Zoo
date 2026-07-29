@@ -1,6 +1,7 @@
 # infer.py
 import os
 import argparse
+import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import DataLoader
@@ -101,6 +102,11 @@ def main():
     parser.add_argument("--cd_steps", type=int, default=200,
                         help="DDIM inversion + decode steps for CycleDiffusion")
 
+    parser.add_argument("--save_aleatoric", action="store_true",
+                        help="Save per-pixel aleatoric SD as .npy under {outdir}/aleatoric_npy/ "
+                             "(CycleGAN trained with --cyclegan_ugac only). Same [H,W] float32 "
+                             "convention as uncertainty.py raw_npy/, so it feeds "
+                             "uncertainty_calibration.py directly.")
     parser.add_argument("--seed", type=int, default=None,
                         help="Fix the global RNG seed for deterministic sampling.")
 
@@ -108,6 +114,12 @@ def main():
 
     device = get_device()
     model = load_model(args, device)
+
+    save_aleatoric = args.save_aleatoric
+    if save_aleatoric:
+        if args.model != "cyclegan" or not getattr(model.cfg, "ugac", False):
+            raise SystemExit("--save_aleatoric requires a cyclegan checkpoint trained with "
+                             "--cyclegan_ugac (UGAC heads are not present in this model).")
 
     if args.seed is not None:
         torch.manual_seed(args.seed)
@@ -154,10 +166,17 @@ def main():
             os.makedirs(os.path.join(args.outdir, os.path.dirname(stem)), exist_ok=True)
 
             if args.model == "cyclegan":
-                if args.direction == "A2B":
-                    y = model.forward_A2B(x)
+                if save_aleatoric:
+                    fwd = (model.forward_A2B_uncertainty if args.direction == "A2B"
+                           else model.forward_B2A_uncertainty)
+                    y, a_var = fwd(x)
+                    npy_path = os.path.join(args.outdir, "aleatoric_npy", stem + ".npy")
+                    os.makedirs(os.path.dirname(npy_path), exist_ok=True)
+                    # store per-pixel aleatoric SD, matching uncertainty.py's raw_npy convention
+                    np.save(npy_path, a_var.sqrt().squeeze().cpu().numpy().astype("float32"))
                 else:
-                    y = model.forward_B2A(x)
+                    y = (model.forward_A2B(x) if args.direction == "A2B"
+                         else model.forward_B2A(x))
                 save_tile(y, f"{args.outdir}/{stem}.tif")
 
             elif args.model == "unit":
