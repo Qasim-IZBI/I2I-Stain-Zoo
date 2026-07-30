@@ -38,8 +38,38 @@ Epistemic then looks **falsely low and even decreases with more data**.
 
 ### 1.3 The open gap
 - No one has **operationalized the bias term** for image-to-image translation, let alone
-  unpaired virtual staining. 2505.23506 is a *position paper on toy regression* — no method,
-  no application.
+  unpaired virtual staining.
+
+  **Precise status of 2505.23506** *(corrected — see note)*. It is a position paper, and it
+  contains **no method and no I2I application** — but it is *not* toy-only:
+  - §4.4 — synthetic illustration (Beta + sin, heteroscedastic noise, MLP 4×100), sample
+    sizes N ∈ {50, 100, 500}.
+  - §4.5 — **real-data experiment**: NYC taxi trip duration, 1.2M train / 230K test, MLPs.
+    There it decomposes epistemic variance into **procedural vs data** components (Fig. 4)
+    and finds Deep Ensembles capture mostly the *procedural* part.
+
+  **The bias term itself is measured on synthetic data only** (Figs. 1a, 2, 3, 5, 6) — and for
+  a principled reason, not an oversight: bias² = ‖μ − truth‖² needs the data-generating process
+  p(y|x) to be known, which holds only in simulation. On the taxi data the authors must assume
+  a normal target and cannot compute bias at all:
+  > "in statistical simulations, where the data-generating process p(y|x) is known, the bias of
+  > the reference distribution can also be measured."
+
+  > *Note — superseded wording.* An earlier version of this document described 2505.23506 as
+  > "a position paper on toy regression — no method, no application." The *position paper* and
+  > *no method / no application* parts stand; "toy regression" was inaccurate, because §4.5 is
+  > a real-data experiment. Only the **bias** analysis is synthetic-only.
+
+  **This makes our gap sharper, not weaker.** The bias term has never been measured on *any*
+  real dataset, because no real dataset supplies the reference distribution it requires. Our
+  contribution is precisely to sidestep that requirement: serial sections provide a co-located
+  real target φ(y), so bias² = ‖μ(x) − φ(y)‖² becomes computable from ensemble features and
+  target features alone, without knowing p(y|x) — with the real-vs-real serial discrepancy
+  (§6.1) as the floor that keeps the substitution honest.
+
+  Note also that the **procedural-vs-data split (our E2) is already demonstrated on real data**
+  by §4.5, so E2 is a transfer to a new domain rather than a new decomposition; the novelty
+  concentrates in E4.
 - In adversarial unpaired I2I, mode-seeking training makes ensembles **agree on the dominant
   mode**, so high bias coincides with low variance → **confident hallucination**. This means
   **virtual-staining hallucination is the bias term of the uncertainty decomposition**, which
@@ -139,8 +169,10 @@ Each lists: **Gap addressed · Method · Requirements · Expected result · How 
   2. **Money figure** — scatter epistemic-variance vs bias; isolate the **high-bias /
      low-variance quadrant = confident hallucinations**.
   3. **False-confidence-with-data** — subsample training data at several sizes; show
-     variance-epistemic *decreases* while error stays high (reproduce 2505.23506 Fig-4 in the
-     staining setting).
+     variance-epistemic *decreases* while error stays high (reproduce 2505.23506 **Fig. 3** in
+     the staining setting — Deep Ensembles at N ∈ {50, 100, 500}, synthetic there, real here).
+     *(Corrected: earlier drafts cited "Fig-4"; Fig. 4 is the real-data taxi procedural/data
+     decomposition, not the false-confidence result.)*
   4. **Calibration recovery** — variance-alone fails AUSE vs forward error; the completed
      estimate (E2 data + E3 distributional + a bias proxy) restores it.
   5. **Clinical grounding** — show high-bias-low-variance tiles are exactly where the
