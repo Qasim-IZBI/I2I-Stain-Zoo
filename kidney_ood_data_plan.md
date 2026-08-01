@@ -218,6 +218,10 @@ Every component is an aggregate statistic, so all inherit CPA's level-offset rob
 all stay interpretable — but the space now has enough directions to register architectural
 bias that scalar CPA misses. The **β₁ component is what catches the lumen-filler** of §5.3.
 
+The components are on incommensurable scales (fractions vs counts), so the vector must be
+normalised before any `‖·‖²` is taken — see **§5.5**, which is a prerequisite for every bias
+number in §4.
+
 #### 5.4.1 Constraint — measurable in the target stain
 Descriptors must be computable **in the generated stain, on both real and virtual images**.
 This removes two candidates from earlier drafts:
@@ -300,17 +304,76 @@ Caveat: topology is far more sensitive to mask noise than area is — β₀ coun
 component. Apply `remove_small_objects` and a morphological closing first, fix those parameters
 once, apply them identically to real and virtual, and report them.
 
-**Whiten by the floor covariance.** Estimate the cross-level covariance `Σ` of `φ_struct` from
-the real-vs-real bracket (§6), then use `‖·‖²_{Σ⁻¹}`. Otherwise the descriptor with the
-largest raw units dominates the sum and the organs are not comparable. After whitening, bias²
-is in floor-SD units, the subtraction becomes `bias² = observed² − d` with `d` the dimension,
-and liver-vs-kidney bias is directly comparable — which is the point of §4.3.
+#### 5.4.5 Keep UNI as a parallel track, not a replacement
+The two answer different questions: `φ_struct` is interpretable but partial; UNI is sensitive
+but uninterpretable and floor-limited on this data. Report both. Agreement on the ranking of
+high-bias regions strengthens the result; **disagreement is itself informative** about what
+kind of bias is present.
 
-**Keep UNI as a parallel track, not a replacement.** The two answer different questions:
-`φ_struct` is interpretable but partial; UNI is sensitive but uninterpretable and
-floor-limited on this data. Report both. Agreement on the ranking of high-bias regions
-strengthens the result; **disagreement is itself informative** about what kind of bias is
-present.
+### 5.5 Normalising the Vector
+
+The components live on wildly different scales — CPA and the fractions are in [0,1], β₀ and β₁
+are counts in the hundreds — so an unnormalised `‖·‖²` is meaningless. Simulating plausible
+per-region values with a genuine bias injected into β₁, the share each dimension takes of the
+squared norm:
+
+| | raw | z-scored | **floor-whitened** |
+|---|---|---|---|
+| CPA | 0.0% | 10.6% | 7.4% |
+| **β₀** | **67.7%** | 9.2% | 6.4% |
+| **β₁** | 32.3% | 48.9% | **64.0%** |
+| regional_dispersion | 0.0% | 13.2% | 9.3% |
+| lumen_fraction | 0.0% | 9.0% | 6.4% |
+| tissue_fraction | 0.0% | 9.1% | 6.4% |
+
+**Raw:** β₀ takes 68% purely because it is a count. The four bounded descriptors contribute
+*nothing* — any bias in them is numerically invisible.
+
+**Z-scoring is not sufficient.** It fixes the scale but not the correlation. β₀ and β₁ are
+strongly correlated (more collagen → more components *and* more loops), so diagonal scaling
+double-counts that shared direction and still credits β₀ with 9% despite it carrying almost no
+independent bias.
+
+**Full whitening** concentrates 64% on β₁, where the bias actually is.
+
+#### 5.5.1 The recipe
+Estimate the cross-level covariance `Σ` of `φ_struct` from the real-vs-real bracket (§6.1),
+then use the Mahalanobis norm `‖·‖²_{Σ⁻¹}`. Two properties follow:
+
+- **Signal-to-noise weighting.** Directions where levels naturally disagree are downweighted
+  automatically — exactly right when the floor is the adversary.
+- **The subtraction becomes exact.** With `Σ = Cov(δ)` for the level-offset noise δ,
+  `E‖δ‖²_{Σ⁻¹} = d`, so `bias² = observed²_{Σ⁻¹} − d`. In simulation this recovers
+  `15.56 − 6 = 9.56` against a true `9.51`.
+
+#### 5.5.2 Four prerequisites
+1. **Counts → densities.** β₀ scales with region area, so raw counts are ill-defined when
+   regions differ in size. Use per mm² of tissue. This precedes scale-matching; it is about
+   the descriptor being well-defined at all.
+2. **Variance-stabilise the counts.** β₀/β₁ are Poisson-like (variance grows with the mean)
+   while whitening assumes roughly elliptical structure. Apply `sqrt` or `log1p` first.
+3. **Estimate Σ from the floor, never from the observed discrepancies.** The trap: whitening
+   by the covariance of virtual-vs-real differences normalises away the bias being measured.
+   Σ must come from real-vs-real (§6.1). Same failure mode as §6.2's warning against
+   regressing out a global colour offset.
+4. **Shrink it.** `d = 6` means 21 free parameters. Regions supply thousands of samples but
+   are correlated within slide, so the effective n for the between-case component is nearer
+   20 (liver). Use Ledoit–Wolf shrinkage rather than the raw empirical covariance.
+
+#### 5.5.3 Common Σ or per-organ Σ
+Whitening by each organ's *own* floor puts bias in that organ's floor-SD units — so "2
+floor-SDs" denotes different biological magnitudes in liver and kidney. That is a coherent
+signal-to-noise reading, but it is **not** a magnitude comparison, and §4.3's pooled
+bias²-vs-Mahalanobis figure needs the latter. Use a **common Σ** for the pooled plot; report
+per-organ whitening alongside, and say which is which.
+
+#### 5.5.4 You may not need the scalar at all
+Nothing forces a collapse to one number. Per-descriptor bias in **native units** — *"over-calls
+CPA by 2.3 percentage points; 12 fewer collagen loops per mm²"* — requires no normalisation and
+is far more interpretable for a pathology audience. The whitened scalar is needed only for the
+single pooled figure.
+
+**Report both:** native units in the tables, whitened scalar for §4.3.
 
 ---
 
@@ -449,9 +512,9 @@ biases the whole error budget upward. Bootstrap CIs over WSIs.
 | V — double dissociation | **Yes** | kidney = unseen-organ knob |
 | E7 step 3 — topological realism | **Yes** | registration-free by design |
 | Distribution-level FID/KID | **Yes** | vs real kidney *and* liver PSR |
-| **E4 bias, region level, φ_struct** | **Yes** | §4–§5; needs floor bracket (§6) |
+| **E4 bias, region level, φ_struct** | **Yes** | §4–§5; needs floor bracket (§6) and floor-whitening (§5.5) |
 | E4 money figure (var vs bias) | **Yes, at region level** | scalar/vector φ compresses variance — see §5.3 |
 | bias² vs Mahalanobis, both organs | **Yes** | the §4.3 target figure |
-| E4 / E5 with φ = UNI | **Weak** | floor-limited; parallel track only (§5.4) |
+| E4 / E5 with φ = UNI | **Weak** | floor-limited; parallel track only (§5.4.5) |
 | E4 / E5 at tile level | **Maybe** | only if thumbnail registration succeeds (§3) |
 | E4 / E5 per-pixel | **No** | never; not the design anyway |
