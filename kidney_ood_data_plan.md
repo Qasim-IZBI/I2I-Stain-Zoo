@@ -1,7 +1,7 @@
 # Non-Adjacent Section Data — OOD Probe and Bias-Term Feasibility (Liver + Kidney)
 
 > Scope: a decision record for the available **non-adjacent** (same block, different level)
-> H&E + PSR WSI sets — **liver ~35** and **kidney ~35** — covering (a) their use as the
+> H&E + PSR WSI sets — **liver 20 case pairs** and **kidney 40 case pairs** — covering (a) their use as the
 > out-of-distribution probe for **E3**, and (b) whether the **E4 bias term** is computable
 > without serial sections, including the choice of the feature map φ. The liver corpus
 > remains the training and primary-evaluation data; these sets are held-out benchmarks.
@@ -15,7 +15,16 @@
 ## 1. The Questions
 
 Available: kidney and liver WSIs in **H&E** and **PSR**, **same case / different levels of the
-same block** — *not* serial sections. ~35 WSI per organ.
+same block** — *not* serial sections.
+
+- **Liver — 20 case pairs** (40 slides). Disjoint from the training specimens, so the §8
+  hold-out requirement is satisfied.
+- **Kidney — 40 case pairs** (80 slides).
+- **Same magnification and pixel width for both organs**, so organ shift is a single clean
+  knob and is *not* confounded with resolution — which is exactly the one-knob property
+  argued for at the end of this section. Residual to check: identical pixel size does not
+  guarantee the same scanner or staining run; the §2.2 encoder sanity check is what would
+  detect appearance shift riding along.
 
 1. Does the OOD experiment require serial-section pairing? → **No** (§2).
 2. Can the bias term still be estimated from non-adjacent levels? → **Yes, at region level,
@@ -110,11 +119,12 @@ Compute bias on regions large relative to the displacement scale: **~1–2 mm**,
 portal tracts ~1 mm apart; kidney glomeruli are ~200 µm at ~300–500 µm spacing. Both land in
 that range.
 
-Budget: a WSI with 50–500 mm² of tissue yields 25–250 such regions × ~35 slides. Ample.
+Budget: a WSI with 50–500 mm² of tissue yields 25–250 such regions — so ~500–5,000 regions
+for liver and ~1,000–10,000 for kidney. Ample; **cases, not regions, are the binding n**.
 Regions within a slide are correlated — use cluster-robust SEs or treat WSI as the unit, or
 confidence intervals will be badly optimistic.
 
-### 4.3 What 35 + 35 buys that serial liver alone would not
+### 4.3 What 20 + 40 buys that serial liver alone would not
 Bias measured **identically on in-distribution and OOD tissue with the same pairing
 structure**. This converts E4's expected result — *"bias is a large, tissue-rarity-dependent
 fraction of forward error; uncorrelated with epistemic-variance"* — from a within-liver
@@ -126,7 +136,17 @@ bias rises with distributional distance while ensemble variance stays flat, that
 the completion argument (E4 point 4) rather than asserting it. Serial liver alone cannot
 produce this curve.
 
-35 per organ is above the doc's own ask of ~15–30 (`uncertainty_strategy.md:192`).
+Both arms clear the doc's own ask of ~15–30 case pairs (`uncertainty_strategy.md:192`):
+liver 20, kidney 40. Correlation coefficients are reportable for each organ separately, and
+the pooled figure has 60 cases.
+
+**The asymmetry runs the wrong way, though**, and is worth planning around: the OOD arm is
+twice the ID arm, whereas the ID arm carries more inferential load — it anchors the floor
+estimate that is subtracted from *every* bias number, and it sets the baseline against which
+the OOD contrast is read. A noisy OOD arm blurs one end of the curve; a noisy ID arm shifts
+the whole thing. Two mitigations: lean on the floor-free geometric terms (§6.0), whose
+precision does not depend on pairing at all; and consider reporting liver-only and kidney-only
+fits alongside the pooled one.
 
 ### 4.4 Still off the table
 Per-pixel bias maps and any per-structure comparison. E4 point 5 (bias hotspots overlapping
@@ -409,12 +429,15 @@ biases the whole error budget upward. Bootstrap CIs over WSIs.
 1. **Level spacing?** Consecutive ribbon sections vs a re-cut hundreds of microns deeper are
    very different. Under ~100 µm → structurally serial for glomeruli and vessels, and §3
    becomes likely to work.
-2. **Is "35 WSIs" 35 pairs or 35 slides total?** If slides, n ≈ 17 per organ and the
-   case-level analyses get thin. ~15+ makes a correlation coefficient worth reporting; below
-   ~8, report paired differences and Bland–Altman only.
-3. **Are the 35 liver WSIs held out from the training pool?** Required — see §8.
-4. Is a second real PSR level available for any case? Would replace the §6 bracket with a
-   direct floor measurement.
+2. ~~Pairs or slides?~~ **Resolved (2026-08-01):** 20 liver *pairs* and 40 kidney *pairs*.
+   Both clear the ~15-case threshold for reporting correlation coefficients.
+3. ~~Are the liver WSIs held out?~~ **Resolved (2026-08-01):** yes, the 20 liver pairs are
+   disjoint from the training specimens. §8 hold-out discipline satisfied.
+4. ~~Resolution / scanner confound?~~ **Resolved (2026-08-01):** same magnification and pixel
+   width across organs. Scanner and staining batch not yet confirmed — see §1.
+5. **Is a second real PSR level available for any case?** Would replace the §6 bracket with a
+   direct floor measurement. Worth re-asking now the kidney set is 40 pairs: even a handful of
+   two-level cases would materially de-risk the §7 go/no-go.
 
 ---
 
