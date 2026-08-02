@@ -461,6 +461,44 @@ stain-invariant terms only), and the always-on split-half lower bound.
 If the topological terms come back floor-limited, CPA stands alone and the §5.3
 lumen-filler blind spot reopens — a real result, worth knowing early.
 
+#### Stain-perturbation sensitivity — is the "bias" really the segmenter?
+
+Applying one segmenter to both arms cancels *anatomy-driven* error, which is common to
+real and virtual, but **not** *appearance-driven* error — appearance is precisely where
+the two arms differ (§6.2). This bounds the second component with no manual annotation.
+
+Holds anatomy fixed and moves only colour: take a real PSR slide and transform it toward
+the virtual's LAB statistics, t = 0 (untouched) → t = 1 (real anatomy, virtual colour).
+Segment each step. The tissue never changes, so any descriptor drift is measurement
+artefact, and its size is the error bar that belongs on any bias number.
+
+```bash
+python stain_sensitivity.py make-series \
+    --real_psr /path/real_psr_wsis/ --virtual_psr /path/.../reconstructed/model_01/ \
+    --outdir /work2/.../perturbation/
+
+sbatch scripts/segment_psr_perturbation.sh        # array size must match --fractions
+
+python stain_sensitivity.py analyse \
+    --masks /work2/.../perturbation/masks/ \
+    --tiles_metadata /path/tiles/testB --outdir /work2/.../perturbation/
+```
+
+Reads `shift_over_region_sd` — the artefact in units of real biological spread.
+Anything above ~0.25 is flagged: the segmenter reacts to colour at a scale comparable
+to genuine variation, so fold that shift into the floor and treat a bias of similar
+size as unproven.
+
+Two guards worth knowing: `make-series` reports the **out-of-gamut fraction** at each t,
+because clipping is non-invertible and would break the fixed-anatomy premise — narrow
+`--fractions` if it climbs past a percent. And a descriptor with zero between-region
+spread but a non-zero shift reports `inf` rather than `n/a`; that is the worst case, not
+an unknown one.
+
+Sequence it as: eyeball the kidney masks (catches catastrophic failure, free) → this
+test (bounds the differential, hours) → manual annotation only if this shows large
+sensitivity.
+
 **Registration:** none of this needs it, and neither does the ensemble variance — all
 members generate from the same H&E, so region *r* is the same tissue across members.
 Bias against the real PSR *does* need region-level correspondence (a thumbnail affine,
