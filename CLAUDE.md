@@ -433,6 +433,41 @@ Notes that will bite otherwise:
 - Bias against a real target is **not** computed yet: it needs the floor measured (§7)
   and, for kidney, the liver-trained segmenter validated out of distribution (§6.2).
 
+#### Per-descriptor floor — the go/no-go pilot
+
+Run this **before** building on the bias term. If the observed discrepancy lands near
+the floor there is no headroom and `bias² = observed² − d` comes out at or below zero.
+
+```bash
+python estimate_floor.py \
+    --real_psr /path/psr_masks/real/psr_masks_wsi_final \
+    --tiles_metadata /path/tiles/testB \
+    --real_he /path/reconstructed_he \
+    --outdir ./floor_pilot/
+```
+
+The readout is **per descriptor**, not pooled, because a single number hides whether
+any individual component is stable enough between levels to carry a bias signal. CPA
+averages over millions of pixels and concentrates fast; β₀/β₁ count discrete events and
+behave Poisson-like, so a region holding ~50 loops has a relative SD near 14% between
+levels before threshold sensitivity. The decisive column is
+`floor_to_signal` = floor SD / between-region SD, with verdicts `usable` (<0.5),
+`marginal` (0.5–0.9), `floor-limited` (≥0.9).
+
+Three estimators, decreasing authority: `--psr_level_b` (direct cross-level, needs a
+second real PSR level, supersedes the bracket), `--real_he` (cross-stain upper bound,
+stain-invariant terms only), and the always-on split-half lower bound.
+
+If the topological terms come back floor-limited, CPA stands alone and the §5.3
+lumen-filler blind spot reopens — a real result, worth knowing early.
+
+**Registration:** none of this needs it, and neither does the ensemble variance — all
+members generate from the same H&E, so region *r* is the same tissue across members.
+Bias against the real PSR *does* need region-level correspondence (a thumbnail affine,
+not pixel registration; §3), and that mapping does not exist yet. Within a corresponding
+region no per-structure matching is required: β₀/β₁ are densities, marginal statistics
+in the same sense as CPA.
+
 SLURM chain for the UGAC grid (all seven scripts share one decomposition, so array
 indices line up end to end):
 

@@ -7,7 +7,9 @@ import pytest
 
 from uncertainty_phi.descriptors import PHI_DIM, PHI_NAMES
 from uncertainty_phi.floor import (
+    cross_level_floor,
     cross_stain_floor,
+    per_descriptor_report,
     sensitivity_band,
     split_half_floor,
     split_regions,
@@ -124,13 +126,28 @@ class TestDimensionShares:
 
 
 class TestFloor:
-    def test_split_half_recovers_the_scale(self):
-        a = _sample(2000, seed=15)
-        b = _sample(2000, seed=16)
+    def test_returns_difference_covariance_not_per_observation(self):
+        """Regression: an earlier version halved Sigma to a per-observation
+        variance. That doubles every whitened observation and manufactures a
+        constant bias^2 of exactly d on pure floor data."""
+        a, b = _sample(4000, seed=15), _sample(4000, seed=16)
         est = split_half_floor(a, b)
         assert est.kind == "split_half"
-        rel = np.abs(est.sd - FLOOR_SD) / FLOOR_SD
-        assert rel.max() < 0.15, "halving the difference covariance should recover sd"
+        # Cov(a - b) = 2 * Cov(one observation)
+        rel = np.abs(est.sd - np.sqrt(2) * FLOOR_SD) / (np.sqrt(2) * FLOOR_SD)
+        assert rel.max() < 0.15
+
+    def test_floor_satisfies_the_identity(self):
+        """The property the whole subtraction rests on: E||delta||^2_Sigma^-1 = d."""
+        a, b = _sample(8000, seed=25), _sample(8000, seed=26)
+        est = split_half_floor(a, b)
+        assert mahalanobis_sq(a - b, est.sigma).mean() == pytest.approx(PHI_DIM, rel=0.05)
+
+    def test_cross_level_is_the_direct_measurement(self):
+        a, b = _sample(4000, seed=27), _sample(4000, seed=28)
+        est = cross_level_floor(a, b)
+        assert est.kind == "cross_level"
+        assert mahalanobis_sq(a - b, est.sigma).mean() == pytest.approx(PHI_DIM, rel=0.05)
 
     def test_split_half_rejects_mismatched_halves(self):
         with pytest.raises(ValueError):
@@ -163,3 +180,54 @@ class TestFloor:
         import json
         est = split_half_floor(_sample(200, seed=23), _sample(200, seed=24))
         json.dumps(est.summary())
+
+
+class TestPerDescriptorReport:
+    """The section 7 go/no-go readout. A pooled floor hides whether any single
+    descriptor - beta_0/beta_1 especially - is stable enough between levels."""
+
+    def _phi(self, n=400, seed=30, scale=None):
+        rng = np.random.default_rng(seed)
+        scale = FLOOR_SD * 5 if scale is None else scale
+        return rng.standard_normal((n, 6)) * scale
+
+    def test_one_row_per_descriptor_with_verdicts(self):
+        est = split_half_floor(_sample(2000, seed=31), _sample(2000, seed=32))
+        rows = per_descriptor_report(self._phi(), direct=est)
+        assert [r["descriptor"] for r in rows] == list(PHI_NAMES)
+        assert all(r["verdict"] in
+                   {"usable", "marginal", "floor-limited",
+                    "unknown (no floor estimate for this component)"} for r in rows)
+
+    def test_flags_a_floor_limited_descriptor(self):
+        """Give beta_0 a between-region spread no larger than its own floor."""
+        est = split_half_floor(_sample(4000, seed=33), _sample(4000, seed=34))
+        scale = FLOOR_SD * 5
+        scale[1] = FLOOR_SD[1] * 0.8              # beta_0 signal below its floor
+        rows = per_descriptor_report(self._phi(scale=scale), direct=est)
+        by = {r["descriptor"]: r for r in rows}
+        assert by["beta0_per_mm2"]["verdict"] == "floor-limited"
+        assert by["beta0_per_mm2"]["floor_to_signal"] > 0.9
+        assert by["task_specific_value"]["verdict"] == "usable"
+
+    def test_direct_supersedes_the_bracket(self):
+        lo = split_half_floor(_sample(500, seed=35), _sample(500, seed=36))
+        direct = cross_level_floor(_sample(500, seed=37), _sample(500, seed=38))
+        rows = per_descriptor_report(self._phi(), lower=lo, direct=direct)
+        r = rows[0]
+        assert r["floor_sd_used"] == pytest.approx(r["floor_sd_direct"])
+        assert r["floor_sd_lower"] is not None
+
+    def test_missing_floor_is_unknown_not_usable(self):
+        """Collagen terms have no cross-stain upper bound; that must not read as
+        a pass."""
+        hi = cross_stain_floor(_sample(500, seed=39), _sample(500, seed=40))
+        rows = per_descriptor_report(self._phi(), upper=hi)
+        by = {r["descriptor"]: r for r in rows}
+        assert by["task_specific_value"]["verdict"].startswith("unknown")
+        assert by["lumen_fraction"]["verdict"] in {"usable", "marginal", "floor-limited"}
+
+    def test_report_is_json_friendly(self):
+        import json
+        est = split_half_floor(_sample(300, seed=41), _sample(300, seed=42))
+        json.dumps(per_descriptor_report(self._phi(), direct=est))
