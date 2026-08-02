@@ -144,3 +144,11 @@ def iter_metadata_csvs(tiles_root: Path) -> Iterator[Path]:
 def region_area_mm2(region: Region, mpp: float = SOURCE_MPP) -> float:
     """Physical area of a region, for sanity checks and reporting."""
     return (region.y1 - region.y0) * (region.x1 - region.x0) * (mpp ** 2) / 1e6
+
+
+def region_centres_mm(regions: List[Region], mpp: float = SOURCE_MPP) -> np.ndarray:
+    """[n_regions, 2] centre coordinates in millimetres, for variogram lags."""
+    return np.array(
+        [[(r.y0 + r.y1) / 2.0, (r.x0 + r.x1) / 2.0] for r in regions],
+        dtype=np.float64,
+    ) * mpp / 1000.0

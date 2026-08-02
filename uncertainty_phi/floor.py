@@ -37,7 +37,7 @@ stable enough between levels to carry a bias signal.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -49,7 +49,7 @@ from uncertainty_phi.whiten import ledoit_wolf
 class FloorEstimate:
     """A floor covariance plus the provenance needed to interpret it."""
     sigma: np.ndarray
-    kind: str                 # "split_half" | "cross_stain" | "cross_level"
+    kind: str                 # split_half | cross_stain | cross_level | variogram_sill
     n_samples: int
     shrinkage: float
     components: Tuple[str, ...]
@@ -124,6 +124,177 @@ def cross_level_floor(phi_level_a: np.ndarray, phi_level_b: np.ndarray) -> Floor
     return _difference_covariance(phi_level_a, phi_level_b, "cross_level")
 
 
+def _within_group_pairs(
+    groups: Sequence[str],
+    max_pairs: int,
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Index pairs drawn only from *within* the same slide.
+
+    Pairing across slides would fold case-to-case biology into the estimate,
+    which is not a floor — it is exactly the between-specimen variation the study
+    is trying to measure against.
+    """
+    ii, jj = [], []
+    g = np.asarray(groups)
+    for key in np.unique(g):
+        idx = np.flatnonzero(g == key)
+        if idx.size < 2:
+            continue
+        a, b = np.triu_indices(idx.size, k=1)
+        ii.append(idx[a])
+        jj.append(idx[b])
+    if not ii:
+        raise ValueError("no slide contains two or more regions to pair")
+    ii, jj = np.concatenate(ii), np.concatenate(jj)
+    if ii.size > max_pairs:
+        sel = rng.choice(ii.size, size=max_pairs, replace=False)
+        ii, jj = ii[sel], jj[sel]
+    return ii, jj
+
+
+def variogram(
+    phi: np.ndarray,
+    coords: np.ndarray,
+    groups: Sequence[str],
+    *,
+    n_bins: int = 12,
+    max_lag_fraction: float = 0.5,
+    max_pairs: int = 200_000,
+    seed: int = 0,
+) -> dict:
+    """Per-descriptor semivariance against in-plane separation.
+
+    Returns lag-binned `Cov(φ(x) − φ(x'))` — the same difference-covariance
+    convention as every other estimator here, so no factor-of-two conversion is
+    needed downstream.
+
+    `coords` is [n_regions, 2] in millimetres (`regions.region_centres_mm`).
+
+    Lags beyond `max_lag_fraction` of the largest separation are discarded, per
+    standard geostatistical practice: at extreme lags only a handful of
+    region pairs survive, they all sit at opposite corners of the slide, and edge
+    effects produce a spurious upturn that would corrupt the sill.
+    """
+    phi = np.atleast_2d(np.asarray(phi, dtype=np.float64))
+    coords = np.atleast_2d(np.asarray(coords, dtype=np.float64))
+    if coords.shape[0] != phi.shape[0]:
+        raise ValueError(f"{phi.shape[0]} descriptors but {coords.shape[0]} coordinates")
+    if len(groups) != phi.shape[0]:
+        raise ValueError(f"{phi.shape[0]} descriptors but {len(groups)} group labels")
+
+    rng = np.random.default_rng(seed)
+    ii, jj = _within_group_pairs(groups, max_pairs, rng)
+
+    lag = np.linalg.norm(coords[ii] - coords[jj], axis=1)
+    delta = phi[ii] - phi[jj]
+
+    keep = lag <= max_lag_fraction * lag.max()
+    if keep.sum() < 2:
+        raise ValueError("max_lag_fraction discarded almost every pair")
+    lag, delta = lag[keep], delta[keep]
+
+    edges = np.quantile(lag, np.linspace(0, 1, n_bins + 1))
+    edges = np.unique(edges)
+    if edges.size < 2:
+        raise ValueError("all pairs share one separation; cannot build a variogram")
+
+    centres, per_bin, counts = [], [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        sel = (lag >= lo) & (lag <= hi)
+        d = delta[sel]
+        d = d[np.isfinite(d).all(axis=1)]
+        if d.shape[0] < 2:
+            continue
+        centres.append(float((lo + hi) / 2))
+        per_bin.append(np.cov(d, rowvar=False, bias=True))
+        counts.append(int(d.shape[0]))
+
+    if not per_bin:
+        raise ValueError("no lag bin held enough finite pairs")
+    return {"lag_mm": np.asarray(centres),
+            "cov": np.stack(per_bin, axis=0),
+            "n_pairs": np.asarray(counts)}
+
+
+def variogram_floor(
+    phi: np.ndarray,
+    coords: np.ndarray,
+    groups: Sequence[str],
+    *,
+    n_bins: int = 12,
+    sill_quantile: float = 0.5,
+    max_lag_fraction: float = 0.5,
+    max_pairs: int = 200_000,
+    seed: int = 0,
+) -> Tuple[FloorEstimate, dict]:
+    """Upper bound on the floor from **in-plane** spatial variation.
+
+    Why this exists: without a second real PSR level, the collagen descriptors
+    (CPA, β₀, β₁, dispersion) have no cross-level upper bound at all — they are
+    not computable from H&E, so `cross_stain_floor` cannot reach them. Only the
+    split-half *lower* bound applies, and a floor that is too small makes
+    `bias² = observed² − floor²` too large: the unsafe direction.
+
+    The substitute is spatial. Semivariance rises with separation and flattens at
+    a **sill**, the fully-decorrelated limit. Two properties make it usable:
+
+    * When structures no longer align between levels, the effective through-plane
+      separation is already large, so the relevant lag sits at or near the sill —
+      the exact level spacing need not be known.
+    * `γ(∞) ≥ γ(h)` for any finite lag, so the sill **over-estimates** the floor,
+      which under-states bias. Conservative, which is what §6.1 asks for.
+
+    The assumption is rough isotropy at region scale: that moving 200 µm sideways
+    perturbs a descriptor about as much as moving 200 µm deeper. Defensible for
+    liver; shakier for kidney's cortex/medulla layering, so restrict to a cortex
+    mask there (§8).
+
+    `sill_quantile` sets which lags count as "large" — 0.5 averages the covariance
+    over the upper half of the lag range.
+
+    Returns (estimate, variogram_curve) so the flattening can be inspected rather
+    than assumed. `curve["sill_reached"]` is reported **per descriptor**: where it
+    is False the curve is still climbing, the sill has not been reached, and that
+    component's bound is an under-estimate — the slide is too small relative to
+    its correlation length.
+    """
+    curve = variogram(phi, coords, groups, n_bins=n_bins,
+                      max_lag_fraction=max_lag_fraction,
+                      max_pairs=max_pairs, seed=seed)
+    lags, covs, counts = curve["lag_mm"], curve["cov"], curve["n_pairs"]
+
+    cut = np.quantile(lags, sill_quantile)
+    tail = lags >= cut
+    if not tail.any():
+        tail = np.zeros_like(lags, dtype=bool)
+        tail[-1] = True
+
+    w = counts[tail].astype(np.float64)
+    w = w / w.sum()
+    sigma = np.tensordot(w, covs[tail], axes=(0, 0))
+
+    # Is the curve actually flat? Compare the first and last tail bins.
+    tail_idx = np.flatnonzero(tail)
+    d_first = np.sqrt(np.diag(covs[tail_idx[0]]))
+    d_last = np.sqrt(np.diag(covs[tail_idx[-1]]))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        drift = np.abs(d_last - d_first) / np.maximum(d_first, 1e-12)
+    # Per descriptor, not one pooled bool: a single noisy component should not
+    # veto the five that have plateaued, and the report is per-descriptor anyway.
+    curve["tail_drift"] = {n: float(v) for n, v in zip(PHI_NAMES, drift)}
+    curve["sill_reached"] = {n: bool(v < 0.15) for n, v in zip(PHI_NAMES, drift)}
+    curve["sill_reached_all"] = bool(np.nanmax(drift) < 0.15)
+
+    return FloorEstimate(
+        sigma=sigma,
+        kind="variogram_sill",
+        n_samples=int(counts[tail].sum()),
+        shrinkage=0.0,
+        components=PHI_NAMES,
+    ), curve
+
+
 def cross_stain_floor(phi_he: np.ndarray, phi_psr: np.ndarray) -> FloorEstimate:
     """Upper bound — stain-invariant descriptors across the two levels.
 
@@ -184,6 +355,7 @@ def per_descriptor_report(
     lower: Optional[FloorEstimate] = None,
     upper: Optional[FloorEstimate] = None,
     direct: Optional[FloorEstimate] = None,
+    variogram: Optional[FloorEstimate] = None,
     marginal: float = 0.5,
     limited: float = 0.9,
 ) -> List[dict]:
@@ -207,7 +379,16 @@ def per_descriptor_report(
     nothing, leaving CPA alone — which reopens the §5.3 lumen-filler blind spot.
 
     `phi_observed` is [n_regions, d] from real data, supplying the between-region
-    spread. Pass whichever floor estimates exist; `direct` supersedes the bracket.
+    spread. Pass whichever floor estimates exist; precedence per component is
+
+        direct  >  variogram  >  cross-stain upper  >  split-half lower
+
+    `direct` needs a second real PSR level and settles the matter. Failing that,
+    `variogram` is the only upper bound that reaches the collagen descriptors —
+    cross-stain cannot, since collagen is not measurable in H&E. The split-half
+    lower bound is the last resort and is **anti-conservative**: too small a floor
+    inflates bias, so a component resting on it can only support an upper-bound
+    claim about bias, never a point estimate.
     """
     phi = np.atleast_2d(np.asarray(phi_observed, dtype=np.float64))
     with np.errstate(invalid="ignore"):
@@ -222,8 +403,11 @@ def per_descriptor_report(
     rows: List[dict] = []
     for i, name in enumerate(PHI_NAMES):
         lo, hi, dr = _sd(lower, i), _sd(upper, i), _sd(direct, i)
-        # prefer the direct measurement; else the conservative (upper) bound
-        best = dr if dr is not None else (hi if hi is not None else lo)
+        vg = _sd(variogram, i)
+        best = next((v for v in (dr, vg, hi, lo) if v is not None), None)
+        source = next((n for n, v in (("direct", dr), ("variogram", vg),
+                                      ("cross_stain", hi), ("split_half", lo))
+                       if v is not None), None)
         sig = float(signal_sd[i]) if np.isfinite(signal_sd[i]) else None
 
         ratio = None
@@ -231,7 +415,9 @@ def per_descriptor_report(
             ratio = best / sig
 
         if ratio is None:
-            verdict = "unknown (no floor estimate for this component)"
+            verdict = ("unknown (no floor estimate for this component)"
+                       if best is None else
+                       "degenerate (no between-region variation to compare against)")
         elif ratio < marginal:
             verdict = "usable"
         elif ratio < limited:
@@ -243,9 +429,19 @@ def per_descriptor_report(
             "descriptor": name,
             "reference_class": PHI_REFERENCE[i],
             "floor_sd_direct": dr,
-            "floor_sd_lower": lo,
+            "floor_sd_variogram": vg,
             "floor_sd_upper": hi,
+            "floor_sd_lower": lo,
             "floor_sd_used": best,
+            "floor_source": source,
+            # a lower bound inflates bias; such a component supports only an
+            # upper-bound claim about bias, never a point estimate
+            "bound_direction": (
+                None if source is None else
+                ("measured" if source == "direct" else
+                 ("conservative" if source in ("variogram", "cross_stain")
+                  else "anti-conservative"))
+            ),
             "between_region_sd": sig,
             "floor_to_signal": ratio,
             "verdict": verdict,

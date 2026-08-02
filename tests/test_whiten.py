@@ -231,3 +231,88 @@ class TestPerDescriptorReport:
         import json
         est = split_half_floor(_sample(300, seed=41), _sample(300, seed=42))
         json.dumps(per_descriptor_report(self._phi(), direct=est))
+
+
+class TestVariogramFloor:
+    """In-plane spatial variation as an upper bound on the level-offset floor.
+
+    Without a second real PSR level the collagen descriptors have no cross-level
+    upper bound at all - cross_stain cannot reach them, since collagen is not
+    measurable in H&E. Only the split-half LOWER bound applies, and too small a
+    floor inflates bias. This supplies the missing conservative bound.
+    """
+
+    def _field(self, n=900, corr_mm=2.0, extent=30.0, seed=0, n_groups=3):
+        """Descriptors that decorrelate over a known length scale."""
+        rng = np.random.default_rng(seed)
+        coords = rng.uniform(0, extent, size=(n, 2))
+        groups = np.repeat([f"wsi{i}" for i in range(n_groups)], n // n_groups)
+        centres = rng.uniform(0, extent, size=(120, 2))
+        W = rng.standard_normal((120, 6))
+        K = np.exp(-((coords[:, None, :] - centres[None]) ** 2).sum(-1) / (2 * corr_mm ** 2))
+        phi = K @ W
+        return phi / phi.std(0) * FLOOR_SD, coords, groups[: len(coords)]
+
+    def test_sill_matches_the_decorrelated_limit(self):
+        """At full decorrelation Var(a-b) = 2 Var(a), so the sill sd should be
+        sqrt(2) times the field sd. That is the known answer here."""
+        from uncertainty_phi.floor import variogram_floor
+        phi, coords, groups = self._field()
+        est, _ = variogram_floor(phi, coords, groups, n_bins=10)
+        theory = np.sqrt(2) * phi.std(0, ddof=1)
+        np.testing.assert_allclose(est.sd, theory, rtol=0.12)
+
+    def test_semivariance_increases_with_lag(self):
+        from uncertainty_phi.floor import variogram
+        phi, coords, groups = self._field()
+        c = variogram(phi, coords, groups, n_bins=8)
+        sds = np.sqrt(c["cov"][:, 0, 0])
+        assert sds[0] < sds[-1], "variogram must rise before it flattens"
+        assert (c["lag_mm"][1:] > c["lag_mm"][:-1]).all()
+
+    def test_extreme_lags_are_truncated(self):
+        """Beyond ~half the domain only corner-to-corner pairs remain and edge
+        effects produce a spurious upturn."""
+        from uncertainty_phi.floor import variogram
+        phi, coords, groups = self._field()
+        wide = variogram(phi, coords, groups, n_bins=8, max_lag_fraction=1.0)
+        narrow = variogram(phi, coords, groups, n_bins=8, max_lag_fraction=0.5)
+        assert narrow["lag_mm"].max() < wide["lag_mm"].max()
+
+    def test_pairs_never_cross_slides(self):
+        """Pairing across slides would fold case-to-case biology into a floor."""
+        from uncertainty_phi.floor import _within_group_pairs
+        groups = np.array(["a"] * 5 + ["b"] * 5)
+        ii, jj = _within_group_pairs(groups, 10_000, np.random.default_rng(0))
+        assert (groups[ii] == groups[jj]).all()
+        assert len(ii) == 2 * (5 * 4 // 2)          # within-group pairs only
+
+    def test_sill_flag_is_per_descriptor(self):
+        from uncertainty_phi.floor import variogram_floor
+        phi, coords, groups = self._field()
+        _, curve = variogram_floor(phi, coords, groups, n_bins=10)
+        assert set(curve["sill_reached"]) == set(PHI_NAMES)
+        assert isinstance(curve["sill_reached_all"], bool)
+
+    def test_singleton_groups_rejected(self):
+        from uncertainty_phi.floor import variogram_floor
+        phi, coords, _ = self._field(n=6)
+        with pytest.raises(ValueError, match="two or more"):
+            variogram_floor(phi, coords, [f"w{i}" for i in range(6)])
+
+    def test_report_marks_variogram_as_conservative(self):
+        from uncertainty_phi.floor import variogram_floor
+        phi, coords, groups = self._field()
+        est, _ = variogram_floor(phi, coords, groups, n_bins=10)
+        rows = per_descriptor_report(phi, variogram=est)
+        for r in rows:
+            assert r["floor_source"] == "variogram"
+            assert r["bound_direction"] == "conservative"
+
+    def test_split_half_alone_is_flagged_anti_conservative(self):
+        """A component resting on the lower bound can only support an upper-bound
+        claim about bias; the report must say so."""
+        lo = split_half_floor(_sample(500, seed=60), _sample(500, seed=61))
+        rows = per_descriptor_report(_sample(300, seed=62), lower=lo)
+        assert all(r["floor_source"] == "split_half" for r in rows)
+        assert all(r["bound_direction"] == "anti-conservative" for r in rows)

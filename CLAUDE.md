@@ -454,9 +454,38 @@ levels before threshold sensitivity. The decisive column is
 `floor_to_signal` = floor SD / between-region SD, with verdicts `usable` (<0.5),
 `marginal` (0.5–0.9), `floor-limited` (≥0.9).
 
-Three estimators, decreasing authority: `--psr_level_b` (direct cross-level, needs a
-second real PSR level, supersedes the bracket), `--real_he` (cross-stain upper bound,
-stain-invariant terms only), and the always-on split-half lower bound.
+Four estimators, in decreasing authority — precedence is per component, so each
+descriptor uses the best bound available to it:
+
+| Source | Covers | Direction | Needs |
+|---|---|---|---|
+| `direct` (`--psr_level_b`) | all six | measured | a **second real PSR level** |
+| `variogram` (default) | all six | conservative | nothing extra |
+| `cross_stain` (`--real_he`) | lumen, tissue only | conservative | real H&E WSIs |
+| `split_half` (always) | all six | **anti-conservative** | nothing |
+
+**Why the variogram matters.** Without a second PSR level the collagen descriptors have
+no cross-level upper bound at all — cross-stain cannot reach them, since collagen is not
+measurable in H&E. That would leave them on the split-half *lower* bound, and too small
+a floor makes `bias² = observed² − floor²` too **large**: bias would read high, the
+unsafe direction.
+
+The variogram substitutes in-plane spatial variation. Semivariance rises with separation
+and flattens at a **sill**, the fully-decorrelated limit. When structures no longer align
+between levels the effective through-plane separation is already large, so the relevant
+lag sits at or near the sill — the exact level spacing need not be known — and
+`γ(∞) ≥ γ(h)` means the sill *over*-estimates the floor, which under-states bias.
+
+It assumes rough isotropy at region scale: that moving 200 µm sideways perturbs a
+descriptor about as much as moving 200 µm deeper. Fine for liver, shakier for kidney's
+cortex/medulla layering, so restrict to a cortex mask there (§8). Lags beyond half the
+largest separation are discarded — only corner-to-corner pairs survive out there and edge
+effects produce a spurious upturn. `sill_reached` is reported **per descriptor**; where
+it is False that component's curve is still climbing and its bound is an under-estimate.
+
+Every row carries `floor_source` and `bound_direction`, so a number resting on the
+anti-conservative lower bound is visible as such: it can support an upper-bound claim
+about bias, never a point estimate.
 
 If the topological terms come back floor-limited, CPA stands alone and the §5.3
 lumen-filler blind spot reopens — a real result, worth knowing early.

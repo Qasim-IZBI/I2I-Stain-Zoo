@@ -50,6 +50,7 @@ from uncertainty_phi.descriptors import phi_struct
 from uncertainty_phi.ensemble import _stem_index, load_label_mask, load_rgb
 from uncertainty_phi.floor import (
     cross_level_floor,
+    variogram_floor,
     cross_stain_floor,
     per_descriptor_report,
     split_half_floor,
@@ -57,6 +58,7 @@ from uncertainty_phi.floor import (
 )
 from uncertainty_phi.regions import (
     SOURCE_MPP,
+    region_centres_mm,
     filter_by_tissue,
     iter_metadata_csvs,
     region_grid,
@@ -65,11 +67,19 @@ from uncertainty_phi.regions import (
 from uncertainty_phi.descriptors import he_tissue_footprint
 
 
-def _phi_for_dir(mask_dir: Path, args, *, he_dir: Optional[Path] = None) -> np.ndarray:
-    """φ over every region of every WSI in a directory of real masks."""
+def _phi_for_dir(mask_dir: Path, args, *, he_dir: Optional[Path] = None,
+                 with_geometry: bool = False):
+    """φ over every region of every WSI in a directory of real masks.
+
+    With `with_geometry` also returns region centres (mm) and slide labels, which
+    the variogram needs to bin pairs by separation and to keep pairs within a
+    slide.
+    """
     index = _stem_index(Path(mask_dir))
     he_index = _stem_index(Path(he_dir)) if he_dir else {}
     out: List[np.ndarray] = []
+    coords: List[np.ndarray] = []
+    labels_out: List[str] = []
 
     for csv_path in iter_metadata_csvs(Path(args.tiles_metadata)):
         source, _, _ = wsi_extent(csv_path)
@@ -99,9 +109,16 @@ def _phi_for_dir(mask_dir: Path, args, *, he_dir: Optional[Path] = None) -> np.n
                 min_object_px=args.min_object_px,
                 closing_px=args.closing_px,
             ))
+        if with_geometry:
+            coords.append(region_centres_mm(grid, args.mpp))
+            labels_out.extend([stem] * len(grid))
+
     if not out:
         raise SystemExit(f"no regions produced from {mask_dir}")
-    return np.vstack(out)
+    phi = np.vstack(out)
+    if with_geometry:
+        return phi, np.vstack(coords), labels_out
+    return phi
 
 
 def main() -> None:
@@ -124,13 +141,24 @@ def main() -> None:
     ap.add_argument("--min_tissue_fraction", type=float, default=0.25)
     ap.add_argument("--min_object_px", type=int, default=16)
     ap.add_argument("--closing_px", type=int, default=0)
+    ap.add_argument("--no_variogram", action="store_true",
+                    help="Skip the variogram sill. Leaves the collagen terms on "
+                         "the split-half LOWER bound, which is anti-conservative "
+                         "- bias will read too high.")
+    ap.add_argument("--variogram_bins", type=int, default=12)
+    ap.add_argument("--sill_quantile", type=float, default=0.5,
+                    help="Lags above this quantile count as the sill. [%(default)s]")
+    ap.add_argument("--max_lag_fraction", type=float, default=0.5,
+                    help="Discard lags beyond this fraction of the largest "
+                         "separation; edge effects dominate there. [%(default)s]")
     ap.add_argument("--seed", type=int, default=0,
                     help="Seed for the split-half partition. [%(default)s]")
     args = ap.parse_args()
 
-    print(f"[1/3] phi over real PSR: {args.real_psr}")
-    phi_real = _phi_for_dir(args.real_psr, args, he_dir=args.real_he)
-    print(f"      {phi_real.shape[0]} regions")
+    print(f"[1/4] phi over real PSR: {args.real_psr}")
+    phi_real, coords, slide_ids = _phi_for_dir(
+        args.real_psr, args, he_dir=args.real_he, with_geometry=True)
+    print(f"      {phi_real.shape[0]} regions over {len(set(slide_ids))} WSI")
 
     # --- lower bound: split-half within the real slides ---
     ia, ib = split_regions(phi_real.shape[0], seed=args.seed)
@@ -141,24 +169,46 @@ def main() -> None:
     # --- upper bound: stain-invariant terms, real H&E vs real PSR ---
     upper = None
     if args.real_he:
-        print(f"[2/3] cross-stain upper bound from {args.real_he}")
+        print(f"[2/4] cross-stain upper bound from {args.real_he}")
         phi_he = _phi_for_dir(args.real_psr, args, he_dir=args.real_he)
         n = min(len(phi_he), len(phi_real))
         upper = cross_stain_floor(phi_he[:n], phi_real[:n])
     else:
-        print("[2/3] no --real_he: collagen terms will have no upper bound")
+        print("[2/4] no --real_he: collagen terms will have no upper bound")
 
     # --- direct: two real levels ---
     direct = None
     if args.psr_level_b:
-        print(f"[3/3] direct cross-level floor from {args.psr_level_b}")
+        print(f"[3/4] direct cross-level floor from {args.psr_level_b}")
         phi_b = _phi_for_dir(args.psr_level_b, args)
         n = min(len(phi_b), len(phi_real))
         direct = cross_level_floor(phi_real[:n], phi_b[:n])
     else:
-        print("[3/3] no --psr_level_b: floor is bracketed, not measured")
+        print("[3/4] no --psr_level_b: floor is bracketed, not measured")
 
-    rows = per_descriptor_report(phi_real, lower=lower, upper=upper, direct=direct)
+    # --- variogram sill: the only upper bound that reaches the collagen terms ---
+    vg = None
+    if not args.no_variogram:
+        try:
+            vg, curve = variogram_floor(
+                phi_real, coords, slide_ids,
+                n_bins=args.variogram_bins,
+                sill_quantile=args.sill_quantile,
+                max_lag_fraction=args.max_lag_fraction,
+            )
+            not_flat = [n for n, ok in curve["sill_reached"].items() if not ok]
+            print(f"[4/4] variogram sill over {vg.n_samples} within-slide pairs")
+            if not_flat:
+                print(f"      [warn] sill not reached for: {', '.join(not_flat)}")
+                print("             their bound is an UNDER-estimate; the slide is")
+                print("             small relative to that descriptor's correlation length")
+        except ValueError as e:
+            print(f"[4/4] variogram unavailable: {e}")
+    else:
+        print("[4/4] --no_variogram: collagen terms fall back to the lower bound")
+
+    rows = per_descriptor_report(phi_real, lower=lower, upper=upper,
+                                 direct=direct, variogram=vg)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(args.outdir / "floor_per_descriptor.csv", index=False)
@@ -181,17 +231,19 @@ def main() -> None:
         json.dump(payload, fh, indent=2)
 
     print("\n=== per-descriptor floor ===")
-    hdr = f"{'descriptor':22s} {'ref':4s} {'floor_sd':>10s} {'region_sd':>10s} {'ratio':>7s}  verdict"
+    hdr = (f"{'descriptor':22s} {'floor_sd':>10s} {'region_sd':>10s} {'ratio':>7s} "
+           f"{'source':>12s}  verdict")
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
         f = r["floor_sd_used"]
         s = r["between_region_sd"]
         q = r["floor_to_signal"]
-        print(f"{r['descriptor']:22s} {r['reference_class']:4s} "
+        print(f"{r['descriptor']:22s} "
               f"{'    n/a' if f is None else f'{f:10.4f}'} "
               f"{'    n/a' if s is None else f'{s:10.4f}'} "
-              f"{'    n/a' if q is None else f'{q:7.2f}'}  {r['verdict']}")
+              f"{'    n/a' if q is None else f'{q:7.2f}'} "
+              f"{str(r['floor_source']):>12s}  {r['verdict']}")
 
     limited = [r["descriptor"] for r in rows if r["verdict"] == "floor-limited"]
     if limited:
