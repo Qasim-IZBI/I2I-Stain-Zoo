@@ -379,6 +379,72 @@ python plot_uncertainty_boxplot.py --base /path/to/ensemble --outdir ./uncertain
 deriving WSI membership from the `NNN/` component of the npy path so tile IDs
 repeating across WSIs do not collide.
 
+### Descriptor-Space Uncertainty (φ_struct)
+
+Implements `kidney_ood_data_plan.md` §5 and the §2.1 error decomposition. Averages in
+**descriptor space**, never pixel space — this is a companion to `uncertainty.py`, not a
+replacement: that one is per-tile per-pixel and produced the BMVC numbers, but
+`uncertainty_strategy.md` §2.1 forbids pixel-space averaging for the bias identity.
+
+φ_struct is six marginal statistics of a ~1–2 mm region, in two reference classes:
+
+| Component | Reference | Pays the floor |
+|---|---|---|
+| `task_specific_value` (CPA), `beta0_per_mm2`, `beta1_per_mm2`, `regional_dispersion` | real PSR, level B | yes |
+| `lumen_fraction`, `tissue_fraction` | H&E input, level A | **no** |
+
+```bash
+# One ensemble -> procedural uncertainty only
+python compute_phi_uncertainty.py \
+    --ensemble /path/ensemble/cyclegan/data_large/model_medium/wsi_masks_final \
+    --tiles_metadata /path/tiles/testA --he_dir /path/reconstructed_he \
+    --outdir ./phi_uncertainty/
+
+# Fold x seed grid -> procedural AND data-exposure (one --fold per data block)
+python compute_phi_uncertainty.py \
+    --fold /path/ensemble_ugac/cyclegan/data_001_007/model_small/wsi_masks_final \
+    --fold /path/ensemble_ugac/cyclegan/data_008_014/model_small/wsi_masks_final \
+    --tiles_metadata /path/tiles/testA --outdir ./phi_uncertainty/
+```
+
+Outputs `per_region.csv` (μ per descriptor, Var, procedural, data_exposure) and
+`summary.json` (aggregates, reference classes, parameter record).
+
+Package `uncertainty_phi/`: `descriptors` (the vector), `regions` (grid from
+tiles_metadata x/y), `ensemble` (per-member φ, then μ/Var), `decompose` (law of total
+variance), `floor` (bracketed floor covariance), `whiten` (Ledoit–Wolf, Mahalanobis,
+bias²).
+
+Notes that will bite otherwise:
+
+- **Reconstructions are at 0.221 µm/px**, not the 0.442 the model saw:
+  `utils.reconstruct_wsi` upsamples tiles back to `tile_size`. Regions are sized in mm
+  for that reason; `--mpp` defaults to the source resolution.
+- **Regions, not tiles.** β₀/β₁ and dispersion do not decompose over tiles — components
+  and loops cross tile boundaries — so the pipeline consumes stitched WSI masks.
+- **The H&E tissue footprint is computed per WSI, then cropped.** Doing it per region
+  loses every lumen touching a region border, since `binary_fill_holes` only fills
+  enclosed background.
+- **Σ comes from the floor, never from the observed discrepancies** — whitening by the
+  covariance of what you are measuring normalises the bias away. `whiten.py` takes Σ as
+  an explicit argument so there is no code path that gets this wrong.
+- **Negative bias² and data components are reported, not clipped.** A negative value is
+  the go/no-go signal that the discrepancy has sunk into the floor.
+- Bias against a real target is **not** computed yet: it needs the floor measured (§7)
+  and, for kidney, the liver-trained segmenter validated out of distribution (§6.2).
+
+SLURM chain for the UGAC grid (all seven scripts share one decomposition, so array
+indices line up end to end):
+
+```bash
+sbatch scripts/train_ensemble_cyclegan_ugac.sh       # 0-49   5 blocks x 10 seeds
+sbatch scripts/infer_ensemble_cyclegan_ugac.sh       # 0-49   A→B + aleatoric
+sbatch scripts/recon_ensemble_ugac.sh                # 0-249  + 5 test WSIs
+sbatch scripts/segment_psr_ugac.sh                   # 0-249  Dataset314_SR_light
+sbatch scripts/apply_he_mask_ugac.sh                 # 0-49
+sbatch scripts/fill_tissue_holes_ugac.sh             # 0-49   -> wsi_masks_final/
+```
+
 ### Uncertainty Calibration
 
 Pairs ensemble uncertainty with cycle-reconstruction error and reduces both to
