@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -210,3 +213,53 @@ class TestPhiStruct:
     def test_rejects_3d_labels(self):
         with pytest.raises(ValueError):
             phi_struct(np.zeros((8, 8, 3), np.uint8))
+
+
+class TestRoiFilter:
+    """Anatomical restriction, e.g. cortex on the kidney arm.
+
+    The threshold is on coverage rather than on the centre point, because a
+    region straddling the cortex/medulla boundary is not a cortex measurement.
+    """
+
+    @staticmethod
+    def _grid():
+        from uncertainty_phi.regions import Region
+        # four 10x10 regions in a row, x = 0,10,20,30
+        return [Region(wsi="w", index=i, y0=0, y1=10, x0=10 * i, x1=10 * i + 10)
+                for i in range(4)]
+
+    def test_keeps_only_regions_inside_the_roi(self):
+        from uncertainty_phi.regions import filter_by_roi
+        roi = np.zeros((10, 40), bool)
+        roi[:, :20] = True                      # first two regions fully inside
+        kept = filter_by_roi(self._grid(), roi, min_roi_fraction=0.5)
+        assert [r.index for r in kept] == [0, 1]
+
+    def test_half_covered_region_is_excluded_at_a_strict_threshold(self):
+        """Centre-point selection would admit it; coverage must not."""
+        from uncertainty_phi.regions import filter_by_roi
+        roi = np.zeros((10, 40), bool)
+        roi[:, :25] = True                      # region 2 is 50% covered
+        assert [r.index for r in filter_by_roi(self._grid(), roi,
+                                               min_roi_fraction=0.9)] == [0, 1]
+        assert [r.index for r in filter_by_roi(self._grid(), roi,
+                                               min_roi_fraction=0.5)] == [0, 1, 2]
+
+    def test_empty_roi_keeps_nothing(self):
+        from uncertainty_phi.regions import filter_by_roi
+        assert filter_by_roi(self._grid(), np.zeros((10, 40), bool)) == []
+
+    def test_mask_is_resized_to_the_reconstruction(self):
+        """Cortex is annotated on a thumbnail, so a size mismatch is normal."""
+        import tifffile
+        from uncertainty_phi.ensemble import load_roi_mask
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "w.tif"
+            small = np.zeros((5, 20), np.uint8)
+            small[:, :10] = 255                 # left half
+            tifffile.imwrite(str(p), small)
+            roi = load_roi_mask(p, (10, 40))
+            assert roi.shape == (10, 40)
+            assert roi.dtype == bool
+            assert roi[:, :20].all() and not roi[:, 20:].any()

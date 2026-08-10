@@ -127,6 +127,31 @@ def filter_by_tissue(
     return keep
 
 
+def filter_by_roi(
+    regions: List[Region],
+    roi: np.ndarray,
+    *,
+    min_roi_fraction: float = 0.5,
+) -> List[Region]:
+    """Keep regions lying inside an anatomical region of interest.
+
+    The kidney arm is analysed on cortex only. Cortex and medulla differ
+    systematically in fibrosis distribution, so a grid that samples both mixes
+    two populations and shifts CPA for reasons that have nothing to do with the
+    model. It also breaks the isotropy the variogram floor assumes, because
+    cortex/medulla layering is precisely a directional structure.
+
+    The threshold is on *coverage*, not on the centre point: a region half in
+    medulla is not a cortex measurement, and taking its centre would admit it.
+    """
+    keep = []
+    for r in regions:
+        patch = r.crop(roi)
+        if patch.size and float(patch.mean()) >= min_roi_fraction:
+            keep.append(r)
+    return keep
+
+
 def iter_metadata_csvs(tiles_root: Path) -> Iterator[Path]:
     """Yield per-WSI tiles_metadata.csv paths under a dataset root.
 

@@ -62,6 +62,8 @@ def _collect(roots: List[Path], args) -> tuple:
             root,
             Path(args.tiles_metadata),
             he_dir=Path(args.he_dir) if args.he_dir else None,
+            roi_dir=Path(args.roi_dir) if args.roi_dir else None,
+            min_roi_fraction=args.min_roi_fraction,
             region_mm=args.region_mm,
             mpp=args.mpp,
             min_tissue_fraction=args.min_tissue_fraction,
@@ -98,6 +100,16 @@ def main() -> None:
     ap.add_argument("--he_dir", type=Path, default=None,
                     help="Reconstructed H&E WSIs. Without it the two floor-free "
                          "geometric descriptors are NaN.")
+    ap.add_argument("--roi_dir", type=Path, default=None,
+                    help="Per-WSI binary masks (<stem>.tif) restricting the "
+                         "analysis to an anatomical compartment — cortex on the "
+                         "kidney arm. Resized nearest-neighbour if it does not "
+                         "match the reconstruction. A WSI with no mask here is "
+                         "EXCLUDED, not passed through whole.")
+    ap.add_argument("--min_roi_fraction", type=float, default=0.5,
+                    help="Region coverage by --roi_dir needed to keep it. "
+                         "Coverage, not centre: a region half in medulla is not "
+                         "a cortex measurement. [%(default)s]")
     ap.add_argument("--outdir", type=Path, default=Path("phi_uncertainty"))
 
     ap.add_argument("--region_mm", type=float, default=1.5,
@@ -166,6 +178,8 @@ def main() -> None:
             "members_per_fold": members,
             "tiles_metadata": str(args.tiles_metadata),
             "he_dir": str(args.he_dir) if args.he_dir else None,
+            "roi_dir": str(args.roi_dir) if args.roi_dir else None,
+            "min_roi_fraction": args.min_roi_fraction if args.roi_dir else None,
             "region_mm": args.region_mm,
             "mpp": args.mpp,
             "min_tissue_fraction": args.min_tissue_fraction,

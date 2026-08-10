@@ -24,7 +24,13 @@ import numpy as np
 import tifffile
 
 from uncertainty_phi.descriptors import PHI_DIM, he_tissue_footprint, phi_struct
-from uncertainty_phi.regions import Region, filter_by_tissue, region_grid, wsi_extent
+from uncertainty_phi.regions import (
+    Region,
+    filter_by_roi,
+    filter_by_tissue,
+    region_grid,
+    wsi_extent,
+)
 
 # Reused from uncertainty.py, which already globs model_* for the pixel-space path.
 from uncertainty import discover_ensemble_dirs  # noqa: F401
@@ -48,6 +54,28 @@ def load_rgb(path: Path) -> np.ndarray:
     if arr.ndim == 2:
         arr = np.stack([arr] * 3, axis=-1)
     return arr[..., :3]
+
+
+def load_roi_mask(path: Path, shape: Tuple[int, int]) -> np.ndarray:
+    """Read a binary region-of-interest mask, resized to `shape` if needed.
+
+    Any non-zero value is inside the ROI. Cortex masks are normally annotated at
+    thumbnail magnification rather than at the 0.221 um/px of a reconstruction,
+    so a size mismatch is the expected case, not an error. Nearest-neighbour
+    keeps it binary — the same convention as `apply_he_mask.py`.
+    """
+    arr = tifffile.imread(str(path))
+    if arr.ndim > 2:
+        arr = arr[..., 0]
+    roi = arr != 0
+    if roi.shape != shape:
+        from PIL import Image
+        roi = np.array(
+            Image.fromarray(roi.astype(np.uint8) * 255).resize(
+                (shape[1], shape[0]), Image.NEAREST
+            )
+        ) > 0
+    return roi
 
 
 def _stem_index(directory: Path) -> Dict[str, Path]:
@@ -102,6 +130,8 @@ def phi_over_ensemble(
     tiles_metadata_root: Path,
     *,
     he_dir: Optional[Path] = None,
+    roi_dir: Optional[Path] = None,
+    min_roi_fraction: float = 0.5,
     region_mm: float = 1.5,
     mpp: float,
     min_tissue_fraction: float = 0.25,
@@ -121,9 +151,11 @@ def phi_over_ensemble(
         raise FileNotFoundError(f"no model_* directories under {ensemble_root}")
 
     he_index = _stem_index(Path(he_dir)) if he_dir else {}
+    roi_index = _stem_index(Path(roi_dir)) if roi_dir else {}
 
     all_phi: List[np.ndarray] = []
     all_regions: List[Region] = []
+    roi_missing: List[str] = []
 
     from uncertainty_phi.regions import iter_metadata_csvs
 
@@ -148,6 +180,23 @@ def phi_over_ensemble(
         if not grid:
             continue
 
+        # Anatomical restriction, e.g. cortex on the kidney arm. A WSI with no
+        # ROI mask is DROPPED, not passed through: falling back to the whole
+        # slide would quietly mix medulla into a cortex-only result, and a
+        # missing number is recoverable where a contaminated one is not.
+        if roi_dir:
+            roi_path = roi_index.get(wsi_stem)
+            if roi_path is None:
+                roi_missing.append(wsi_stem)
+                print(f"[WARN] no ROI mask for {wsi_stem} — WSI excluded")
+                continue
+            grid = filter_by_roi(
+                grid, load_roi_mask(roi_path, reference.shape),
+                min_roi_fraction=min_roi_fraction,
+            )
+            if not grid:
+                continue
+
         block = phi_for_wsi(
             member_dirs, wsi_stem, grid,
             he_path=he_index.get(wsi_stem), mpp=mpp, **phi_kwargs,
@@ -156,10 +205,17 @@ def phi_over_ensemble(
         all_regions.extend(grid)
 
     if not all_phi:
+        hint = (
+            f"; every WSI was excluded for want of an ROI mask under {roi_dir}"
+            if roi_dir and roi_missing else ""
+        )
         raise RuntimeError(
             f"no regions produced — check that {ensemble_root} holds masks whose "
-            f"stems match the WSIs described by {tiles_metadata_root}"
+            f"stems match the WSIs described by {tiles_metadata_root}{hint}"
         )
+    if roi_missing:
+        print(f"[WARN] {len(roi_missing)} WSI(s) excluded for a missing ROI mask: "
+              f"{', '.join(roi_missing)}")
 
     return np.concatenate(all_phi, axis=1), all_regions, member_dirs
 
