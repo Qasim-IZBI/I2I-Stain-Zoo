@@ -19,7 +19,7 @@ mkdir -p logs_seg_ensemble
 echo "Host: $(hostname)"
 
 module purge
-module load Anaconda3
+module load Anaconda3/2025.06-1
 
 eval "$(conda shell.bash hook)"
 set +u
