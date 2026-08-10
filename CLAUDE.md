@@ -102,7 +102,64 @@ python train.py --model cyclegan --cyclegan_ngf 128 --cyclegan_n_blocks 10 --cou
 **AMP:** `--amp` is silently disabled for `cyclediffusion` — its UNet runs fp32
 internally and `GradScaler` overflows around 56k steps. A notice is printed.
 
-#### UGAC — aleatoric uncertainty (CycleGAN, experimental)
+#### The ensemble grid — crossed subsets × seeds
+
+The uncertainty study trains **vanilla CycleGAN** on a crossed grid: K = 5
+disjoint training subsets × S = 10 seeds = **M = 50 members**, at the small
+generator size, spanning training folders 001–035 in subsets of seven.
+
+```bash
+sbatch scripts/train_ensemble_cyclegan_grid.sh          # --array=0-49
+sbatch --array=0-49%10 scripts/train_ensemble_cyclegan_grid.sh  # cap concurrency
+sbatch --array=10-19 scripts/train_ensemble_cyclegan_grid.sh    # one subset only
+```
+
+| tasks | folders | output |
+|---|---|---|
+| 0–9   | 001–007 | `ensemble_grid/cyclegan/data_001_007/model_small/models/model_{01..10}/` |
+| 10–19 | 008–014 | `…/data_008_014/…` |
+| 20–29 | 015–021 | `…/data_015_021/…` |
+| 30–39 | 022–028 | `…/data_022_028/…` |
+| 40–49 | 029–035 | `…/data_029_035/…` |
+
+**Why the grid is crossed, not flat.** Members sharing a subset differ only by
+seed, so their spread is *procedural*. Subset means differ because different
+slides were seen, so their spread is *data exposure*. The law of total variance
+separates the two exactly as they are indexed — but only if both factors vary,
+which `train_ensemble_cyclegan.sh` (one subset, ten seeds) cannot do. That flat
+script is retained for the BMVC-era vanilla ensemble and is a different
+experiment.
+
+Subsets are **disjoint rather than nested**, so a difference between them reflects
+*which* slides were seen, not how many — the opposite of the nested 25/50/100%
+fractions in the scaling study.
+
+Subset 5 needs folders 031–035, which post-date the 001–030 BMVC training split.
+They were tiled on 2026-08-10, so all five subsets are live; the pre-flight check
+remains and fails fast with the missing paths rather than dying in the dataloader
+hours later.
+
+Inference uses the same 50-job decomposition, so array indices line up one-to-one:
+
+```bash
+sbatch scripts/infer_ensemble_cyclegan_grid.sh       # A→B
+```
+
+| step | reads | writes |
+|---|---|---|
+| train | trainA/trainB subset | `{subset}/model_small/models/model_{NN}/` |
+| A2B | that checkpoint | `{subset}/model_small/inference/model_{NN}/` |
+
+Kept under `ensemble_grid/` rather than `ensemble/` so the crossed grid cannot be
+confused with the flat 10-member runs stored there.
+
+#### UGAC — aleatoric heads (retired 2026-08-09)
+
+> **Retired as the generator.** The UGAC ensemble did not produce usable virtual
+> stain, and the descriptor-space decomposition contains no aleatoric term, so
+> nothing downstream consumes the heads. `--cyclegan_ugac`, `--save_aleatoric` and
+> `tests/test_ugac.py` all still work; the `scripts/*_ugac.sh` chain is kept for
+> provenance. **Do not mix its outputs with `ensemble_grid/`.**
 
 `--cyclegan_ugac` enables the UGAC heads of Upadhyay et al., *Robustness via
 Uncertainty-aware Cycle Consistency* (NeurIPS 2021). The decoders become
@@ -126,52 +183,6 @@ python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA 
     --outdir ./out/ --save_aleatoric
 ```
 
-UGAC ensembles at the small generator size, K = 10 members per data block,
-over five **disjoint** 7-specimen blocks (50 jobs):
-
-```bash
-sbatch scripts/train_ensemble_cyclegan_ugac.sh          # --array=0-49
-sbatch --array=0-49%10 scripts/train_ensemble_cyclegan_ugac.sh   # cap concurrency
-sbatch --array=10-19 scripts/train_ensemble_cyclegan_ugac.sh     # one block only
-```
-
-| tasks | folders | output |
-|---|---|---|
-| 0–9   | 001–007 | `ensemble_ugac/cyclegan/data_001_007/model_small/models/model_{01..10}/` |
-| 10–19 | 008–014 | `…/data_008_014/…` |
-| 20–29 | 015–021 | `…/data_015_021/…` |
-| 30–39 | 022–028 | `…/data_022_028/…` |
-| 40–49 | 029–035 | `…/data_029_035/…` |
-
-Blocks are disjoint rather than nested, so differences across them reflect
-*which* slides were seen, not how many — the opposite of the nested 25/50/100%
-fractions in the scaling study. Epistemic variance is computed within a block.
-
-The last block needs folders 031–035, which are outside the 001–030 training
-set; a pre-flight check fails the job immediately with the missing paths rather
-than letting it die inside the dataloader hours later.
-
-Inference over the trained members — same 50-job decomposition, so array indices
-line up one-to-one with the training jobs:
-
-```bash
-sbatch scripts/infer_ensemble_cyclegan_ugac.sh       # A→B + aleatoric maps
-sbatch scripts/infer_ensemble_cyclegan_ugac_B2A.sh   # B→A, for regen error
-```
-
-| step | reads | writes |
-|---|---|---|
-| train | trainA/trainB block | `{block}/model_small/models/model_{NN}/` |
-| A2B | that checkpoint | `{block}/model_small/inference/model_{NN}/` + `aleatoric_npy/` |
-| B2A | the A2B tiles | `{block}/model_small/inference_B2A/model_{NN}/` |
-
-`--save_aleatoric` needs no architecture flag: `ugac` is restored from the
-checkpoint, and inference.py refuses a non-UGAC checkpoint rather than emitting
-garbage. Epistemic uncertainty is a separate step — run `uncertainty.py` across
-the ten `model_{01..10}` directories *within one block*.
-Kept separate from `ensemble/` because the UGAC objective differs from the
-vanilla runs stored there.
-
 `--save_aleatoric` writes `{outdir}/aleatoric_npy/<stem>.npy` as `[H,W]` float32
 **standard deviations** — the same convention as `uncertainty.py`'s `raw_npy/`,
 so the maps feed `uncertainty_calibration.py` unchanged.
@@ -182,8 +193,7 @@ Notes:
   inference needs no flag. Loading a vanilla checkpoint with `--save_aleatoric`
   exits with an error rather than emitting garbage.
 - Aleatoric variance is closed-form, `sigma^2 = alpha^2 * Gamma(3/beta) / Gamma(1/beta)`
-  (`ggd_aleatoric_var`) — one forward pass, no sampling. This is complementary to
-  the ensemble epistemic term: total `sigma^2 = sigma^2_ale + sigma^2_epi`.
+  (`ggd_aleatoric_var`) — one forward pass, no sampling.
 - At `(alpha, beta) = (1, 1)` the NLL is exactly L1, so UGAC strictly generalises
   the vanilla objective. Verified in `tests/test_ugac.py`.
 - Positivity uses softplus plus a floor rather than the paper's ReLU, which can
@@ -400,12 +410,28 @@ python compute_phi_uncertainty.py \
     --tiles_metadata /path/tiles/testA --he_dir /path/reconstructed_he \
     --outdir ./phi_uncertainty/
 
-# Fold x seed grid -> procedural AND data-exposure (one --fold per data block)
+# Subset x seed grid -> procedural AND data-exposure (one --fold per subset, all 5)
 python compute_phi_uncertainty.py \
-    --fold /path/ensemble_ugac/cyclegan/data_001_007/model_small/wsi_masks_final \
-    --fold /path/ensemble_ugac/cyclegan/data_008_014/model_small/wsi_masks_final \
+    --fold /path/ensemble_grid/cyclegan/data_001_007/model_small/wsi_masks_final \
+    --fold /path/ensemble_grid/cyclegan/data_008_014/model_small/wsi_masks_final \
     --tiles_metadata /path/tiles/testA --outdir ./phi_uncertainty/
+
+# Kidney arm: cortex only
+python compute_phi_uncertainty.py \
+    --fold ... (all five) \
+    --tiles_metadata /path/tiles/testA_kidney --he_dir /path/reconstructed_he_kidney \
+    --roi_dir /path/cortex_masks/ --outdir ./phi_uncertainty_kidney/
 ```
+
+`--roi_dir` restricts the grid to an anatomical compartment, given per-WSI binary
+masks named `<stem>.tif` (resized nearest-neighbour if annotated at thumbnail
+magnification). The kidney arm needs it for two independent reasons: cortex and
+medulla differ systematically in fibrosis distribution, so a grid sampling both
+mixes two populations; and cortex/medulla layering breaks the isotropy the
+variogram floor assumes. `--min_roi_fraction` (default 0.5) thresholds on
+**coverage, not the centre point** — a region half in medulla is not a cortex
+measurement. A WSI with no matching mask is **excluded and warned about**, never
+passed through whole: a missing case is recoverable, a contaminated one is not.
 
 Outputs `per_region.csv` (μ per descriptor, Var, procedural, data_exposure) and
 `summary.json` (aggregates, reference classes, parameter record).
@@ -535,17 +561,28 @@ not pixel registration; §3), and that mapping does not exist yet. Within a corr
 region no per-structure matching is required: β₀/β₁ are densities, marginal statistics
 in the same sense as CPA.
 
-SLURM chain for the UGAC grid (all seven scripts share one decomposition, so array
-indices line up end to end):
+SLURM chain for the ensemble grid (all six scripts share one decomposition — the
+same `RANGE_STARTS`, `RANGE_ENDS` and `N_MEMBERS` — so array indices line up end
+to end; change one and they all have to change):
 
 ```bash
-sbatch scripts/train_ensemble_cyclegan_ugac.sh       # 0-49   5 blocks x 10 seeds
-sbatch scripts/infer_ensemble_cyclegan_ugac.sh       # 0-49   A→B + aleatoric
-sbatch scripts/recon_ensemble_ugac.sh                # 0-249  + 5 test WSIs
-sbatch scripts/segment_psr_ugac.sh                   # 0-249  Dataset314_SR_light
-sbatch scripts/apply_he_mask_ugac.sh                 # 0-49
-sbatch scripts/fill_tissue_holes_ugac.sh             # 0-49   -> wsi_masks_final/
+sbatch scripts/train_ensemble_cyclegan_grid.sh       # 0-49   5 subsets x 10 seeds
+sbatch scripts/infer_ensemble_cyclegan_grid.sh       # 0-49   A→B
+sbatch scripts/recon_ensemble_grid.sh                # 0-249  x 5 test WSIs
+sbatch scripts/segment_psr_grid.sh                   # 0-249  Dataset314_SR_light
+sbatch scripts/apply_he_mask_grid.sh                 # 0-49
+sbatch scripts/fill_tissue_holes_grid.sh             # 0-49   -> wsi_masks_final/
 ```
+
+The committed scripts target the 5-WSI BMVC test set. For the 20-case held-out
+cohorts, repoint `TEST_A`, then `N_WSIS` (recon, segment) and `WSI_COUNT`
+(apply_he_mask, fill_tissue_holes), and scale `--array` to match.
+
+The retired UGAC chain (`scripts/*_ugac.sh`, same array layout, writing to
+`ensemble_ugac/`) is kept for provenance. Do not mix its outputs with these.
+
+**Post-inference runbook:** `PIPELINE_AFTER_INFERENCE.md` sequences the whole
+thing — which steps are gated, which are not, and what is still unbuilt.
 
 ### Uncertainty Calibration
 
@@ -803,6 +840,13 @@ All six families use **K = 10** ensemble members (`--array=0-9` in the
 `train_ensemble_*` and `infer_ensemble_*` scripts; the CycleDiffusion inference
 scripts use `--array=0-49`, a 2D decomposition of 10 members × 5 test WSIs).
 
+These are the **flat** BMVC-era ensembles: one training set, ten seeds, so they
+carry procedural variance only. The uncertainty-decomposition study uses the
+crossed `scripts/*_grid.sh` chain instead (5 subsets × 10 seeds, `--array=0-49`),
+which is the only design that can separate data exposure from procedural spread.
+Do not read `train_ensemble_cyclegan.sh` and `train_ensemble_cyclegan_grid.sh` as
+variants of one experiment.
+
 ## Architecture
 
 ### Model Interface
@@ -870,4 +914,4 @@ and were moved here when MIUDiff was removed — CycleDiffusion imports them fro
 - No external diffusion libraries — DDPM/DDIM sampling is implemented from scratch.
 - No `requirements.txt`. Dependencies: torch, torchvision, numpy, scipy, pandas,
   matplotlib, pillow, tifffile, tqdm, pytest (plus nnU-Net v2 for CPA only).
-- Test suite: `pytest tests/ -q` — 100 tests, CPU-only, ~2 s.
+- Test suite: `pytest tests/ -q` — 227 tests, CPU-only, ~5 s.
