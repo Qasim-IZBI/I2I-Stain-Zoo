@@ -26,6 +26,34 @@ def make_serializable(obj):
     return obj
 
 
+def write_label_mask(path, array, compression="zlib"):
+    """Write a WSI label mask compressed, via a temporary file.
+
+    Two problems with a bare `tifffile.imwrite`, both of which bite at WSI scale:
+
+    * **Size.** A label mask holds three values (0/1/2) over tens of millions of
+      pixels and stores one byte each, so a 23552x25600 slide costs 603 MB raw.
+      zlib typically takes one to two orders of magnitude off that. Every reader
+      in this repository goes through `tifffile.imread`, which decompresses
+      transparently, so nothing downstream changes.
+    * **Truncation.** A write that dies part-way — a full filesystem, an
+      exhausted quota — leaves a short but existing `.tif`. The skip guards in
+      `scripts/*.sh` count `*.tif`, so that corpse is counted as a finished slide
+      and the next submit steps over it. Writing to `<name>.tif.partial` and
+      renaming only on success means a failed write leaves nothing the guards
+      can mistake for output.
+    """
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".partial")
+    try:
+        tifffile.imwrite(str(tmp), array, compression=compression)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return path
+
+
 def _process_single_image(
     file_name,
     img_idx,

@@ -34,6 +34,8 @@ import numpy as np
 import tifffile
 from scipy.ndimage import binary_fill_holes
 
+from utils import write_label_mask
+
 
 TIFF_EXTS = {".tif", ".tiff"}
 
@@ -92,7 +94,7 @@ def main():
         if n_filled:
             print(f"{path.name}: filled {n_filled:,} background pixel(s)")
 
-        tifffile.imwrite(str(args.outdir / path.name), result.astype(np.uint8))
+        write_label_mask(args.outdir / path.name, result.astype(np.uint8))
 
     print(f"Done — {len(paths)} mask(s) saved to {args.outdir}")
 

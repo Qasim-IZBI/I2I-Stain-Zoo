@@ -30,6 +30,8 @@ import numpy as np
 import tifffile
 from PIL import Image
 
+from utils import write_label_mask
+
 
 TIFF_EXTS = {".tif", ".tiff"}
 
@@ -112,7 +114,7 @@ def main():
 
         cleaned = apply_mask(psr, he)
         out_path = args.outdir / psr_path.name
-        tifffile.imwrite(str(out_path), cleaned.astype(np.uint8))
+        write_label_mask(out_path, cleaned.astype(np.uint8))
         n_ok += 1
 
     print(f"Done — {n_ok} mask(s) saved to {args.outdir}"
