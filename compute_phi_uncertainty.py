@@ -147,6 +147,11 @@ def main() -> None:
             "y0": region.y0, "y1": region.y1, "x0": region.x0, "x1": region.x1,
             "area_mm2": region_area_mm2(region, args.mpp),
             "var_total_descriptor_space": float(var[i]),
+            # The ANOVA total summary.json reports — procedural + data, not the
+            # pooled plug-in variance above, which ignores the fold structure and
+            # so does not equal their sum. Written per region so a run split over
+            # WSIs can be pooled afterwards without re-deriving it.
+            "var_total_anova": float(comps.total[i]),
             "procedural": float(comps.procedural[i]),
             "data_exposure": None if comps.data is None else float(comps.data[i]),
         }
