@@ -5,11 +5,20 @@
 
 #SBATCH --time=8:00:00
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=256G
 #SBATCH --partition=paula
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
 #SBATCH --array=0-19   # 20 jobs = 1 per real SR WSI
+
+# MEMORY: 256G is not padding. These are whole slides at 0.221 um/px — a
+# 34677x40514 case is 1.4 Gpixel, and nnU-Net holds several full-size arrays at
+# once: the input as float32 RGB (16 GB), predicted_logits at one float32 plane
+# per class (16 GB), the Gaussian accumulator (5 GB), plus the uint8 input and
+# the argmax output. That floor is ~43 GB before any transient copy, and 64G
+# OOM-killed the job AFTER the 12-minute sliding window had finished. When the
+# GPU cannot hold the logits nnU-Net prints "Moving results arrays to CPU" and
+# the host takes the whole burden, so VRAM pressure becomes a RAM request.
 
 # Collagen segmentation of the REAL SR whole slides — the reference arm the
 # virtual stain is measured against. Fills the gap CLAUDE.md records as "no
@@ -108,20 +117,35 @@ if [ -f "${OUT_MASK}" ]; then
 fi
 
 # Report the geometry so resolution parity against the virtual arm is checkable
-# from the logs rather than assumed.
-python - "${SR_TIF}" <<'PY'
+# from the logs rather than assumed, and estimate the memory floor so an
+# oversized slide is visible now rather than after the sliding window finishes.
+python - "${SR_TIF}" "${SLURM_MEM_PER_NODE:-0}" <<'PY'
 import sys
 import tifffile
+
 with tifffile.TiffFile(sys.argv[1]) as tf:
     s = tf.series[0]
     print(f"[INFO] shape={s.shape} dtype={s.dtype} pages={len(tf.pages)}")
     tags = tf.pages[0].tags
-    res = tags.get("XResolution")
-    unit = tags.get("ResolutionUnit")
+    res, unit = tags.get("XResolution"), tags.get("ResolutionUnit")
     if res is not None:
         print(f"[INFO] XResolution={res.value} unit={getattr(unit, 'value', None)}")
     else:
-        print("[INFO] no resolution tag — confirm the mpp against the reconstructions by hand")
+        print("[INFO] no resolution tag — confirm the mpp against the "
+              "reconstructions by hand")
+
+    h, w = s.shape[0], s.shape[1]
+    chan = s.shape[2] if len(s.shape) > 2 else 1
+    # float32 input + one float32 logit plane per class + accumulator + uint8 in
+    # + argmax out. Transient copies land on top of this, so treat it as a floor.
+    n_classes = 3
+    floor = h * w * (chan + chan * 4 + n_classes * 4 + 4 + 2)
+    granted = int(sys.argv[2]) * 2**20  # SLURM reports MB
+    print(f"[INFO] {h*w/1e9:.2f} Gpixel — nnUNet needs >= {floor/2**30:.0f} GB "
+          f"of host RAM before transients")
+    if granted and floor > 0.6 * granted:
+        print(f"[WARN] only {granted/2**30:.0f} GB granted. This is where the "
+              f"OOM kill lands, after the sliding window completes.")
 PY
 
 mkdir -p "${OUT_DIR}"

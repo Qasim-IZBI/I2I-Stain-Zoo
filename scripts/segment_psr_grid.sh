@@ -5,11 +5,19 @@
 
 #SBATCH --time=8:00:00
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=256G
 #SBATCH --partition=paula
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
 #SBATCH --array=0-249   # 250 jobs = 5 subsets x 10 members x 5 test WSIs
+
+# MEMORY: 64G was enough for the 5-WSI BMVC set and is NOT enough for the
+# 20-case cohorts, whose largest slides run to 1.4 Gpixel. nnU-Net holds the
+# input as float32 RGB, one float32 logit plane per class, and a Gaussian
+# accumulator all at once — ~43 GB before transients on a 34677x40514 case. The
+# OOM kill lands AFTER the sliding window completes, leaving a header-only .tif
+# that reads back as shape (0,) and fails downstream in apply_he_mask rather
+# than here.
 
 # Collagen segmentation of the reconstructed grid ensemble WSIs, using
 # Dataset314_SR_light in WSI mode — the same segmenter as the scaling study and
