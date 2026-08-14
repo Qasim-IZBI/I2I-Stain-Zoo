@@ -96,10 +96,32 @@ to `tile_size`. Everything downstream sizes regions in millimetres for exactly t
 reason. Leave `--mpp` at its default unless your reconstructions genuinely differ.
 
 You also need the **real** PSR put through segmentation and the same two
-post-processing steps. `scripts/recon_real_psr.sh` stitches real tiles, but there is
-**no committed script that segments the real PSR** — run `nnUNetv2_predict` with
-`Dataset314_SR_light` over its output by hand, then `apply_he_mask_real.sh` →
-`fill_tissue_holes_real.sh`.
+post-processing steps. Two routes, differing only in what gets segmented:
+
+```bash
+# (a) stitched testB tiles — the BMVC route. Still no committed segmentation
+#     script: run nnUNetv2_predict with Dataset314_SR_light over the output by hand.
+sbatch scripts/recon_real_psr.sh
+sbatch scripts/apply_he_mask_real.sh
+sbatch scripts/fill_tissue_holes_real.sh
+
+# (b) the original thumbnail-registered SR WSIs — no reconstruction at all
+sbatch scripts/segment_psr_real.sh            # --array=0-19, one slide per task
+sbatch scripts/apply_he_mask_real_sr.sh
+sbatch scripts/fill_tissue_holes_real_sr.sh
+```
+
+Route (b) buys you the sharper input — no 512→256→512 round trip — at the cost of
+two things you have to check yourself, because neither is visible in the output.
+**Resolution parity:** `Dataset314_SR_light` is a 2d model with a fixed patch size,
+so if the originals are not at the same mpp as the virtual arm's reconstructions,
+every CPA difference is confounded with scale; `segment_psr_real.sh` logs each
+slide's geometry for comparison. **Footprint accuracy:** on the virtual arm the H&E
+mask is exact by construction, here the SR is a serial section registered only at
+thumbnail level, and the nearest-neighbour resize fixes scale but not offset.
+
+Both routes end at `psr_masks/real/psr_masks_wsi_final/`, which is what
+`compare_psr.py` and `estimate_floor.py --real_psr` consume.
 
 ---
 
@@ -117,6 +139,28 @@ python compute_phi_uncertainty.py \
     --outdir ./phi_uncertainty_liver/
 ```
 
+On SLURM that is `sbatch scripts/compute_phi_uncertainty_grid.sh`, with every path
+taken from the environment so the kidney arm needs no edit. On a 20-case cohort
+prefer the array form, one WSI per task:
+
+```bash
+sbatch scripts/compute_phi_uncertainty_grid_array.sh          # --array=0-19
+python aggregate_phi_uncertainty.py \
+    --indir  /work2/.../phi_uncertainty/per_wsi \
+    --outdir /work2/.../phi_uncertainty --expect 20
+```
+
+Splitting over WSIs is exact rather than an approximation — `decompose()` works
+region by region and regions never cross slide boundaries, so the per-WSI files hold
+final per-region numbers and only the three means need pooling. Every task still
+reads **all five folds**: the split is over WSIs, never over folds, because one fold
+alone yields procedural variance and no data-exposure term at all.
+
+`--he_dir` also accepts the **original H&E WSIs** rather than reconstructions. Tiling
+starts at `(0,0)` with stride = tile size and `reconstruct_wsi` upsamples tiles back
+to `tile_size`, so both sit in the same pixel frame and region boxes index identical
+pixels; the original just skips the resampling round trip.
+
 One `--fold` per training subset, all five. With several folds you get the full split:
 
 ```
@@ -131,7 +175,10 @@ procedural only, with the data component reported as *undefined* — not zero, b
 one subset cannot support the claim that data exposure contributes nothing.
 
 **Outputs:** `per_region.csv` (μ per descriptor, Var, procedural, data_exposure) and
-`summary.json`.
+`summary.json`. Note the CSV's two totals: `var_total_descriptor_space` is the pooled
+plug-in variance, which ignores the fold structure, while `var_total_anova` is the
+ANOVA total `summary.json` reports and the one that equals `procedural +
+data_exposure`.
 
 `summary.json` reports `"bias": {"computed": false}` by design. Bias is branch B and
 has not passed its gates.
@@ -296,7 +343,7 @@ region scale — which is what everything is already built for.
 | Piece | Needed for | Status |
 |---|---|---|
 | Region correspondence to real PSR | bias | in progress |
-| Real-PSR segmentation script | bias, floor | run `nnUNetv2_predict` by hand |
+| Real-PSR segmentation script | bias, floor | `scripts/segment_psr_real.sh` for the original registered SR WSIs; still manual for the stitched-testB route |
 | **Cluster-robust intervals, case as unit** | every reported interval | **not started** |
 | Cortex masks themselves | kidney arm | manual annotation; `--roi_dir` consumes them |
 | UNI/Virchow encoder + Mahalanobis | E3 OOD detection | not started |
@@ -314,12 +361,15 @@ interval, and the manuscript already commits to clustering on the case. Nothing 
 
 ```
 1.  reconstruct + segment + post-process        both cohorts        SLURM
-2.  segment the real PSR                        both cohorts        manual
+2.  segment the real PSR                        both cohorts        SLURM from the
+                                                                    original SR WSIs,
+                                                                    manual from tiles
 2b. annotate cortex masks                       kidney only         manual
     │
     ├─ 3.  compute_phi_uncertainty.py           ── no gates, start now
     │        liver: no --roi_dir
     │        kidney: --roi_dir cortex_masks/
+    │        20 cases: _grid_array.sh + aggregate_phi_uncertainty.py
     │
     └─ 4a. eyeball kidney masks                 ── free
        4b. stain_sensitivity.py                 ── hours, GATE

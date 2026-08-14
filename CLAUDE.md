@@ -436,6 +436,51 @@ passed through whole: a missing case is recoverable, a contaminated one is not.
 Outputs `per_region.csv` (μ per descriptor, Var, procedural, data_exposure) and
 `summary.json` (aggregates, reference classes, parameter record).
 
+`per_region.csv` carries **two** totals and they are not the same number.
+`var_total_descriptor_space` is the pooled plug-in variance over every member of
+every fold, which ignores the fold structure; `var_total_anova` is the ANOVA total
+`summary.json` reports, and it is the one that equals `procedural + data_exposure`.
+
+On SLURM, as one job or one per WSI:
+
+```bash
+sbatch scripts/compute_phi_uncertainty_grid.sh          # all folds, all WSIs, one job
+sbatch scripts/compute_phi_uncertainty_grid_array.sh    # --array=0-19, one WSI per task
+python aggregate_phi_uncertainty.py \
+    --indir ./phi_uncertainty/per_wsi --outdir ./phi_uncertainty/ --expect 20
+```
+
+Splitting over WSIs is **exact, not an approximation**: `decompose()` works region
+by region and regions never cross slide boundaries, so per-WSI runs hold final
+per-region numbers. Only the three means in `summary.json` are cohort-level, and
+`aggregate_phi_uncertainty.py` recovers them by pooling the rows — which is what
+`var_total_anova` is written for. It refuses to pool runs disagreeing on
+`region_mm`, `mpp`, the fold list or the thresholds, and `--expect` makes a short
+pool an error rather than a quietly smaller cohort.
+
+Both scripts split over **WSIs, never folds** — one fold alone gives procedural
+variance and no data-exposure term at all — and take every path from the
+environment, so the kidney arm needs no edit:
+
+```bash
+sbatch --export=ALL,TEST_A=...,HE_DIR=...,ROI_DIR=...,OUTDIR=... \
+    scripts/compute_phi_uncertainty_grid_array.sh
+```
+
+Their pre-flights catch the two failures the pipeline otherwise swallows: a member
+with no mask for a slide yields an all-NaN slab rather than an error, shrinking the
+effective member count behind the variance; and `region.crop` is bare numpy slicing
+with no resize and no shape assertion, so an H&E at the wrong pyramid level returns
+a short crop instead of raising.
+
+`--he_dir` accepts the **original H&E WSIs**, not only reconstructions. Tiling
+starts at `(0,0)` with stride = tile size and `reconstruct_wsi` upsamples tiles back
+to `tile_size`, so the reconstruction is the original truncated to a whole number of
+tiles at the same origin and scale — region boxes index identical pixels in either.
+The original skips the 512→256→512 round trip, so it is the sharper input for
+`he_bright`; it changes only the `mu_lumen_fraction` / `mu_tissue_fraction` columns,
+never the variance, since those two terms are identical across members.
+
 Package `uncertainty_phi/`: `descriptors` (the vector), `regions` (grid from
 tiles_metadata x/y), `ensemble` (per-member φ, then μ/Var), `decompose` (law of total
 variance), `floor` (bracketed floor covariance), `whiten` (Ledoit–Wolf, Mahalanobis,
@@ -574,6 +619,18 @@ sbatch scripts/apply_he_mask_grid.sh                 # 0-49
 sbatch scripts/fill_tissue_holes_grid.sh             # 0-49   -> wsi_masks_final/
 ```
 
+Then φ_struct over the finished grid, either in one job or one per WSI:
+
+```bash
+sbatch scripts/compute_phi_uncertainty_grid.sh       # all folds, all WSIs, one job
+sbatch scripts/compute_phi_uncertainty_grid_array.sh # 0-19   one WSI per task
+python aggregate_phi_uncertainty.py --indir .../per_wsi --outdir ... --expect 20
+```
+
+These two are **not** part of the shared decomposition above: they split over WSIs,
+while the six chain scripts split over subsets × members. They read all five folds
+in every task, which is why they cannot be indexed the same way.
+
 The committed scripts target the 5-WSI BMVC test set. For the 20-case held-out
 cohorts, repoint `TEST_A`, then `N_WSIS` (recon, segment) and `WSI_COUNT`
 (apply_he_mask, fill_tissue_holes), and scale `--array` to match.
@@ -676,9 +733,15 @@ Expects `per_tile.csv` at
 ### PSR Positive Area Segmentation
 
 Collagen masks come from a frozen nnU-Net v2 model, **`Dataset314_SR_light`**,
-run in WSI mode on reconstructed whole slides via a direct `nnUNetv2_predict`
-call (no wrapper script). The same dataset is used for the scaling study and the
-ensemble study.
+run in WSI mode on whole slides via a direct `nnUNetv2_predict` call. The same
+dataset is used for the scaling study, the ensemble study and the real-SR
+reference, which is the whole point — one segmenter, so anatomy-driven error is
+common to both arms and cancels.
+
+Committed wrappers exist for the grid (`scripts/segment_psr_grid.sh`) and for the
+real SR originals (`scripts/segment_psr_real.sh`); the call below is what to run by
+hand for anything else. Both wrappers stage each slide into a temp directory under
+the `_0000` channel suffix nnU-Net demands, then rename the prediction back.
 
 ```bash
 export nnUNet_results=/path/to/nnunet/nnUNet_results
@@ -718,10 +781,28 @@ python fill_tissue_holes.py --masks ./psr_masks_wsi_cleaned/ \
 `apply_he_mask.py` accepts a directory (matched by stem) or a single TIF pair;
 multi-channel TIFs use the `[..., 0]` slice, and an HE mask of different spatial size
 is resized nearest-neighbour. PSR files with no matching HE mask are warned and
-skipped.
+skipped — but a run where **nothing** matched raises, since an empty output directory
+otherwise reads to the SLURM skip guards as a finished stage.
+
+`--strip_prefix` drops the first `_`-delimited token from both sides before matching,
+so `SR_slide.tif` pairs with `HE_slide.tif` — the same rule as `compare_psr.py`, and
+required on the real-SR arm, whose masks are named after the SR slides while the
+tissue masks are named after the H&E ones. Two HE masks collapsing to one key is
+**fatal, not last-one-wins**: applying the wrong slide's footprint changes the CPA
+denominator with nothing visible to show for it.
 
 `fill_tissue_holes.py` treats the **union** of labels 1 and 2 as foreground —
 filling only label 1 would mark every PSR-positive pixel as a hole and relabel it.
+
+Both write through `utils.write_label_mask`, which is **zlib-compressed and atomic**.
+A three-valued mask stored raw costs one byte per pixel — 603 MB for a 23552×25600
+slide, and each slide passes through four full-size copies — while zlib takes one to
+two orders of magnitude off; every reader here goes through `tifffile.imread` and
+decompresses transparently. The write lands on `<name>.tif.partial` and is renamed
+only on success, so an interrupted write (a full filesystem, an exhausted quota)
+leaves nothing the `*.tif` skip guards can count as a finished slide. **Files written
+by nnU-Net itself are not protected** — a truncated `wsi_masks/` entry reads back as
+shape `(0,)` and fails downstream in `apply_mask`, not at the read.
 
 ### PSR Distribution Comparison
 
@@ -800,16 +881,53 @@ sbatch scripts/fill_tissue_holes_all_configs.sh  # → psr_masks_wsi_final/
 sbatch scripts/compare_psr_all_configs.sh     # → CPA MAE per model
 ```
 
-Real SR reference: `scripts/recon_real_psr.sh` (stitch real testB tiles) →
-**[no committed segmentation script]** → `scripts/apply_he_mask_real.sh` →
-`scripts/fill_tissue_holes_real.sh` → consumed by `scripts/compare_psr_all_configs.sh`
-as `psr_masks/real/psr_masks_wsi_final/`.
+**Real SR reference** — the arm every generated mask set is measured against. Two
+routes to it, differing only in what gets segmented:
 
-The real-SR segmentation step has no script in the repository: run
-`nnUNetv2_predict` with `Dataset314_SR_light` over the output of
-`scripts/recon_real_psr.sh` by hand. Note that `scripts/apply_he_mask_real.sh` currently reads
-`psr_masks/real/psr_masks_wsi/`, so either write the predictions there or adjust
-that path.
+```bash
+# (a) from stitched testB tiles — the BMVC route
+sbatch scripts/recon_real_psr.sh              # stitch real testB tiles
+#   [no committed segmentation script for this route: run nnUNetv2_predict with
+#    Dataset314_SR_light over its output by hand. apply_he_mask_real.sh reads
+#    psr_masks/real/psr_masks_wsi/, so write the predictions there or adjust it.]
+sbatch scripts/apply_he_mask_real.sh          # → psr_masks_wsi_cleaned/
+sbatch scripts/fill_tissue_holes_real.sh      # → psr_masks_wsi_final/
+
+# (b) from the original thumbnail-registered SR WSIs — no reconstruction at all
+sbatch scripts/segment_psr_real.sh            # --array=0-19, one slide per task
+sbatch scripts/apply_he_mask_real_sr.sh       # → psr_masks_wsi_cleaned/
+sbatch scripts/fill_tissue_holes_real_sr.sh   # → psr_masks_wsi_final/
+```
+
+Either way the output is consumed as `psr_masks/real/psr_masks_wsi_final/` by
+`scripts/compare_psr_all_configs.sh`, and as `--real_psr` by `estimate_floor.py`.
+Route (b)'s three scripts take every path from the environment (`SR_WSI_DIR`,
+`HE_MASKS_DIR`, `PSR_DIR`, `OUT_DIR`, `WSI_COUNT`, `STRIP_PREFIX`), so a new cohort
+needs no edit.
+
+Two asymmetries against the virtual arm that route (b) introduces, neither of which
+cancels and neither of which is visible in the output:
+
+- **Resolution parity is not checked for you.** The virtual arm is segmented on
+  reconstructions at 0.221 µm/px, and `Dataset314_SR_light` is a 2d model with a
+  fixed patch size, so it sees whatever scale it is handed. An original at a
+  different mpp makes every CPA difference confounded with scale.
+  `segment_psr_real.sh` logs each slide's shape and resolution tags for comparison
+  against the reconstructed virtual WSIs.
+- **The H&E footprint is exact on the virtual arm and approximate here.** There the
+  mask is generated *from* the H&E; here the SR is a serial section registered only
+  at thumbnail level, and the nearest-neighbour resize in `apply_he_mask.py` corrects
+  scale but not translation or rotation. Slide edges and detached fragments are where
+  it shows.
+
+Applying the same footprint to both arms is nevertheless correct: CPA's denominator
+is tissue area, so measuring each arm on its own footprint makes the two fractions
+incomparable whatever the collagen does.
+
+`segment_psr_real.sh` discovers slides null-delimited (`find -print0 | sort -z`),
+because this cohort has slides named `'SR_w10_BDL+A_M7'.tif` with the quotes inside
+the filename, and errors if `--array` overshoots the slide count rather than
+silently producing nothing.
 
 **Reverse inference and regen error:**
 
@@ -914,4 +1032,4 @@ and were moved here when MIUDiff was removed — CycleDiffusion imports them fro
 - No external diffusion libraries — DDPM/DDIM sampling is implemented from scratch.
 - No `requirements.txt`. Dependencies: torch, torchvision, numpy, scipy, pandas,
   matplotlib, pillow, tifffile, tqdm, pytest (plus nnU-Net v2 for CPA only).
-- Test suite: `pytest tests/ -q` — 227 tests, CPU-only, ~5 s.
+- Test suite: `pytest tests/ -q` — 233 tests, CPU-only, ~5 s.

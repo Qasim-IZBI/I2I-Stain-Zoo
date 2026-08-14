@@ -57,7 +57,7 @@ There is no `requirements.txt`; the full dependency set is exactly:
 Verify the install:
 
 ```bash
-pytest tests/ -q          # 100 tests, ~2 s on CPU
+pytest tests/ -q          # 233 tests, ~5 s on CPU
 ```
 
 **Optional — collagen segmentation.** The task-specific CPA metric
@@ -455,13 +455,19 @@ utils.py  base_models.py    shared blocks (ResNet, PatchGAN, DDPM UNet)
 models/                     6 architectures
 datasets/                   unpaired / single-domain loaders
 trainer/                    step-based training loop, auto-resume
-tests/                      pytest suite (100 tests)
+tests/                      pytest suite (233 tests)
 
 uncertainty.py              ensemble variance maps
 aggregate_uncertainty.py    per-tile σ̄ → per-WSI CSVs
 uncertainty_calibration.py  uncertainty vs. cycle error
 aggregate_calibration.py    pool per-WSI results per model
 plot_uncertainty_boxplot.py per-family σ̄ distribution
+
+uncertainty_phi/            descriptor-space package (φ_struct)
+compute_phi_uncertainty.py  procedural vs. data-exposure split
+aggregate_phi_uncertainty.py pool per-WSI φ runs into one cohort result
+estimate_floor.py           per-descriptor floor, the go/no-go pilot
+stain_sensitivity.py        is the "bias" really the segmenter?
 
 compare_psr.py              CPA agreement vs. real SR
 apply_he_mask.py            mask cleanup inside the CPA pipeline
@@ -470,7 +476,7 @@ fill_tissue_holes.py        hole filling inside the CPA pipeline
 plot_combined_metrics.py    2×2 metric overview
 plot_ranking_correlation.py cross-metric rank agreement
 
-scripts/                    48 SLURM job scripts for the full study
+scripts/                    63 SLURM job scripts for the full study
 ```
 
 SLURM scripts resolve Python via `PROJECT_ROOT=I2I-Stain-Zoo`, a path relative
