@@ -23,7 +23,12 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import tifffile
 
-from uncertainty_phi.descriptors import PHI_DIM, he_tissue_footprint, phi_struct
+from uncertainty_phi.descriptors import (
+    PHI_DIM,
+    WHITE_THRESH,
+    he_tissue_footprint,
+    phi_struct,
+)
 from uncertainty_phi.regions import (
     Region,
     filter_by_roi,
@@ -106,7 +111,15 @@ def phi_for_wsi(
     he = load_rgb(he_path) if he_path is not None and Path(he_path).exists() else None
     # WSI-level footprint: a lumen straddling a region boundary is only enclosed
     # (and therefore only counted) when the fill is done on the whole slide.
-    footprint = he_tissue_footprint(he) if he is not None else None
+    #
+    # The footprint and the lumen count must use ONE threshold — `lumen_fraction`
+    # is `bright & footprint`, so a footprint built at a different cut would
+    # intersect two different definitions of whitespace. Hence reading it out of
+    # phi_kwargs rather than letting each default independently.
+    footprint = (
+        he_tissue_footprint(he, white_thresh=phi_kwargs.get("white_thresh", WHITE_THRESH))
+        if he is not None else None
+    )
 
     out = np.full((len(member_dirs), len(regions), PHI_DIM), np.nan, dtype=np.float64)
     for m, mdir in enumerate(member_dirs):

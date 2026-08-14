@@ -49,7 +49,7 @@ import numpy as np
 import pandas as pd
 
 from uncertainty_phi.decompose import decompose
-from uncertainty_phi.descriptors import PHI_NAMES, PHI_REFERENCE
+from uncertainty_phi.descriptors import PHI_NAMES, PHI_REFERENCE, WHITE_THRESH
 from uncertainty_phi.ensemble import mean_and_variance, phi_over_ensemble
 from uncertainty_phi.regions import SOURCE_MPP, region_area_mm2
 
@@ -69,6 +69,7 @@ def _collect(roots: List[Path], args) -> tuple:
             min_tissue_fraction=args.min_tissue_fraction,
             min_object_px=args.min_object_px,
             closing_px=args.closing_px,
+            white_thresh=args.white_thresh,
         )
         if regions_ref is None:
             regions_ref = regions
@@ -122,6 +123,12 @@ def main() -> None:
                     help="Speckle removal before the topological terms. [%(default)s]")
     ap.add_argument("--closing_px", type=int, default=0,
                     help="Morphological closing before the topological terms. [%(default)s]")
+    ap.add_argument("--white_thresh", type=float, default=WHITE_THRESH,
+                    help="Whitespace cut for lumen_fraction and tissue_fraction. "
+                         "EVERY channel must clear it, so the number to compare "
+                         "against is the per-pixel channel minimum, not the grey "
+                         "level an 8-bit conversion shows. A lumen_fraction near "
+                         "1e-5 means this sits above the lumens. [%(default)s]")
     args = ap.parse_args()
 
     roots = [args.ensemble] if args.ensemble else list(args.fold)
@@ -190,6 +197,7 @@ def main() -> None:
             "min_tissue_fraction": args.min_tissue_fraction,
             "min_object_px": args.min_object_px,
             "closing_px": args.closing_px,
+            "white_thresh": args.white_thresh,
         },
     }
     with open(args.outdir / "summary.json", "w") as fh:

@@ -263,3 +263,79 @@ class TestRoiFilter:
             assert roi.shape == (10, 40)
             assert roi.dtype == bool
             assert roi[:, :20].all() and not roi[:, 20:].any()
+
+
+class TestWhiteThresh:
+    """The whitespace cut is scanner-dependent and must be tunable end to end.
+
+    Lumens at grey ~185 sit below the 0.85 default, so they read as tissue and
+    lumen_fraction collapses to ~0 — the failure seen on the UC liver cohort.
+
+    Every case goes through the WSI-level footprint, as the pipeline does.
+    Without one, `lumen_tissue_fraction` pads the border as tissue and the slide
+    background itself is counted as lumen.
+    """
+
+    @staticmethod
+    def _slide(lumen_value: int) -> np.ndarray:
+        """Tissue square with an enclosed lumen, on white slide background."""
+        he = np.full((60, 60, 3), 250, np.uint8)      # background
+        he[10:50, 10:50] = 150                        # tissue
+        he[25:35, 25:35] = lumen_value                # lumen inside the tissue
+        return he
+
+    @staticmethod
+    def _measure(he, thresh):
+        from uncertainty_phi.descriptors import (
+            he_tissue_footprint, lumen_tissue_fraction,
+        )
+        fp = he_tissue_footprint(he, white_thresh=thresh)
+        return lumen_tissue_fraction(he, tissue_mask=fp, white_thresh=thresh)
+
+    def test_default_misses_a_dim_lumen(self):
+        he = self._slide(185)                    # 185/255 = 0.725
+        lumen, tissue = self._measure(he, 0.85)
+        assert lumen == 0.0
+        assert tissue == pytest.approx(1600 / 3600, rel=1e-6)
+
+    def test_lowered_threshold_recovers_it(self):
+        lumen, tissue = self._measure(self._slide(185), 0.70)
+        assert lumen == pytest.approx(100 / 1600, rel=1e-6)   # 10x10 in 40x40
+        assert tissue == pytest.approx(1600 / 3600, rel=1e-6) # footprint unchanged
+
+    def test_a_bright_lumen_is_found_either_way(self):
+        for thresh in (0.70, 0.85):
+            lumen, _ = self._measure(self._slide(250), thresh)
+            assert lumen == pytest.approx(100 / 1600, rel=1e-6)
+
+    def test_threshold_reaches_phi_struct(self):
+        from uncertainty_phi.descriptors import he_tissue_footprint, phi_struct
+        he = self._slide(185)
+        labels = np.ones(he.shape[:2], np.uint8)
+
+        default = phi_struct(labels, he,
+                             tissue_mask=he_tissue_footprint(he))
+        lowered = phi_struct(labels, he, white_thresh=0.70,
+                             tissue_mask=he_tissue_footprint(he, white_thresh=0.70))
+        assert default[4] == 0.0
+        assert lowered[4] == pytest.approx(100 / 1600, rel=1e-6)
+
+    def test_phi_for_wsi_passes_it_to_the_footprint_too(self, tmp_path):
+        """A footprint built at a different cut would intersect two different
+        definitions of whitespace, so phi_for_wsi must forward the threshold."""
+        import tifffile
+
+        from uncertainty_phi.ensemble import phi_for_wsi
+        from uncertainty_phi.regions import Region
+
+        he = self._slide(185)
+        member = tmp_path / "model_01"
+        member.mkdir()
+        tifffile.imwrite(str(member / "s.tif"), np.ones(he.shape[:2], np.uint8))
+        he_path = tmp_path / "s_he.tif"
+        tifffile.imwrite(str(he_path), he)
+
+        regions = [Region(wsi="s", index=0, y0=0, y1=60, x0=0, x1=60)]
+        out = phi_for_wsi([member], "s", regions, he_path=he_path, mpp=0.221,
+                          white_thresh=0.70)
+        assert out[0, 0, 4] == pytest.approx(100 / 1600, rel=1e-6)

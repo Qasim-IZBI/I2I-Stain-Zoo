@@ -43,6 +43,7 @@ POOL_CRITICAL = (
     "min_tissue_fraction",
     "min_object_px",
     "closing_px",
+    "white_thresh",
 )
 
 

@@ -49,6 +49,14 @@ PHI_DIM = len(PHI_NAMES)
 LABEL_TISSUE = 1
 LABEL_PSR = 2
 
+# Brightness above which a pixel counts as whitespace. Scanner-dependent, and
+# `he_bright` requires EVERY channel to clear it, so the number to compare
+# against is the per-pixel channel MINIMUM — not the grey level Fiji shows after
+# an 8-bit conversion, which is a channel average and always the larger of the
+# two. Measure it per cohort: if lumen_fraction comes back at 1e-5 the threshold
+# is above the lumens and they are being counted as tissue.
+WHITE_THRESH = 0.85
+
 
 # ---------------------------------------------------------------------------
 # mask preparation
@@ -157,7 +165,7 @@ def regional_dispersion(mask: np.ndarray, sigma: float = 2.0) -> float:
     return float(1.0 - resultant)
 
 
-def he_bright(he_rgb: np.ndarray, white_thresh: float = 0.85) -> np.ndarray:
+def he_bright(he_rgb: np.ndarray, white_thresh: float = WHITE_THRESH) -> np.ndarray:
     """Near-white mask of an H&E image. Accepts uint8 or float [0,1]."""
     img = np.asarray(he_rgb, dtype=np.float32)
     if img.ndim != 3 or img.shape[2] < 3:
@@ -167,7 +175,8 @@ def he_bright(he_rgb: np.ndarray, white_thresh: float = 0.85) -> np.ndarray:
     return np.all(img[..., :3] > white_thresh, axis=2)
 
 
-def he_tissue_footprint(he_rgb: np.ndarray, white_thresh: float = 0.85) -> np.ndarray:
+def he_tissue_footprint(he_rgb: np.ndarray,
+                        white_thresh: float = WHITE_THRESH) -> np.ndarray:
     """Tissue outline *including* its internal lumens, for a whole WSI.
 
     Compute this once per slide and crop it per region — never per region
@@ -186,7 +195,7 @@ def he_tissue_footprint(he_rgb: np.ndarray, white_thresh: float = 0.85) -> np.nd
 def lumen_tissue_fraction(
     he_rgb: np.ndarray,
     tissue_mask: Optional[np.ndarray] = None,
-    white_thresh: float = 0.85,
+    white_thresh: float = WHITE_THRESH,
 ) -> Tuple[float, float]:
     """(lumen_fraction, tissue_fraction) from the H&E input.
 
@@ -234,6 +243,7 @@ def phi_struct(
     min_object_px: int = 16,
     closing_px: int = 0,
     sigma: float = 2.0,
+    white_thresh: float = WHITE_THRESH,
     tissue_mask: Optional[np.ndarray] = None,
     label_tissue: int = LABEL_TISSUE,
     label_psr: int = LABEL_PSR,
@@ -276,6 +286,8 @@ def phi_struct(
     out[3] = regional_dispersion(collagen, sigma=sigma)
 
     if he_rgb is not None:
-        out[4], out[5] = lumen_tissue_fraction(he_rgb, tissue_mask=tissue_mask)
+        out[4], out[5] = lumen_tissue_fraction(
+            he_rgb, tissue_mask=tissue_mask, white_thresh=white_thresh
+        )
 
     return out

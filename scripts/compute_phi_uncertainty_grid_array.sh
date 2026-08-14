@@ -69,6 +69,11 @@ OUTDIR="${OUTDIR:-/work2/bz66izin-UC_project/ID/phi_uncertainty}"
 REGION_MM="${REGION_MM:-1.5}"
 MIN_TISSUE_FRACTION="${MIN_TISSUE_FRACTION:-0.25}"
 MIN_ROI_FRACTION="${MIN_ROI_FRACTION:-0.5}"
+# Whitespace cut for lumen_fraction / tissue_fraction. EVERY channel must
+# clear it, so set it from the per-pixel channel MINIMUM, not from the grey
+# level an 8-bit conversion reports. A lumen_fraction near 1e-5 in
+# per_region.csv means this sits above the lumens.
+WHITE_THRESH="${WHITE_THRESH:-0.85}"
 
 # Grid decomposition — identical to train_ensemble_cyclegan_grid.sh and the rest
 # of the chain. Change it here and it has to change in all of them.
@@ -218,6 +223,7 @@ run_cmd python "${PROJECT_ROOT}/compute_phi_uncertainty.py" \
     "${ROI_ARGS[@]}" \
     --region_mm "${REGION_MM}" \
     --min_tissue_fraction "${MIN_TISSUE_FRACTION}" \
+    --white_thresh "${WHITE_THRESH}" \
     --outdir "${TASK_OUT}"
 
 echo "Done. WSI ${WSI} → ${TASK_OUT}/"
