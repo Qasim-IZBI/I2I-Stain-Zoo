@@ -156,6 +156,16 @@ final per-region numbers and only the three means need pooling. Every task still
 reads **all five folds**: the split is over WSIs, never over folds, because one fold
 alone yields procedural variance and no data-exposure term at all.
 
+**Check `mu_lumen_fraction` in `per_region.csv` on the first slide that finishes.** A
+value around 1e-5 means `--white_thresh` (`WHITE_THRESH=` on the SLURM scripts, default
+0.85) sits above this cohort's lumens and they are being counted as tissue. `he_bright`
+needs **every channel** over the cut, so set it from the per-pixel channel *minimum* —
+an 8-bit conversion shows a channel average, which is always higher. The UC liver H&E
+has lumens at grey ~180. Only the two H&E-referenced descriptors move when you change
+it; both are identical across members and contribute zero variance, so the
+procedural/data split does not need recomputing — but re-run before quoting the
+level-A columns, and use the same value for `estimate_floor.py`.
+
 `--he_dir` also accepts the **original H&E WSIs** rather than reconstructions. Tiling
 starts at `(0,0)` with stride = tile size and `reconstruct_wsi` upsamples tiles back
 to `tile_size`, so both sit in the same pixel frame and region boxes index identical
@@ -274,8 +284,17 @@ python estimate_floor.py \
     --real_psr /path/real_psr_kidney/psr_masks_wsi_final/ \
     --tiles_metadata /path/tiles/testB \
     --real_he /path/reconstructed_he/ \
+    --real_psr_rgb /path/real_sr_wsis/ \
+    --white_thresh 0.70 --white_thresh_psr 0.72 \
     --outdir ./floor_kidney/
 ```
+
+`--real_psr` gives masks; the cross-stain bound also needs the PSR **RGB**
+(`--real_psr_rgb`), since the two stain-invariant descriptors must be measured on both
+images. `--real_he` alone produces no cross-stain bound and says so. Set
+`--white_thresh` to the same value used for `compute_phi_uncertainty.py`, or the floor
+and the quantity it bounds are measured differently; `--white_thresh_psr` exists because
+the two stains sit at different whitespace levels and defaults to `--white_thresh`.
 
 **What the floor is.** The real PSR sits at a different section level from the H&E the
 model saw. Two levels of the same block differ for purely biological reasons, and that
@@ -289,7 +308,7 @@ Four estimators, precedence applied **per descriptor**:
 |---|---|---|
 | `direct` (`--psr_level_b`) | all six | measured — needs a second real PSR level |
 | `variogram` (default) | all six | conservative |
-| `cross_stain` (`--real_he`) | lumen, tissue only | conservative |
+| `cross_stain` (`--real_he` + `--real_psr_rgb`) | lumen, tissue only | conservative |
 | `split_half` (always) | all six | **anti-conservative** |
 
 You have no second PSR level, so the four collagen descriptors rest on the

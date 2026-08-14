@@ -414,7 +414,8 @@ python compute_phi_uncertainty.py \
 python compute_phi_uncertainty.py \
     --fold /path/ensemble_grid/cyclegan/data_001_007/model_small/wsi_masks_final \
     --fold /path/ensemble_grid/cyclegan/data_008_014/model_small/wsi_masks_final \
-    --tiles_metadata /path/tiles/testA --outdir ./phi_uncertainty/
+    --tiles_metadata /path/tiles/testA --he_dir /path/real_he_wsis \
+    --white_thresh 0.70 --outdir ./phi_uncertainty/
 
 # Kidney arm: cortex only
 python compute_phi_uncertainty.py \
@@ -463,7 +464,7 @@ variance and no data-exposure term at all — and take every path from the
 environment, so the kidney arm needs no edit:
 
 ```bash
-sbatch --export=ALL,TEST_A=...,HE_DIR=...,ROI_DIR=...,OUTDIR=... \
+sbatch --export=ALL,TEST_A=...,HE_DIR=...,ROI_DIR=...,WHITE_THRESH=...,OUTDIR=... \
     scripts/compute_phi_uncertainty_grid_array.sh
 ```
 
@@ -496,6 +497,18 @@ Notes that will bite otherwise:
 - **The H&E tissue footprint is computed per WSI, then cropped.** Doing it per region
   loses every lumen touching a region border, since `binary_fill_holes` only fills
   enclosed background.
+- **`--white_thresh` is a per-cohort measurement, not a constant.** It is the whitespace
+  cut behind `lumen_fraction` and `tissue_fraction` (default 0.85, `WHITE_THRESH` in
+  `descriptors.py`; the SLURM scripts take it as `WHITE_THRESH=`). `he_bright` requires
+  **every channel** to clear it, so the number to compare against is the per-pixel
+  channel **minimum** — an 8-bit conversion in Fiji shows a channel *average*, always
+  the larger of the two, so a grey level read off one is an upper bound on the
+  threshold rather than the threshold. **A `mu_lumen_fraction` around 1e-5 in
+  `per_region.csv` means the cut sits above the lumens** and they are being counted as
+  tissue; the UC liver cohort has them at grey ~180, i.e. 0.706 before the min-channel
+  correction. Changing it moves only the two H&E-referenced descriptors, which are
+  identical across members and so contribute zero variance — the decomposition is
+  unaffected, only the level-A columns need the re-run.
 - **Σ comes from the floor, never from the observed discrepancies** — whitening by the
   covariance of what you are measuring normalises the bias away. `whiten.py` takes Σ as
   an explicit argument so there is no code path that gets this wrong.
@@ -514,8 +527,29 @@ python estimate_floor.py \
     --real_psr /path/psr_masks/real/psr_masks_wsi_final \
     --tiles_metadata /path/tiles/testB \
     --real_he /path/reconstructed_he \
+    --real_psr_rgb /path/real_sr_wsis/ \
+    --white_thresh 0.70 --white_thresh_psr 0.72 \
     --outdir ./floor_pilot/
 ```
+
+`--real_psr` supplies **masks**; the cross-stain bound additionally needs the PSR
+**RGB** via `--real_psr_rgb`, because the two stain-invariant descriptors have to be
+measured on both images. Passing `--real_he` alone gives no cross-stain bound and says
+so — it used to build both sides from the same image, making the delta identically
+zero, and a zero floor reads as maximal bias. `cross_stain_floor` now raises on an
+all-zero delta rather than returning a bound that measures nothing.
+
+The two stains sit at different whitespace levels (~180 grey for H&E against ~185 for
+SR on the UC cohort), hence a separate `--white_thresh_psr`; it defaults to
+`--white_thresh`. Use the same `--white_thresh` here as in
+`compute_phi_uncertainty.py`, or the floor and the thing it bounds are measured
+differently.
+
+The bound assumes region *r* is the same tissue in both images. Thumbnail registration
+makes that approximately true, but the grid comes from one `--tiles_metadata` while the
+two slides are tiled separately, so any origin or extent mismatch is absorbed into the
+floor on top of the level offset. That inflates it — the safe direction — but it is in
+the number. The collagen descriptors are unaffected: the variogram is single-slide.
 
 The readout is **per descriptor**, not pooled, because a single number hides whether
 any individual component is stable enough between levels to carry a bias signal. CPA
@@ -532,7 +566,7 @@ descriptor uses the best bound available to it:
 |---|---|---|---|
 | `direct` (`--psr_level_b`) | all six | measured | a **second real PSR level** |
 | `variogram` (default) | all six | conservative | nothing extra |
-| `cross_stain` (`--real_he`) | lumen, tissue only | conservative | real H&E WSIs |
+| `cross_stain` (`--real_he` **and** `--real_psr_rgb`) | lumen, tissue only | conservative | real H&E **and** real PSR RGB |
 | `split_half` (always) | all six | **anti-conservative** | nothing |
 
 **Why the variogram matters.** Without a second PSR level the collagen descriptors have
@@ -1032,4 +1066,4 @@ and were moved here when MIUDiff was removed — CycleDiffusion imports them fro
 - No external diffusion libraries — DDPM/DDIM sampling is implemented from scratch.
 - No `requirements.txt`. Dependencies: torch, torchvision, numpy, scipy, pandas,
   matplotlib, pillow, tifffile, tqdm, pytest (plus nnU-Net v2 for CPA only).
-- Test suite: `pytest tests/ -q` — 233 tests, CPU-only, ~5 s.
+- Test suite: `pytest tests/ -q` — 239 tests, CPU-only, ~5 s.
