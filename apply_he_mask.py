@@ -23,6 +23,8 @@ python apply_he_mask.py \
     --outdir     ./psr_masks_cleaned/
 """
 
+from __future__ import annotations
+
 import argparse
 from pathlib import Path
 
@@ -43,12 +45,35 @@ def load_mask(path: Path) -> np.ndarray:
     return arr
 
 
-def find_he_mask(he_dir: Path, stem: str) -> Path | None:
-    for ext in (".tif", ".tiff"):
-        p = he_dir / f"{stem}{ext}"
-        if p.exists():
-            return p
-    return None
+def normalize_stem(stem: str, strip_prefix: bool) -> str:
+    """Drop the first '_'-delimited token, so SR_slide and HE_slide both key on
+    'slide'. Same rule as `compare_psr.py:normalize_stem`."""
+    if not strip_prefix:
+        return stem
+    parts = stem.split("_", 1)
+    return parts[1] if len(parts) > 1 else stem
+
+
+def index_he_masks(he_dir: Path, strip_prefix: bool = False) -> dict:
+    """Map matching key -> HE mask path.
+
+    A collision is fatal rather than last-one-wins: with --strip_prefix, two
+    files differing only in their prefix collapse to one key, and silently
+    picking either would apply the wrong slide's tissue footprint — which
+    changes the CPA denominator without changing anything visible.
+    """
+    index: dict = {}
+    for p in sorted(he_dir.iterdir()):
+        if not (p.is_file() and p.suffix.lower() in TIFF_EXTS):
+            continue
+        key = normalize_stem(p.stem, strip_prefix)
+        if key in index:
+            raise RuntimeError(
+                f"HE masks '{index[key].name}' and '{p.name}' both match key "
+                f"'{key}'. Disambiguate them, or drop --strip_prefix."
+            )
+        index[key] = p
+    return index
 
 
 def apply_mask(psr: np.ndarray, he: np.ndarray) -> np.ndarray:
@@ -84,6 +109,11 @@ def main():
                              "or a single TIF file when --psr_masks is also a file.")
     parser.add_argument("--outdir", type=Path, required=True,
                         help="Output directory for cleaned masks.")
+    parser.add_argument("--strip_prefix", action="store_true",
+                        help="Strip the first '_'-delimited token from both sides "
+                             "before matching, so SR_slide.tif pairs with "
+                             "HE_slide.tif. Needed whenever the PSR masks are named "
+                             "after the real SR slides rather than the H&E ones.")
     args = parser.parse_args()
 
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -93,6 +123,7 @@ def main():
         raise RuntimeError(f"No TIF files found in {args.psr_masks}")
 
     he_is_file = args.he_masks.is_file()
+    he_index = {} if he_is_file else index_he_masks(args.he_masks, args.strip_prefix)
 
     n_ok = 0
     n_skip = 0
@@ -100,7 +131,7 @@ def main():
         if he_is_file:
             he_path = args.he_masks
         else:
-            he_path = find_he_mask(args.he_masks, psr_path.stem)
+            he_path = he_index.get(normalize_stem(psr_path.stem, args.strip_prefix))
             if he_path is None:
                 print(f"[WARN] No HE mask found for '{psr_path.name}' — skipping.")
                 n_skip += 1
@@ -116,6 +147,14 @@ def main():
         out_path = args.outdir / psr_path.name
         write_label_mask(out_path, cleaned.astype(np.uint8))
         n_ok += 1
+
+    if n_ok == 0:
+        raise RuntimeError(
+            f"No PSR mask matched an HE mask — {n_skip} skipped. Exiting 0 here "
+            f"would leave an empty directory that reads like a finished stage. "
+            f"If the two sets use different prefixes (SR_slide vs HE_slide), "
+            f"pass --strip_prefix."
+        )
 
     print(f"Done — {n_ok} mask(s) saved to {args.outdir}"
           + (f", {n_skip} skipped (no matching HE mask)." if n_skip else "."))
