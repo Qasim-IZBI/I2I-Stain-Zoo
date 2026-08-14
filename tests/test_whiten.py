@@ -163,6 +163,14 @@ class TestFloor:
         assert np.isnan(est.sigma[0, 0])
         assert np.isfinite(est.sigma[4, 4])
 
+    def test_cross_stain_rejects_one_image_used_twice(self):
+        """estimate_floor once built both sides from --real_he, making delta
+        identically zero. A zero floor reads as maximal bias, so this has to
+        fail loudly rather than return a bound that measures nothing."""
+        phi = _sample(500, seed=17)
+        with pytest.raises(ValueError, match="identically zero"):
+            cross_stain_floor(phi, phi)
+
     def test_split_regions_are_disjoint(self):
         a, b = split_regions(101, seed=0)
         assert len(a) == len(b) == 50

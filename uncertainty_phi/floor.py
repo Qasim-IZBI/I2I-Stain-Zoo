@@ -320,6 +320,15 @@ def cross_stain_floor(phi_he: np.ndarray, phi_psr: np.ndarray) -> FloorEstimate:
     if delta.shape[0] < 2:
         raise ValueError("need >= 2 finite regions to estimate a floor covariance")
 
+    if not np.any(delta):
+        raise ValueError(
+            "cross-stain delta is identically zero on "
+            f"{[PHI_NAMES[i] for i in invariant]} — the two sides were computed "
+            "from the same image. phi_he must come from the real H&E and phi_psr "
+            "from the real PSR RGB; a zero floor makes bias^2 = observed^2 - 0, "
+            "which reads maximal bias, the unsafe direction."
+        )
+
     # difference covariance, same convention as _difference_covariance
     sub, shrink = ledoit_wolf(delta, assume_centered=True)
 

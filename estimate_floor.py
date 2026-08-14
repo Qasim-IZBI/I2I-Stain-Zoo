@@ -64,17 +64,19 @@ from uncertainty_phi.regions import (
     region_grid,
     wsi_extent,
 )
-from uncertainty_phi.descriptors import he_tissue_footprint
+from uncertainty_phi.descriptors import WHITE_THRESH, he_tissue_footprint
 
 
 def _phi_for_dir(mask_dir: Path, args, *, he_dir: Optional[Path] = None,
-                 with_geometry: bool = False):
+                 with_geometry: bool = False,
+                 white_thresh: Optional[float] = None):
     """φ over every region of every WSI in a directory of real masks.
 
     With `with_geometry` also returns region centres (mm) and slide labels, which
     the variogram needs to bin pairs by separation and to keep pairs within a
     slide.
     """
+    white_thresh = args.white_thresh if white_thresh is None else white_thresh
     index = _stem_index(Path(mask_dir))
     he_index = _stem_index(Path(he_dir)) if he_dir else {}
     out: List[np.ndarray] = []
@@ -98,7 +100,10 @@ def _phi_for_dir(mask_dir: Path, args, *, he_dir: Optional[Path] = None,
             continue
 
         he = load_rgb(he_index[stem]) if stem in he_index else None
-        footprint = he_tissue_footprint(he) if he is not None else None
+        # one threshold for the footprint and the lumen count — see
+        # uncertainty_phi.ensemble.phi_for_wsi
+        footprint = (he_tissue_footprint(he, white_thresh=white_thresh)
+                     if he is not None else None)
 
         for r in grid:
             out.append(phi_struct(
@@ -108,6 +113,7 @@ def _phi_for_dir(mask_dir: Path, args, *, he_dir: Optional[Path] = None,
                 tissue_mask=r.crop(footprint) if footprint is not None else None,
                 min_object_px=args.min_object_px,
                 closing_px=args.closing_px,
+                white_thresh=white_thresh,
             ))
         if with_geometry:
             coords.append(region_centres_mm(grid, args.mpp))
@@ -130,6 +136,11 @@ def main() -> None:
     ap.add_argument("--real_he", type=Path, default=None,
                     help="Reconstructed real H&E WSIs. Enables the cross-stain "
                          "UPPER bound on the two stain-invariant descriptors.")
+    ap.add_argument("--real_psr_rgb", type=Path, default=None,
+                    help="Real PSR RGB WSIs. Required alongside --real_he for "
+                         "the cross-stain bound: the stain-invariant terms have "
+                         "to be measured on BOTH images, and only the masks are "
+                         "read from --real_psr.")
     ap.add_argument("--psr_level_b", type=Path, default=None,
                     help="A SECOND real PSR level for the same cases. Gives the "
                          "direct cross-level floor and supersedes the bracket.")
@@ -140,6 +151,14 @@ def main() -> None:
                     help="Microns per pixel OF THE RECONSTRUCTION. [%(default)s]")
     ap.add_argument("--min_tissue_fraction", type=float, default=0.25)
     ap.add_argument("--min_object_px", type=int, default=16)
+    ap.add_argument("--white_thresh", type=float, default=WHITE_THRESH,
+                    help="Whitespace cut for the H&E terms. Every channel must\n"
+                         "clear it, so compare against the per-pixel channel\n"
+                         "MINIMUM, not a Fiji 8-bit grey level. [%(default)s]")
+    ap.add_argument("--white_thresh_psr", type=float, default=None,
+                    help="Whitespace cut for --real_psr_rgb. PSR and H&E sit at "
+                         "different whitespace levels, so they get their own "
+                         "thresholds. Defaults to --white_thresh.")
     ap.add_argument("--closing_px", type=int, default=0)
     ap.add_argument("--no_variogram", action="store_true",
                     help="Skip the variogram sill. Leaves the collagen terms on "
@@ -155,6 +174,9 @@ def main() -> None:
                     help="Seed for the split-half partition. [%(default)s]")
     args = ap.parse_args()
 
+    if args.white_thresh_psr is None:
+        args.white_thresh_psr = args.white_thresh
+
     print(f"[1/4] phi over real PSR: {args.real_psr}")
     phi_real, coords, slide_ids = _phi_for_dir(
         args.real_psr, args, he_dir=args.real_he, with_geometry=True)
@@ -168,11 +190,22 @@ def main() -> None:
 
     # --- upper bound: stain-invariant terms, real H&E vs real PSR ---
     upper = None
-    if args.real_he:
-        print(f"[2/4] cross-stain upper bound from {args.real_he}")
-        phi_he = _phi_for_dir(args.real_psr, args, he_dir=args.real_he)
-        n = min(len(phi_he), len(phi_real))
-        upper = cross_stain_floor(phi_he[:n], phi_real[:n])
+    if args.real_he and args.real_psr_rgb:
+        print(f"[2/4] cross-stain upper bound: H&E {args.real_he} vs "
+              f"PSR {args.real_psr_rgb}")
+        # phi_real already carries the H&E-referenced terms measured on the H&E.
+        # The other side must be the SAME descriptors measured on the real PSR
+        # RGB — passing --real_he twice makes delta identically zero.
+        phi_he = phi_real
+        phi_psr_rgb = _phi_for_dir(args.real_psr, args,
+                                   he_dir=args.real_psr_rgb,
+                                   white_thresh=args.white_thresh_psr)
+        n = min(len(phi_he), len(phi_psr_rgb))
+        upper = cross_stain_floor(phi_he[:n], phi_psr_rgb[:n])
+    elif args.real_he:
+        print("[2/4] --real_he without --real_psr_rgb: no cross-stain bound. "
+              "Both sides of the comparison need their own image; one image "
+              "twice gives a zero floor, which inflates bias.")
     else:
         print("[2/4] no --real_he: collagen terms will have no upper bound")
 
