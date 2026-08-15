@@ -38,7 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -166,25 +166,40 @@ def suggest_threshold(counts: np.ndarray, centres: np.ndarray,
     }
 
 
-def footprint_breakdown(t: np.ndarray, tissue: np.ndarray,
-                        max_jump: float = 0.005) -> Optional[float]:
-    """Lowest threshold at which the footprint stops being the tissue footprint.
+def stable_window(t: np.ndarray, tissue: np.ndarray,
+                  max_jump: float = 0.005) -> Optional[Tuple[float, float]]:
+    """Longest run of thresholds over which the footprint is the tissue footprint.
 
-    Slide background is only excluded from the footprint while it reads as
-    bright. Once the cut rises past it, `~bright` contains the background,
-    `binary_fill_holes` absorbs it, and `tissue_fraction` jumps — on the UC liver
-    H&E by 0.6% at 0.700 and then 21% at 0.725, against 0.05-0.09% per
-    step while it is stable. Past that point lumen_fraction is not a
-    high estimate of the same quantity, it is a measurement of a different
-    object, and it goes non-monotonic to prove it.
+    The footprint fails at BOTH ends and for opposite reasons, so this cannot be
+    a single cut-off:
 
-    Returns the first threshold in the broken regime, or None if the footprint
-    is stable across the whole sweep.
+    * **Too high** and the slide background stops reading as bright, so
+      `~bright` contains it, `binary_fill_holes` absorbs it, and
+      `tissue_fraction` jumps up — +21% at 0.725 on every UC liver slide.
+    * **Too low** and the tissue itself reads as bright, so the footprint erodes
+      and `tissue_fraction` collapses — 0.59 to 0.12 by 0.50 on SR_d31_M4.
+
+    Between them is the window where the footprint tracks the tissue, and it is
+    the *longest stable run*, not the run starting at the lowest threshold. While
+    stable, tissue_fraction moves 0.05-0.09% per step, so a 0.5% jump is 5-10x
+    the noise.
+
+    Returns (lo, hi) inclusive, or None if no run of two steps is stable.
     """
+    tissue = np.asarray(tissue, dtype=float)
+    best = run = None
     for i in range(1, len(t)):
-        if tissue[i - 1] > 0 and abs(tissue[i] / tissue[i - 1] - 1.0) > max_jump:
-            return float(t[i])
-    return None
+        step_ok = (tissue[i - 1] > 0
+                   and abs(tissue[i] / tissue[i - 1] - 1.0) <= max_jump)
+        if step_ok:
+            run = (i - 1, i) if run is None else (run[0], i)
+            if best is None or (run[1] - run[0]) > (best[1] - best[0]):
+                best = run
+        else:
+            run = None
+    if best is None:
+        return None
+    return float(t[best[0]]), float(t[best[1]])
 
 
 def find_plateau(t: np.ndarray, lumen: np.ndarray,
@@ -204,11 +219,11 @@ def find_plateau(t: np.ndarray, lumen: np.ndarray,
     which is exactly what the UC liver H&E does, sloping ~12% per step from 0.50
     to 0.675 with no flat spot anywhere.
 
-    Thresholds at or above `footprint_breakdown` are excluded before any of this,
-    since their lumen values describe a footprint that has swallowed the slide
-    background.
+    Thresholds outside `stable_window` are excluded before any of this, since
+    their lumen values describe a footprint that has either swallowed the
+    slide background or eroded into the tissue.
     """
-    out: dict = {"lo": None, "hi": None, "reason": None, "valid_hi": None,
+    out: dict = {"lo": None, "hi": None, "reason": None, "window": None,
                  "sensitivity_floor": None, "tolerance": tolerance,
                  "abs_max": abs_max}
 
@@ -218,16 +233,17 @@ def find_plateau(t: np.ndarray, lumen: np.ndarray,
 
     valid = np.isfinite(sens)
     if tissue is not None:
-        broken_at = footprint_breakdown(t, np.asarray(tissue, dtype=float), max_jump)
-        out["breakdown"] = broken_at
-        if broken_at is not None:
-            # the step INTO the breakdown is already contaminated, and so is the
-            # central difference on either side of it
-            valid &= t < broken_at
-            if valid.any():
-                out["valid_hi"] = float(t[valid].max())
+        window = stable_window(t, tissue, max_jump)
+        out["window"] = window
+        if window is None:
+            out["reason"] = ("the footprint is never stable: tissue_fraction "
+                             "moves at every step, so no threshold here measures "
+                             "the tissue")
+            return out
+        valid &= (t >= window[0]) & (t <= window[1])
     if valid.sum() < 3:
-        out["reason"] = "fewer than three usable thresholds below the breakdown"
+        out["reason"] = ("fewer than three thresholds inside the stable-footprint "
+                         "window — sweep a finer step across it")
         return out
 
     floor = float(np.nanmin(sens[valid]))
@@ -268,6 +284,9 @@ def make_figure(df: pd.DataFrame, hist_counts: np.ndarray, hist_centres: np.ndar
 
     slides = sorted(df["wsi"].unique())
     mean = df.groupby("white_thresh")[["lumen_fraction", "tissue_fraction"]].mean()
+    swept = mean.index.to_numpy()
+    win = plateau.get("window")
+    partial_window = win is not None and (win[0] > swept[0] or win[1] < swept[-1])
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.8))
     fig.patch.set_facecolor("white")
@@ -284,9 +303,13 @@ def make_figure(df: pd.DataFrame, hist_counts: np.ndarray, hist_centres: np.ndar
 
     def mark(ax, shade: bool = True):
         """Invalid region, plateau band, then the two vertical rules."""
-        if shade and plateau.get("breakdown") is not None:
-            ax.axvspan(plateau["breakdown"], ax.get_xlim()[1], color=C_MUTED,
-                       alpha=0.10, zorder=1, linewidth=0)
+        if shade and partial_window:
+            lo, hi = plateau["window"]
+            x0, x1 = ax.get_xlim()
+            if lo > swept[0]:
+                ax.axvspan(x0, lo, color=C_MUTED, alpha=0.10, zorder=1, linewidth=0)
+            if hi < swept[-1]:
+                ax.axvspan(hi, x1, color=C_MUTED, alpha=0.10, zorder=1, linewidth=0)
         if shade and plateau.get("lo") is not None:
             lo, hi = plateau["lo"], plateau["hi"]
             if hi - lo < 1e-9:              # single point: give it visible width
@@ -358,12 +381,12 @@ def make_figure(df: pd.DataFrame, hist_counts: np.ndarray, hist_centres: np.ndar
     sens = np.asarray(plateau["sensitivity"])
     ax.plot(ts, sens, color=C_MEAN, linewidth=2.5, marker="o", markersize=5, zorder=5)
     mark(ax)
-    if plateau.get("breakdown") is not None:
-        ax.annotate("footprint broken\n(background absorbed)",
-                    xy=(plateau["breakdown"], 1.0),
+    if partial_window:
+        ax.annotate(f"footprint stable\n{plateau['window'][0]:.3f}–{plateau['window'][1]:.3f}",
+                    xy=(0.5 * sum(plateau["window"]), 0.02),
                     xycoords=("data", "axes fraction"),
-                    xytext=(4, -8), textcoords="offset points",
-                    color=C_MUTED, fontsize=8, va="top", ha="left")
+                    xytext=(0, 0), textcoords="offset points",
+                    color=C_MUTED, fontsize=8, va="bottom", ha="center")
     if plateau.get("lo") is not None:
         ax.annotate(f"plateau {plateau['lo']:.3f}–{plateau['hi']:.3f}",
                     xy=(0.5 * (plateau["lo"] + plateau["hi"]), 1.0),
@@ -383,8 +406,8 @@ def make_figure(df: pd.DataFrame, hist_counts: np.ndarray, hist_centres: np.ndar
             + (f"   ·   green band = plateau {plateau['lo']:.3f}–{plateau['hi']:.3f}"
                if plateau.get("lo") is not None
                else "   ·   NO PLATEAU: " + (plateau.get("reason") or "").split(".")[0])
-            + (f"   ·   grey = footprint broken at {plateau['breakdown']:.3f}"
-               if plateau.get("breakdown") is not None else ""))
+            + ("   ·   grey = footprint not the tissue footprint there"
+               if partial_window else ""))
     fig.text(0.011, 0.015, note, color=C_MUTED, fontsize=9)
     fig.suptitle("Choosing --white_thresh: sit in the valley, not on the slope",
                  color=C_INK, fontsize=13, x=0.011, ha="left", y=0.99)
@@ -520,11 +543,26 @@ def main() -> None:
         print("no valley found: the tissue and whitespace modes are not separated "
               "in this histogram, so no threshold here is stable. Read panel A "
               "before choosing one by hand.")
-    if plateau.get("breakdown") is not None:
-        print(f"BREAKDOWN : {plateau['breakdown']:.3f} — at and above this the "
-              f"footprint has absorbed the slide background.")
-        print(f"            Usable range is <= {plateau['valid_hi']:.3f}. A value "
-              f"above it measures a different object, not a smaller lumen.")
+    if plateau.get("window") is not None:
+        lo, hi = plateau["window"]
+        print(f"window    : {lo:.3f} to {hi:.3f} — outside it the footprint is "
+              f"not the tissue footprint")
+        print(f"            (below, tissue reads as bright and the footprint "
+              f"erodes; above, the slide background is absorbed)")
+    per_slide = {}
+    for w, d in df.groupby("wsi"):
+        d = d.sort_values("white_thresh")
+        per_slide[w] = stable_window(d["white_thresh"].to_numpy(),
+                                     d["tissue_fraction"].to_numpy())
+    usable = [v for v in per_slide.values() if v is not None]
+    if usable:
+        common = (max(v[0] for v in usable), min(v[1] for v in usable))
+        if common[0] > common[1]:
+            print("            [WARN] the slides share NO stable window: "
+                  + ", ".join(f"{k} {v}" for k, v in per_slide.items()))
+        elif len(set(usable)) > 1:
+            print(f"            per-slide windows differ; intersection is "
+                  f"{common[0]:.3f} to {common[1]:.3f}")
     if plateau.get("lo") is not None:
         inside = plateau["lo"] <= args.current <= plateau["hi"]
         print(f"plateau   : {plateau['lo']:.3f} to {plateau['hi']:.3f}  "
@@ -533,9 +571,10 @@ def main() -> None:
               f"{'INSIDE the plateau' if inside else 'OUTSIDE the plateau'}")
     else:
         print(f"plateau   : NONE. {plateau.get('reason')}")
+        outside = (plateau.get("window") is not None
+                   and not (plateau["window"][0] <= args.current <= plateau["window"][1]))
         print(f"current   : {args.current:g}"
-              + ("  — ABOVE the usable range" if plateau.get("valid_hi") is not None
-                 and args.current > plateau["valid_hi"] else ""))
+              + ("  — OUTSIDE the stable-footprint window" if outside else ""))
     print(f"\nwrote {csv_path}")
     print(f"wrote {args.outdir / 'white_thresh.json'}")
 

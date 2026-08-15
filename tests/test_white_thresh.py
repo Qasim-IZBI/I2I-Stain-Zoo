@@ -9,7 +9,7 @@ the slide background.
 import numpy as np
 import pytest
 
-from calibrate_white_thresh import find_plateau, footprint_breakdown, suggest_threshold
+from calibrate_white_thresh import find_plateau, stable_window, suggest_threshold
 
 
 def _sloped(t: np.ndarray, per_step: float = 0.877) -> np.ndarray:
@@ -17,18 +17,34 @@ def _sloped(t: np.ndarray, per_step: float = 0.877) -> np.ndarray:
     return 0.073 * per_step ** np.arange(len(t))
 
 
-class TestFootprintBreakdown:
-    def test_flags_the_step_where_background_is_absorbed(self):
+class TestStableWindow:
+    def test_ends_where_the_background_is_absorbed(self):
         t = np.arange(0.50, 0.7251, 0.025)
         tissue = np.full(len(t), 0.606)
         tissue[-2] *= 1.006          # transition
         tissue[-1] = 0.741           # background swallowed
-        assert footprint_breakdown(t, tissue) == pytest.approx(0.700)
+        assert stable_window(t, tissue) == pytest.approx((0.500, 0.675))
 
-    def test_stable_footprint_reports_none(self):
+    def test_starts_late_when_low_thresholds_erode_the_tissue(self):
+        """The SR arm fails at BOTH ends: below the window the tissue itself
+        reads as bright and the footprint collapses, so the valid run does not
+        start at the lowest threshold."""
+        t = np.arange(0.50, 0.7251, 0.025)
+        tissue = np.array([0.121, 0.169, 0.268, 0.588, 0.592, 0.593,
+                           0.594, 0.596, 0.598, 0.724])
+        # 0.575 -> 0.600 is +0.68%, still over the 0.5% rule, so the footprint
+        # has only settled by 0.600 — this is SR_d31_M4's real behaviour — and
+        # the window closes at the +21% background jump
+        assert stable_window(t, tissue) == pytest.approx((0.600, 0.700))
+
+    def test_stable_footprint_spans_everything(self):
         t = np.arange(0.50, 0.7001, 0.025)
         tissue = 0.606 + np.linspace(0, 0.0004, len(t))   # 0.07% drift
-        assert footprint_breakdown(t, tissue) is None
+        assert stable_window(t, tissue) == pytest.approx((0.500, 0.700))
+
+    def test_never_stable_returns_none(self):
+        t = np.arange(0.50, 0.5751, 0.025)
+        assert stable_window(t, np.array([0.1, 0.4, 0.7, 0.95])) is None
 
 
 class TestFindPlateau:
@@ -52,25 +68,30 @@ class TestFindPlateau:
         assert out["hi"] == pytest.approx(t[5])
 
     def test_broken_footprint_is_excluded_before_anything_else(self):
-        """Past the breakdown lumen_fraction goes non-monotonic, which can look
+        """Outside the window lumen_fraction goes non-monotonic, which can look
         flat to a gradient. Those thresholds must not be candidates."""
         t = np.arange(0.50, 0.7751, 0.025)
         lumen = np.concatenate([_sloped(t[:8]), [0.012, 0.024, 0.001, 0.0005]])
         tissue = np.concatenate([np.full(8, 0.606), [0.610, 0.741, 0.748, 0.748]])
         out = find_plateau(t, lumen, tissue)
         # 0.610/0.606 is +0.66%, over the 0.5% rule — the transition step itself
-        # is caught, not merely the fully-broken one after it
-        assert out["breakdown"] == pytest.approx(0.700)
-        assert out["valid_hi"] == pytest.approx(0.675)
+        # ends the window, not merely the fully-broken one after it
+        assert out["window"] == pytest.approx((0.500, 0.675))
         if out["lo"] is not None:
-            assert out["hi"] <= out["valid_hi"]
+            assert out["hi"] <= out["window"][1]
 
     def test_too_few_usable_thresholds_says_so(self):
         t = np.array([0.50, 0.525, 0.55])
-        tissue = np.array([0.6, 0.9, 0.9])          # breaks immediately
+        tissue = np.array([0.6, 0.9, 0.9])          # only the last two agree
         out = find_plateau(t, _sloped(t), tissue)
         assert out["lo"] is None
         assert "fewer than three" in out["reason"]
+
+    def test_never_stable_footprint_is_reported_not_ignored(self):
+        t = np.arange(0.50, 0.5751, 0.025)
+        out = find_plateau(t, _sloped(t), np.array([0.1, 0.4, 0.7, 0.95]))
+        assert out["lo"] is None
+        assert "never stable" in out["reason"]
 
 
 class TestSuggestThreshold:
