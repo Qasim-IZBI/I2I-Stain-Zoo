@@ -73,8 +73,10 @@ def wsi_extent(metadata_csv: Path) -> Tuple[str, int, int]:
     return str(sources[0]), h, w
 
 
-def region_grid(
-    metadata_csv: Path,
+def region_grid_from_extent(
+    wsi: str,
+    h: int,
+    w: int,
     *,
     region_mm: float = 1.5,
     mpp: float = SOURCE_MPP,
@@ -82,12 +84,23 @@ def region_grid(
 ) -> List[Region]:
     """Non-overlapping grid of ~`region_mm` square regions over one WSI.
 
+    Takes the extent directly, for the arms that never get tiled. The real SR is
+    evaluated whole-slide — there is no `tiles_metadata.csv` for it and creating
+    one would mean tiling several hundred GB for coordinates already implied by
+    the image itself. Pass `array.shape[:2]`, or the TIFF header's, and the grid
+    is the same construction.
+
     `drop_partial` discards edge regions smaller than the nominal size, so every
     region has the same area and the per-mm² densities are not skewed by slivers.
     Tissue filtering is a separate step (`filter_by_tissue`) because it needs the
     mask, which the caller loads.
+
+    Note the grids from the two routes are **not** interchangeable: a tiled
+    extent is truncated to a whole number of tiles, so it can be up to one tile
+    shorter in each axis than the image. With `drop_partial` that is at most one
+    row/column of regions, but do not compare a run built one way against a run
+    built the other.
     """
-    wsi, h, w = wsi_extent(metadata_csv)
     side = int(round(region_mm * 1000.0 / mpp))
     if side < 1:
         raise ValueError(f"region_mm={region_mm} at mpp={mpp} gives a {side}px region")
@@ -102,6 +115,19 @@ def region_grid(
             regions.append(Region(wsi=wsi, index=idx, y0=y0, y1=y1, x0=x0, x1=x1))
             idx += 1
     return regions
+
+
+def region_grid(
+    metadata_csv: Path,
+    *,
+    region_mm: float = 1.5,
+    mpp: float = SOURCE_MPP,
+    drop_partial: bool = True,
+) -> List[Region]:
+    """`region_grid_from_extent` for a tiled dataset, sized from its metadata."""
+    wsi, h, w = wsi_extent(metadata_csv)
+    return region_grid_from_extent(wsi, h, w, region_mm=region_mm, mpp=mpp,
+                                   drop_partial=drop_partial)
 
 
 def filter_by_tissue(

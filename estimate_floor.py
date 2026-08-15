@@ -25,9 +25,14 @@ Usage
 -----
     python estimate_floor.py \\
         --real_psr /path/psr_masks/real/psr_masks_wsi_final \\
-        --tiles_metadata /path/tiles/testB \\
-        --real_he /path/reconstructed_he \\
+        --real_he /path/real_he_wsis \\
+        --real_psr_rgb /path/real_sr_wsis \\
         --outdir ./floor_pilot/
+
+`--tiles_metadata` is optional. Without it the region grid is sized from each
+mask directly — the real SR is evaluated whole-slide and has no tiling, and
+producing one purely for coordinates would cost hundreds of GB for numbers the
+image already carries.
 
 Outputs
 -------
@@ -58,6 +63,7 @@ from uncertainty_phi.floor import (
 )
 from uncertainty_phi.regions import (
     SOURCE_MPP,
+    region_grid_from_extent,
     region_centres_mm,
     filter_by_tissue,
     iter_metadata_csvs,
@@ -83,19 +89,30 @@ def _phi_for_dir(mask_dir: Path, args, *, he_dir: Optional[Path] = None,
     coords: List[np.ndarray] = []
     labels_out: List[str] = []
 
-    for csv_path in iter_metadata_csvs(Path(args.tiles_metadata)):
-        source, _, _ = wsi_extent(csv_path)
-        stem = Path(source).stem
+    # The region grid needs an extent and a stem, nothing else. With a tiled
+    # dataset those come from the metadata; the real SR is evaluated whole-slide
+    # and never tiled, so they come from the mask itself. Same construction.
+    if args.tiles_metadata is not None:
+        sources = []
+        for csv_path in iter_metadata_csvs(Path(args.tiles_metadata)):
+            source, _, _ = wsi_extent(csv_path)
+            sources.append((Path(source).stem, csv_path))
+    else:
+        sources = [(stem, None) for stem in sorted(index)]
+
+    for stem, csv_path in sources:
         mpath = index.get(stem)
         if mpath is None:
             print(f"  [skip] no mask for {stem} in {mask_dir}")
             continue
 
         labels = load_label_mask(mpath)
-        grid = filter_by_tissue(
-            region_grid(csv_path, region_mm=args.region_mm, mpp=args.mpp),
-            labels, min_tissue_fraction=args.min_tissue_fraction,
-        )
+        grid = (region_grid(csv_path, region_mm=args.region_mm, mpp=args.mpp)
+                if csv_path is not None else
+                region_grid_from_extent(stem, labels.shape[0], labels.shape[1],
+                                        region_mm=args.region_mm, mpp=args.mpp))
+        grid = filter_by_tissue(grid, labels,
+                                min_tissue_fraction=args.min_tissue_fraction)
         if not grid:
             continue
 
@@ -131,8 +148,13 @@ def main() -> None:
     ap = argparse.ArgumentParser("Per-descriptor biological floor (go/no-go pilot)")
     ap.add_argument("--real_psr", type=Path, required=True,
                     help="Directory of REAL PSR WSI masks (level A).")
-    ap.add_argument("--tiles_metadata", type=Path, required=True,
-                    help="Dataset root with per-WSI tiles_metadata.csv.")
+    ap.add_argument("--tiles_metadata", type=Path, default=None,
+                    help="Dataset root with per-WSI tiles_metadata.csv. OPTIONAL: "
+                         "without it the region grid is sized from each mask in "
+                         "--real_psr, which is what the real SR arm wants since "
+                         "it is evaluated whole-slide and never tiled. Grids from "
+                         "the two routes differ by up to one region row/column, "
+                         "so do not compare runs across them.")
     ap.add_argument("--real_he", type=Path, default=None,
                     help="Reconstructed real H&E WSIs. Enables the cross-stain "
                          "UPPER bound on the two stain-invariant descriptors.")

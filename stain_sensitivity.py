@@ -62,6 +62,7 @@ from uncertainty_phi.regions import (
     filter_by_tissue,
     iter_metadata_csvs,
     region_grid,
+    region_grid_from_extent,
     wsi_extent,
 )
 
@@ -157,15 +158,24 @@ def _phi_at(mask_dir: Path, args) -> Dict[str, np.ndarray]:
     """{wsi_stem: [n_regions, d]} for one perturbation step."""
     idx = _stem_index(mask_dir)
     out: Dict[str, np.ndarray] = {}
-    for csv_path in iter_metadata_csvs(Path(args.tiles_metadata)):
-        source, _, _ = wsi_extent(csv_path)
-        stem = Path(source).stem
+    # Sized from the mask when the arm was never tiled — the real SR is
+    # evaluated whole-slide, so it has no tiles_metadata.csv.
+    if args.tiles_metadata is not None:
+        sources = [(Path(wsi_extent(c)[0]).stem, c)
+                   for c in iter_metadata_csvs(Path(args.tiles_metadata))]
+    else:
+        sources = [(stem, None) for stem in sorted(idx)]
+
+    for stem, csv_path in sources:
         if stem not in idx:
             continue
         labels = load_label_mask(idx[stem])
+        base = (region_grid(csv_path, region_mm=args.region_mm, mpp=args.mpp)
+                if csv_path is not None else
+                region_grid_from_extent(stem, labels.shape[0], labels.shape[1],
+                                        region_mm=args.region_mm, mpp=args.mpp))
         grid = filter_by_tissue(
-            region_grid(csv_path, region_mm=args.region_mm, mpp=args.mpp),
-            labels, min_tissue_fraction=args.min_tissue_fraction,
+            base, labels, min_tissue_fraction=args.min_tissue_fraction,
         )
         if grid:
             out[stem] = np.vstack([
@@ -270,7 +280,10 @@ def main() -> None:
     a = sub.add_parser("analyse", help="descriptor drift across the segmented series")
     a.add_argument("--masks", type=Path, required=True,
                    help="Directory of t*/ mask dirs from the segmentation step.")
-    a.add_argument("--tiles_metadata", type=Path, required=True)
+    a.add_argument("--tiles_metadata", type=Path, default=None,
+                   help="Optional. Without it the region grid is sized from "
+                        "each mask, which is what the real SR arm wants — it "
+                        "is evaluated whole-slide and has no tiling.")
     a.add_argument("--outdir", type=Path, required=True)
     a.add_argument("--region_mm", type=float, default=1.5)
     a.add_argument("--mpp", type=float, default=SOURCE_MPP)

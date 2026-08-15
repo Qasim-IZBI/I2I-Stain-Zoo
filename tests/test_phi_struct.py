@@ -339,3 +339,39 @@ class TestWhiteThresh:
         out = phi_for_wsi([member], "s", regions, he_path=he_path, mpp=0.221,
                           white_thresh=0.70)
         assert out[0, 0, 4] == pytest.approx(100 / 1600, rel=1e-6)
+
+
+class TestGridWithoutTiling:
+    """The real SR is evaluated whole-slide and has no tiles_metadata.csv.
+
+    Sizing the grid from the image instead must give the same construction, so
+    the arm that was never tiled is not a second code path with its own bugs.
+    """
+
+    def test_matches_the_metadata_route_on_a_tile_aligned_extent(self, tmp_path):
+        import pandas as pd
+
+        from uncertainty_phi.regions import region_grid, region_grid_from_extent
+
+        h = w = 2048
+        rows = [{"source_file": "s.tif", "x": x, "y": y, "tile_size": 512}
+                for y in range(0, h, 512) for x in range(0, w, 512)]
+        csv = tmp_path / "tiles_metadata.csv"
+        pd.DataFrame(rows).to_csv(csv, index=False)
+
+        a = region_grid(csv, region_mm=0.2, mpp=0.221)
+        b = region_grid_from_extent("s.tif", h, w, region_mm=0.2, mpp=0.221)
+        assert [(r.y0, r.y1, r.x0, r.x1) for r in a] == \
+               [(r.y0, r.y1, r.x0, r.x1) for r in b]
+
+    def test_untiled_extent_can_hold_one_more_region_row(self):
+        """A tiled extent is truncated to whole tiles, so the two routes are not
+        interchangeable — they differ by at most an edge row/column."""
+        from uncertainty_phi.regions import region_grid_from_extent
+
+        side = int(round(0.2 * 1000.0 / 0.221))
+        tiled = region_grid_from_extent("s", 3 * side, 3 * side,
+                                        region_mm=0.2, mpp=0.221)
+        untiled = region_grid_from_extent("s", 3 * side + 10, 3 * side + 10,
+                                          region_mm=0.2, mpp=0.221)
+        assert len(tiled) == len(untiled) == 9      # drop_partial eats the sliver
