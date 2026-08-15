@@ -29,7 +29,7 @@
 #
 #   sbatch --export=ALL,\
 #   HE_DIR=/work2/bz66izin-UC_project/ID_SR/no_overlap/testB/export_rgb/testB,\
-#   TILES_METADATA=,\
+#   TILES_METADATA=none,\
 #   OUTDIR=/work2/bz66izin-UC_project/white_thresh_sr \
 #       I2I-Stain-Zoo/scripts/calibrate_white_thresh.sh
 
@@ -56,9 +56,11 @@ PROJECT_ROOT=I2I-Stain-Zoo
 # Paths — overridable via --export. Defaults are the liver H&E arm.
 # -----------------------------
 HE_DIR="${HE_DIR:-/work2/bz66izin-UC_project/ID_HE/no_overlap/testA/export_rgb/testA}"
-# Optional. The real SR arm is evaluated whole-slide and has no tiling, so
-# leave it empty there and the grid is sized from each image instead.
-TILES_METADATA="${TILES_METADATA:-/work2/bz66izin-UC_project/ID_HE/no_overlap/testA/tiles/testA}"
+# Optional. Set TILES_METADATA=none on the real SR arm, which is evaluated
+# whole-slide and has no tiling — the grid is then sized from each image.
+# Note the `-` rather than `:-`: with `:-` an explicitly EMPTY value would fall
+# back to this default, so "set it to empty" could not turn the flag off.
+TILES_METADATA="${TILES_METADATA-/work2/bz66izin-UC_project/ID_HE/no_overlap/testA/tiles/testA}"
 OUTDIR="${OUTDIR:-/work2/bz66izin-UC_project/white_thresh_he}"
 
 N_WSIS="${N_WSIS:-3}"
@@ -78,11 +80,11 @@ if [ ! -d "${HE_DIR}" ]; then
 fi
 
 META_ARGS=()
-if [ -n "${TILES_METADATA}" ]; then
+if [ -n "${TILES_METADATA}" ] && [ "${TILES_METADATA}" != "none" ]; then
     if [ ! -d "${TILES_METADATA}" ]; then
         echo "[ERROR] tiles_metadata root not found: ${TILES_METADATA}"
         echo "        Its source_file entries must name the images in ${HE_DIR}."
-        echo "        Set TILES_METADATA= (empty) to size the grid from the"
+        echo "        Set TILES_METADATA=none to size the grid from the"
         echo "        images instead — the real SR arm has no tiling."
         exit 1
     fi
@@ -105,7 +107,11 @@ fi
 mkdir -p "${OUTDIR}"
 
 echo "H&E dir  : ${HE_DIR} (${N_IMG} slides, sweeping ${N_WSIS})"
-echo "Metadata : ${TILES_METADATA:-<none, sized from the images>}"
+if [ -n "${META_ARGS[*]}" ]; then
+    echo "Metadata : ${TILES_METADATA}"
+else
+    echo "Metadata : <none — grid sized from the images themselves>"
+fi
 echo "Output   : ${OUTDIR}"
 echo "Sweep    : ${T_MIN} to ${T_MAX} step ${T_STEP}, current marked at ${CURRENT}"
 

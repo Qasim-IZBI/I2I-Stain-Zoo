@@ -137,7 +137,14 @@ def _phi_for_dir(mask_dir: Path, args, *, he_dir: Optional[Path] = None,
             labels_out.extend([stem] * len(grid))
 
     if not out:
-        raise SystemExit(f"no regions produced from {mask_dir}")
+        want = [s for s, _ in sources][:3]
+        raise SystemExit(
+            f"no regions produced from {mask_dir}.\n"
+            f"  looked for : {', '.join(want)}{' ...' if len(sources) > 3 else ''}\n"
+            f"  masks are  : {', '.join(sorted(index)[:3])}"
+            f"{' ...' if len(index) > 3 else ''}\n"
+            "If those are different slide sets, --tiles_metadata belongs to "
+            "another cohort; drop it and the grid is sized from each mask.")
     phi = np.vstack(out)
     if with_geometry:
         return phi, np.vstack(coords), labels_out

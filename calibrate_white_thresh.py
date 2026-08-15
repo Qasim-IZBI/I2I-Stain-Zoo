@@ -439,11 +439,13 @@ def main() -> None:
     else:
         sources = [(stem, None) for stem in sorted(he_index)]
 
+    skipped: List[str] = []
     for stem, csv_path in sources:
         if done >= args.n_wsis:
             break
         if stem not in he_index:
-            print(f"[skip] no H&E for {stem}")
+            print(f"[skip] no image for {stem}")
+            skipped.append(stem)
             continue
 
         print(f"[{done + 1}/{args.n_wsis}] {stem}")
@@ -467,9 +469,17 @@ def main() -> None:
         done += 1
 
     if not rows:
-        raise SystemExit(
-            "no slides processed — with --tiles_metadata the image stems must "
-            "match its source_file entries; without it, check --he_dir has TIFs")
+        if skipped and args.tiles_metadata is not None:
+            have = sorted(he_index)[:3]
+            raise SystemExit(
+                "no slides processed: not one stem in --tiles_metadata matched a "
+                "file in --he_dir.\n"
+                f"  metadata names : {', '.join(skipped[:3])}{' ...' if len(skipped) > 3 else ''}\n"
+                f"  images are     : {', '.join(have)}{' ...' if len(he_index) > 3 else ''}\n"
+                "These are different slide sets. Pass the metadata that belongs "
+                "to --he_dir, or drop --tiles_metadata entirely and the grid is "
+                "sized from each image — which is what the untiled arm wants.")
+        raise SystemExit(f"no slides processed — no TIFs matched under {args.he_dir}")
 
     df = pd.DataFrame(rows)[
         ["wsi", "white_thresh", "lumen_fraction", "tissue_fraction", "n_tissue_px"]
