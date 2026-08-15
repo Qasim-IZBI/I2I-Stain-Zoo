@@ -36,6 +36,7 @@ stable enough between levels to carry a bias signal.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
@@ -68,6 +69,37 @@ class FloorEstimate:
         }
 
 
+def _computable_columns(delta: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Split a difference array into the descriptors it can speak to, and rows.
+
+    A descriptor that is not computable in this run — lumen_fraction and
+    tissue_fraction whenever no H&E is supplied — is NaN in every row. Filtering
+    rows on `isfinite(...).all(axis=1)` then discards the entire array and the
+    four collagen descriptors go down with the two that were never there.
+
+    So: drop columns that are NaN throughout, then drop rows still carrying a NaN
+    among the survivors. Returns (column indices, the surviving rows). The caller
+    places the covariance into a full PHI_DIM x PHI_DIM matrix left NaN
+    elsewhere, which is how `cross_stain_floor` has always reported the
+    components it cannot reach.
+    """
+    delta = np.atleast_2d(np.asarray(delta, dtype=np.float64))
+    cols = np.flatnonzero(np.isfinite(delta).any(axis=0))
+    if cols.size == 0:
+        return cols, delta[:0]
+    sub = delta[:, cols]
+    return cols, sub[np.isfinite(sub).all(axis=1)]
+
+
+def _embed(sub: np.ndarray, cols: np.ndarray) -> np.ndarray:
+    """Place a covariance over `cols` into a full PHI_DIM matrix, NaN elsewhere."""
+    sigma = np.full((PHI_DIM, PHI_DIM), np.nan, dtype=np.float64)
+    for i, gi in enumerate(cols):
+        for j, gj in enumerate(cols):
+            sigma[gi, gj] = sub[i, j]
+    return sigma
+
+
 def _difference_covariance(a: np.ndarray, b: np.ndarray, kind: str) -> FloorEstimate:
     """Σ = Cov(a − b), the quantity the §2.1 identity calls the floor.
 
@@ -85,18 +117,23 @@ def _difference_covariance(a: np.ndarray, b: np.ndarray, kind: str) -> FloorEsti
     if a.shape != b.shape:
         raise ValueError(f"paired inputs must match in shape, got {a.shape} vs {b.shape}")
 
-    delta = a - b
-    delta = delta[np.isfinite(delta).all(axis=1)]
+    cols, delta = _computable_columns(a - b)
+    if cols.size == 0:
+        raise ValueError("no descriptor is computable: every column is NaN")
     if delta.shape[0] < 2:
-        raise ValueError("need >= 2 finite pairs to estimate a floor covariance")
+        raise ValueError(
+            f"need >= 2 finite pairs to estimate a floor covariance, got "
+            f"{delta.shape[0]} over descriptors "
+            f"{[PHI_NAMES[i] for i in cols]}"
+        )
 
-    sigma, shrink = ledoit_wolf(delta, assume_centered=True)
+    sub, shrink = ledoit_wolf(delta, assume_centered=True)
     return FloorEstimate(
-        sigma=sigma,
+        sigma=_embed(sub, cols),
         kind=kind,
         n_samples=int(delta.shape[0]),
         shrinkage=float(shrink),
-        components=PHI_NAMES,
+        components=tuple(PHI_NAMES[i] for i in cols),
     )
 
 
@@ -199,15 +236,20 @@ def variogram(
     if edges.size < 2:
         raise ValueError("all pairs share one separation; cannot build a variogram")
 
+    # one set of columns for every bin, so the stacked covariances align
+    cols = np.flatnonzero(np.isfinite(delta).any(axis=0))
+    if cols.size == 0:
+        raise ValueError("no descriptor is computable: every column is NaN")
+
     centres, per_bin, counts = [], [], []
     for lo, hi in zip(edges[:-1], edges[1:]):
         sel = (lag >= lo) & (lag <= hi)
-        d = delta[sel]
+        d = delta[sel][:, cols]
         d = d[np.isfinite(d).all(axis=1)]
         if d.shape[0] < 2:
             continue
         centres.append(float((lo + hi) / 2))
-        per_bin.append(np.cov(d, rowvar=False, bias=True))
+        per_bin.append(_embed(np.cov(d, rowvar=False, bias=True), cols))
         counts.append(int(d.shape[0]))
 
     if not per_bin:
@@ -286,12 +328,16 @@ def variogram_floor(
     curve["sill_reached"] = {n: bool(v < 0.15) for n, v in zip(PHI_NAMES, drift)}
     curve["sill_reached_all"] = bool(np.nanmax(drift) < 0.15)
 
+    # Only advertise the descriptors the sill actually covers: with no H&E the
+    # two level-A terms are NaN throughout and claiming them would make the
+    # report look bounded where it is not.
+    covered = tuple(n for n, v in zip(PHI_NAMES, np.diag(sigma)) if np.isfinite(v))
     return FloorEstimate(
         sigma=sigma,
         kind="variogram_sill",
         n_samples=int(counts[tail].sum()),
         shrinkage=0.0,
-        components=PHI_NAMES,
+        components=covered,
     ), curve
 
 
@@ -400,7 +446,10 @@ def per_descriptor_report(
     claim about bias, never a point estimate.
     """
     phi = np.atleast_2d(np.asarray(phi_observed, dtype=np.float64))
-    with np.errstate(invalid="ignore"):
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        # an all-NaN column is a descriptor that was never computable here; NaN
+        # is the intended answer, not a condition to warn about
+        warnings.simplefilter("ignore", RuntimeWarning)
         signal_sd = np.nanstd(phi, axis=0, ddof=1)
 
     def _sd(est: Optional[FloorEstimate], i: int) -> Optional[float]:

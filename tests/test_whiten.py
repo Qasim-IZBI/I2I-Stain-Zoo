@@ -8,6 +8,7 @@ import pytest
 from uncertainty_phi.descriptors import PHI_DIM, PHI_NAMES
 from uncertainty_phi.floor import (
     cross_level_floor,
+    variogram_floor,
     cross_stain_floor,
     per_descriptor_report,
     sensitivity_band,
@@ -324,3 +325,49 @@ class TestVariogramFloor:
         rows = per_descriptor_report(_sample(300, seed=62), lower=lo)
         assert all(r["floor_source"] == "split_half" for r in rows)
         assert all(r["bound_direction"] == "anti-conservative" for r in rows)
+
+
+class TestPartiallyComputableDescriptors:
+    """Running the floor without --real_he leaves lumen/tissue NaN throughout.
+
+    Filtering rows on isfinite(...).all(axis=1) then threw away every row and
+    took the four collagen descriptors down with the two that were never there —
+    the whole go/no-go died on `need >= 2 finite pairs`.
+    """
+
+    @staticmethod
+    def _phi(n=200, seed=0):
+        rng = np.random.default_rng(seed)
+        phi = _sample(n, seed=seed)
+        phi[:, 4:] = np.nan            # no H&E supplied
+        return phi
+
+    def test_split_half_covers_the_computable_four(self):
+        phi = self._phi()
+        est = split_half_floor(phi[:100], phi[100:])
+        assert est.components == PHI_NAMES[:4]
+        assert np.isfinite(est.sigma[:4, :4]).all()
+        assert np.isnan(est.sigma[4:, 4:]).all()
+
+    def test_variogram_advertises_only_what_it_covers(self):
+        phi = self._phi(280)
+        rng = np.random.default_rng(1)
+        est, _ = variogram_floor(phi, rng.random((280, 2)) * 20,
+                                 [f"w{i // 14}" for i in range(280)], seed=0)
+        assert est.components == PHI_NAMES[:4]
+        assert np.isnan(est.sd[4:]).all()
+
+    def test_report_marks_the_missing_two_unknown_not_usable(self):
+        phi = self._phi()
+        rows = per_descriptor_report(phi, lower=split_half_floor(phi[:100], phi[100:]))
+        by_name = {r["descriptor"]: r for r in rows}
+        assert by_name["beta0_per_mm2"]["floor_source"] == "split_half"
+        for name in ("lumen_fraction", "tissue_fraction"):
+            assert by_name[name]["floor_source"] is None
+            assert by_name[name]["floor_to_signal"] is None
+            assert "unknown" in by_name[name]["verdict"]
+
+    def test_all_nan_input_is_refused(self):
+        phi = np.full((10, PHI_DIM), np.nan)
+        with pytest.raises(ValueError, match="no descriptor is computable"):
+            split_half_floor(phi[:5], phi[5:])
