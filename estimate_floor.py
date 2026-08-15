@@ -334,7 +334,9 @@ def main() -> None:
     print(f"      {phi_real.shape[0]} regions over {len(set(slide_ids))} WSI")
 
     # --- lower bound: split-half within the real slides ---
-    ia, ib = split_regions(phi_real.shape[0], seed=args.seed)
+    # groups=slide_ids: pairing across cases would fold between-case biology
+    # into a quantity that is supposed to be within-slide sampling noise
+    ia, ib = split_regions(phi_real.shape[0], seed=args.seed, groups=slide_ids)
     lower = split_half_floor(phi_real[ia], phi_real[ib]) if len(ia) >= 2 else None
     if lower is None:
         print("      [warn] too few regions for a split-half lower bound")

@@ -392,16 +392,44 @@ def cross_stain_floor(phi_he: np.ndarray, phi_psr: np.ndarray) -> FloorEstimate:
     )
 
 
-def split_regions(n_regions: int, seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
+def split_regions(
+    n_regions: int,
+    seed: int = 0,
+    groups: Optional[Sequence[str]] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
     """Disjoint halves of a region index set, for `split_half_floor`.
 
     Randomised rather than spatially blocked: a left/right split would confound
     the sampling floor with any real spatial gradient across the section.
+
+    **Pass `groups` whenever the regions span more than one slide.** Without it
+    the permutation runs over the pooled index and pairs a region of one case
+    with a region of another, so the difference carries between-case biology —
+    which is not a floor, it is the signal the floor is being compared against.
+    On the liver cohort that inflated the "lower" bound past the variogram upper
+    bound for every descriptor, an incoherent bracket. Same reason
+    `_within_group_pairs` keeps the variogram inside a slide.
     """
     rng = np.random.default_rng(seed)
-    idx = rng.permutation(n_regions)
-    half = n_regions // 2
-    return idx[:half], idx[half : 2 * half]
+    if groups is None:
+        idx = rng.permutation(n_regions)
+        half = n_regions // 2
+        return idx[:half], idx[half : 2 * half]
+
+    g = np.asarray(groups)
+    if g.size != n_regions:
+        raise ValueError(f"groups has {g.size} entries for {n_regions} regions")
+    left, right = [], []
+    for key in np.unique(g):
+        idx = rng.permutation(np.flatnonzero(g == key))
+        half = idx.size // 2
+        if half == 0:
+            continue                      # a slide with one region pairs nothing
+        left.append(idx[:half])
+        right.append(idx[half : 2 * half])
+    if not left:
+        return np.empty(0, dtype=int), np.empty(0, dtype=int)
+    return np.concatenate(left), np.concatenate(right)
 
 
 def per_descriptor_report(

@@ -371,3 +371,53 @@ class TestPartiallyComputableDescriptors:
         phi = np.full((10, PHI_DIM), np.nan)
         with pytest.raises(ValueError, match="no descriptor is computable"):
             split_half_floor(phi[:5], phi[5:])
+
+
+class TestSplitRegionsRespectsSlides:
+    """Pairing across cases turns the split-half floor into between-case biology.
+
+    On the liver cohort that pushed the "lower" bound above the variogram upper
+    bound for every descriptor — an incoherent bracket.
+    """
+
+    def test_pairs_stay_within_a_slide(self):
+        groups = np.array(["a"] * 10 + ["b"] * 10 + ["c"] * 11)
+        ia, ib = split_regions(groups.size, seed=0, groups=groups)
+        assert not (set(ia.tolist()) & set(ib.tolist()))
+        assert (groups[ia] == groups[ib]).all()
+
+    def test_odd_slides_drop_their_leftover_region(self):
+        groups = np.array(["a"] * 11)
+        ia, ib = split_regions(11, seed=0, groups=groups)
+        assert len(ia) == len(ib) == 5
+
+    def test_single_region_slides_contribute_nothing(self):
+        groups = np.array(["a", "b", "c"])
+        ia, ib = split_regions(3, seed=0, groups=groups)
+        assert len(ia) == len(ib) == 0
+
+    def test_cross_slide_pairing_inflates_the_floor(self):
+        """The bug, quantified: with a per-case offset the pooled split reads a
+        floor that is mostly case-to-case difference."""
+        rng = np.random.default_rng(0)
+        n_per, n_slides = 30, 8
+        groups = np.repeat([f"s{i}" for i in range(n_slides)], n_per)
+        phi = _sample(n_per * n_slides, seed=3)
+
+        # a per-case offset larger than beta_0's own spread (FLOOR_SD[1] = 40),
+        # which is the regime the liver cohort is in
+        offsets = rng.normal(0, 100.0, n_slides).repeat(n_per)
+        shifted = phi.copy()
+        shifted[:, 1] += offsets
+
+        ja, jb = split_regions(phi.shape[0], seed=0, groups=groups)
+        within = split_half_floor(shifted[ja], shifted[jb]).sd[1]
+        baseline = split_half_floor(phi[ja], phi[jb]).sd[1]
+        # within-slide pairing cancels the offset entirely
+        assert within == pytest.approx(baseline, rel=0.02)
+
+        ia, ib = split_regions(phi.shape[0], seed=0)               # pooled: wrong
+        pooled = split_half_floor(shifted[ia], shifted[ib]).sd[1]
+        # ~1.8x here, not more: with 8 slides one pooled pair in eight happens to
+        # stay within a slide anyway, and Ledoit-Wolf shrinks what is left
+        assert pooled > 1.5 * within
