@@ -375,3 +375,96 @@ class TestGridWithoutTiling:
         untiled = region_grid_from_extent("s", 3 * side + 10, 3 * side + 10,
                                           region_mm=0.2, mpp=0.221)
         assert len(tiled) == len(untiled) == 9      # drop_partial eats the sliver
+
+
+class TestLumenQC:
+    """One QC image per WSI, so a thresholded lumen_fraction can be eyeballed.
+
+    The number alone cannot distinguish "found the lumens" from "found pale
+    tissue", which is the whole reason the cohort's 1e-5 went unnoticed.
+    """
+
+    @staticmethod
+    def _slide():
+        he = np.full((120, 200, 3), 250, np.uint8)
+        he[20:100, 20:180] = 150                   # tissue
+        he[50:70, 40:60] = 250                     # a bright lumen inside it
+        return he
+
+    def _regions(self):
+        from uncertainty_phi.regions import Region
+        # r0 straddles the tissue edge, r1 is fully interior
+        return [Region(wsi="s", index=0, y0=0, y1=60, x0=0, x1=100),
+                Region(wsi="s", index=1, y0=30, y1=90, x0=30, x1=130)]
+
+    def test_writes_a_label_tif_and_its_he_crop(self, tmp_path):
+        import json
+
+        import tifffile
+
+        from uncertainty_phi.descriptors import he_tissue_footprint
+        from uncertainty_phi.ensemble import save_lumen_qc
+
+        he = self._slide()
+        fp = he_tissue_footprint(he, white_thresh=0.70)
+        out = save_lumen_qc(he, fp, self._regions(), "slide_a", tmp_path,
+                            white_thresh=0.70)
+
+        # the interior region wins on footprint coverage, not the edge one
+        assert out.name == "slide_a_r0001_y30_x30_lumen.tif"
+        assert (tmp_path / "slide_a_r0001_y30_x30_he.tif").is_file()
+
+        label = tifffile.imread(str(out))
+        assert label.dtype == np.uint8
+        assert set(np.unique(label)) <= {0, 1, 2}
+        assert (label == 2).any()          # the lumen is inside this region
+        assert label.shape == (60, 100)     # full resolution, not downsampled
+
+        with tifffile.TiffFile(out) as tf:
+            meta = json.loads(tf.pages[0].description)
+        assert meta["white_thresh"] == 0.70
+        assert meta["labels"]["2"] == "lumen"
+        assert meta["lumen_fraction"] == pytest.approx(
+            (label == 2).sum() / (label >= 1).sum(), rel=1e-9)
+
+    def test_max_px_downsamples_and_records_it(self, tmp_path):
+        import json
+
+        import tifffile
+
+        from uncertainty_phi.descriptors import he_tissue_footprint
+        from uncertainty_phi.ensemble import save_lumen_qc
+
+        he = self._slide()
+        out = save_lumen_qc(he, he_tissue_footprint(he, white_thresh=0.70),
+                            self._regions(), "s", tmp_path,
+                            white_thresh=0.70, max_px=50)
+        assert max(tifffile.imread(str(out)).shape) <= 50
+        with tifffile.TiffFile(out) as tf:
+            assert json.loads(tf.pages[0].description)["downsample"] == 2
+
+    def test_no_regions_writes_nothing(self, tmp_path):
+        from uncertainty_phi.descriptors import he_tissue_footprint
+        from uncertainty_phi.ensemble import save_lumen_qc
+
+        he = self._slide()
+        assert save_lumen_qc(he, he_tissue_footprint(he), [], "s", tmp_path,
+                             white_thresh=0.70) is None
+        assert not list(tmp_path.glob("*.tif"))
+
+    def test_off_by_default(self, tmp_path):
+        """qc_dir=None must not create anything — it is opt-in."""
+        import tifffile
+
+        from uncertainty_phi.ensemble import phi_for_wsi
+
+        he_path = tmp_path / "s.tif"
+        tifffile.imwrite(str(he_path), self._slide())
+        member = tmp_path / "model_01"
+        member.mkdir()
+        tifffile.imwrite(str(member / "s.tif"),
+                         np.ones(self._slide().shape[:2], np.uint8))
+
+        phi_for_wsi([member], "s", self._regions(), he_path=he_path, mpp=0.221,
+                    white_thresh=0.70)
+        assert not list(tmp_path.glob("*_lumen.tif"))

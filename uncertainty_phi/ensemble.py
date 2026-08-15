@@ -17,6 +17,7 @@ images (uncertainty_strategy.md §2.1).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -26,6 +27,7 @@ import tifffile
 from uncertainty_phi.descriptors import (
     PHI_DIM,
     WHITE_THRESH,
+    he_bright,
     he_tissue_footprint,
     phi_struct,
 )
@@ -94,6 +96,77 @@ def _stem_index(directory: Path) -> Dict[str, Path]:
     return out
 
 
+def save_lumen_qc(
+    he: np.ndarray,
+    footprint: np.ndarray,
+    regions: List[Region],
+    wsi_stem: str,
+    outdir: Path,
+    *,
+    white_thresh: float,
+    max_px: int = 0,
+) -> Optional[Path]:
+    """One region per WSI written as TIFs, so the lumen call can be inspected.
+
+    `lumen_fraction` is a thresholded quantity with no plateau on some cohorts,
+    so the number alone cannot distinguish "found the lumens" from "found pale
+    tissue". Two files go out, at full resolution unless `max_px` caps them:
+
+        <stem>_r<idx>_y<y0>_x<x0>_lumen.tif   0 outside, 1 tissue, 2 lumen
+        <stem>_r<idx>_y<y0>_x<x0>_he.tif      the matching H&E crop
+
+    Same label convention as the nnU-Net masks, so Fiji opens the pair and
+    overlays them directly. The measured fractions and the threshold go in the
+    TIFF description, where Image > Show Info surfaces them.
+
+    The region is the one with the highest footprint coverage — fully interior,
+    where lumens are unambiguous — with the lowest index breaking ties, so
+    re-running picks the same region and two thresholds are comparable.
+    """
+    if not regions:
+        return None
+
+    coverage = [(float(r.crop(footprint).mean()), -r.index, r) for r in regions]
+    _, _, region = max(coverage, key=lambda c: (c[0], c[1]))
+
+    he_crop = region.crop(he)
+    fp_crop = region.crop(footprint)
+    lumen = he_bright(he_crop, white_thresh) & fp_crop
+
+    n_tissue = int(np.count_nonzero(fp_crop))
+    lumen_frac = float(np.count_nonzero(lumen) / n_tissue) if n_tissue else float("nan")
+    tissue_frac = float(n_tissue / fp_crop.size) if fp_crop.size else float("nan")
+
+    step = 1
+    if max_px and max(he_crop.shape[:2]) > max_px:
+        step = int(np.ceil(max(he_crop.shape[:2]) / max_px))
+        he_crop, fp_crop, lumen = (he_crop[::step, ::step],
+                                   fp_crop[::step, ::step],
+                                   lumen[::step, ::step])
+
+    label = np.where(lumen, 2, np.where(fp_crop, 1, 0)).astype(np.uint8)
+
+    meta = json.dumps({
+        "wsi": wsi_stem, "region_index": region.index,
+        "y0": region.y0, "y1": region.y1, "x0": region.x0, "x1": region.x1,
+        "white_thresh": white_thresh,
+        "lumen_fraction": lumen_frac, "tissue_fraction": tissue_frac,
+        "labels": {"0": "outside footprint", "1": "tissue", "2": "lumen"},
+        "downsample": step,
+    })
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    base = f"{wsi_stem}_r{region.index:04d}_y{region.y0}_x{region.x0}"
+    mask_path = outdir / f"{base}_lumen.tif"
+    tifffile.imwrite(str(mask_path), label, compression="zlib", description=meta)
+    tifffile.imwrite(str(outdir / f"{base}_he.tif"), he_crop,
+                     compression="zlib", description=meta)
+
+    print(f"[qc] {mask_path.name}  lumen {lumen_frac:.4f}  tissue {tissue_frac:.4f}"
+          + (f"  (1/{step})" if step > 1 else ""))
+    return mask_path
+
+
 def phi_for_wsi(
     member_dirs: Sequence[Path],
     wsi_stem: str,
@@ -101,6 +174,8 @@ def phi_for_wsi(
     *,
     he_path: Optional[Path] = None,
     mpp: float,
+    qc_dir: Optional[Path] = None,
+    qc_max_px: int = 0,
     **phi_kwargs,
 ) -> np.ndarray:
     """φ for one WSI across members. Returns [n_members, n_regions, PHI_DIM].
@@ -120,6 +195,14 @@ def phi_for_wsi(
         he_tissue_footprint(he, white_thresh=phi_kwargs.get("white_thresh", WHITE_THRESH))
         if he is not None else None
     )
+
+    if qc_dir is not None and he is not None and footprint is not None:
+        # Once per WSI, not per member: both H&E terms are member-independent.
+        save_lumen_qc(
+            he, footprint, regions, wsi_stem, Path(qc_dir),
+            white_thresh=phi_kwargs.get("white_thresh", WHITE_THRESH),
+            max_px=qc_max_px,
+        )
 
     out = np.full((len(member_dirs), len(regions), PHI_DIM), np.nan, dtype=np.float64)
     for m, mdir in enumerate(member_dirs):
@@ -145,6 +228,8 @@ def phi_over_ensemble(
     he_dir: Optional[Path] = None,
     roi_dir: Optional[Path] = None,
     min_roi_fraction: float = 0.5,
+    qc_dir: Optional[Path] = None,
+    qc_max_px: int = 0,
     region_mm: float = 1.5,
     mpp: float,
     min_tissue_fraction: float = 0.25,
@@ -212,7 +297,8 @@ def phi_over_ensemble(
 
         block = phi_for_wsi(
             member_dirs, wsi_stem, grid,
-            he_path=he_index.get(wsi_stem), mpp=mpp, **phi_kwargs,
+            he_path=he_index.get(wsi_stem), mpp=mpp, qc_dir=qc_dir,
+            qc_max_px=qc_max_px, **phi_kwargs,
         )
         all_phi.append(block)
         all_regions.extend(grid)

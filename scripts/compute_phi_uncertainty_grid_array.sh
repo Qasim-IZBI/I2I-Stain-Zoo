@@ -74,6 +74,12 @@ MIN_ROI_FRACTION="${MIN_ROI_FRACTION:-0.5}"
 # level an 8-bit conversion reports. A lumen_fraction near 1e-5 in
 # per_region.csv means this sits above the lumens.
 WHITE_THRESH="${WHITE_THRESH:-0.85}"
+# Optional: one region per WSI written as a TIF pair (label mask + H&E
+# crop) for inspecting in Fiji, to see whether the threshold found lumens
+# or pale tissue. Empty = off. QC_MAX_PX caps the crop; 0 = full res, at
+# which a 1.5 mm H&E region is ~100 MB before compression.
+QC_DIR="${QC_DIR-}"
+QC_MAX_PX="${QC_MAX_PX:-0}"
 
 # Grid decomposition — identical to train_ensemble_cyclegan_grid.sh and the rest
 # of the chain. Change it here and it has to change in all of them.
@@ -130,6 +136,13 @@ elif [ -d "${HE_DIR}" ]; then
 else
     echo "[ERROR] H&E directory not found: ${HE_DIR}"
     exit 1
+fi
+
+QC_ARGS=()
+if [ -n "${QC_DIR}" ]; then
+    mkdir -p "${QC_DIR}"
+    QC_ARGS=(--qc_dir "${QC_DIR}" --qc_max_px "${QC_MAX_PX}")
+    echo "QC images: ${QC_DIR}"
 fi
 
 ROI_ARGS=()
@@ -224,6 +237,7 @@ run_cmd python "${PROJECT_ROOT}/compute_phi_uncertainty.py" \
     --region_mm "${REGION_MM}" \
     --min_tissue_fraction "${MIN_TISSUE_FRACTION}" \
     --white_thresh "${WHITE_THRESH}" \
+    "${QC_ARGS[@]}" \
     --outdir "${TASK_OUT}"
 
 echo "Done. WSI ${WSI} → ${TASK_OUT}/"

@@ -63,6 +63,8 @@ def _collect(roots: List[Path], args) -> tuple:
             Path(args.tiles_metadata),
             he_dir=Path(args.he_dir) if args.he_dir else None,
             roi_dir=Path(args.roi_dir) if args.roi_dir else None,
+            qc_dir=Path(args.qc_dir) if args.qc_dir else None,
+            qc_max_px=args.qc_max_px,
             min_roi_fraction=args.min_roi_fraction,
             region_mm=args.region_mm,
             mpp=args.mpp,
@@ -123,6 +125,18 @@ def main() -> None:
                     help="Speckle removal before the topological terms. [%(default)s]")
     ap.add_argument("--closing_px", type=int, default=0,
                     help="Morphological closing before the topological terms. [%(default)s]")
+    ap.add_argument("--qc_dir", type=Path, default=None,
+                    help="Write one region per WSI here as a TIF pair — the "
+                         "label mask (0 outside, 1 tissue, 2 lumen) and the "
+                         "matching H&E crop — for inspecting in Fiji. "
+                         "lumen_fraction is thresholded and has no plateau on "
+                         "some cohorts, so the number alone cannot tell you "
+                         "whether it found lumens or pale tissue.")
+    ap.add_argument("--qc_max_px", type=int, default=0,
+                    help="Cap the long side of the QC crops, 0 = full "
+                         "resolution. The mask compresses to almost nothing, "
+                         "but a full-resolution H&E crop of a 1.5 mm region is "
+                         "~100 MB before compression. [%(default)s]")
     ap.add_argument("--white_thresh", type=float, default=WHITE_THRESH,
                     help="Whitespace cut for lumen_fraction and tissue_fraction. "
                          "EVERY channel must clear it, so the number to compare "
@@ -191,6 +205,8 @@ def main() -> None:
             "tiles_metadata": str(args.tiles_metadata),
             "he_dir": str(args.he_dir) if args.he_dir else None,
             "roi_dir": str(args.roi_dir) if args.roi_dir else None,
+            "qc_dir": str(args.qc_dir) if args.qc_dir else None,
+            "qc_max_px": args.qc_max_px if args.qc_dir else None,
             "min_roi_fraction": args.min_roi_fraction if args.roi_dir else None,
             "region_mm": args.region_mm,
             "mpp": args.mpp,
