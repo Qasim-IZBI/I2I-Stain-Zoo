@@ -27,7 +27,10 @@
 # Input  : ${PSR_DIR}   segment_psr_real.sh
 # Output : ${OUT_DIR}   -> fill_tissue_holes_real_sr.sh
 
-set -euo pipefail
+# -eo, not -euo: the Anaconda module runs activate.d hooks that read
+# unset variables (qt-main_activate.sh), so -u there kills the job before
+# the first echo. -u is switched on below, once conda is done.
+set -eo pipefail
 
 module purge
 module load Anaconda3/2025.06-1

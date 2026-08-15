@@ -33,7 +33,10 @@
 #   OUTDIR=/work2/bz66izin-UC_project/white_thresh_sr \
 #       I2I-Stain-Zoo/scripts/calibrate_white_thresh.sh
 
-set -euo pipefail
+# -eo, not -euo: the Anaconda module runs activate.d hooks that read
+# unset variables (qt-main_activate.sh), so -u there kills the job before
+# the first echo. -u is switched on below, once conda is done.
+set -eo pipefail
 
 module purge
 module load Anaconda3/2025.06-1

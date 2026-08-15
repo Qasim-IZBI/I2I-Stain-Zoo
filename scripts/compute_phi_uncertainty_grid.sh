@@ -27,7 +27,10 @@
 #   OUTDIR=/work2/bz66izin-VSproject/phi_uncertainty/kidney \
 #       I2I-Stain-Zoo/scripts/compute_phi_uncertainty_grid.sh
 
-set -euo pipefail
+# -eo, not -euo: the Anaconda module runs activate.d hooks that read
+# unset variables (qt-main_activate.sh), so -u there kills the job before
+# the first echo. -u is switched on below, once conda is done.
+set -eo pipefail
 
 module purge
 module load Anaconda3/2025.06-1

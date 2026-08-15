@@ -21,7 +21,10 @@
 # Output : ${OUT_DIR}   consumed as the real reference by compare_psr and as
 #                       --real_psr by estimate_floor.py
 
-set -euo pipefail
+# -eo, not -euo: the Anaconda module runs activate.d hooks that read
+# unset variables (qt-main_activate.sh), so -u there kills the job before
+# the first echo. -u is switched on below, once conda is done.
+set -eo pipefail
 
 module purge
 module load Anaconda3/2025.06-1
