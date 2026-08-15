@@ -57,7 +57,7 @@ There is no `requirements.txt`; the full dependency set is exactly:
 Verify the install:
 
 ```bash
-pytest tests/ -q          # 239 tests, ~5 s on CPU
+pytest tests/ -q          # 264 tests, ~5 s on CPU
 ```
 
 **Optional — collagen segmentation.** The task-specific CPA metric
@@ -455,7 +455,7 @@ utils.py  base_models.py    shared blocks (ResNet, PatchGAN, DDPM UNet)
 models/                     6 architectures
 datasets/                   unpaired / single-domain loaders
 trainer/                    step-based training loop, auto-resume
-tests/                      pytest suite (239 tests)
+tests/                      pytest suite (264 tests)
 
 uncertainty.py              ensemble variance maps
 aggregate_uncertainty.py    per-tile σ̄ → per-WSI CSVs
@@ -476,7 +476,7 @@ fill_tissue_holes.py        hole filling inside the CPA pipeline
 plot_combined_metrics.py    2×2 metric overview
 plot_ranking_correlation.py cross-metric rank agreement
 
-scripts/                    63 SLURM job scripts for the full study
+scripts/                    65 SLURM job scripts for the full study
 ```
 
 SLURM scripts resolve Python via `PROJECT_ROOT=I2I-Stain-Zoo`, a path relative

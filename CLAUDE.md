@@ -509,6 +509,17 @@ Notes that will bite otherwise:
   correction. Changing it moves only the two H&E-referenced descriptors, which are
   identical across members and so contribute zero variance — the decomposition is
   unaffected, only the level-A columns need the re-run.
+- **`--qc_dir` writes the lumen call out for inspection.** One region per WSI as a
+  TIF pair — the label mask (0 outside, 1 tissue, 2 lumen) and the matching H&E
+  crop — with the region box in the filename and the measurements in the TIFF
+  description. Same label convention as the nnU-Net masks, so Fiji overlays them.
+  Written once per WSI, not per member. `--qc_max_px` caps the crop; at full
+  resolution a 1.5 mm H&E region is ~100 MB before compression.
+- **`--tiles_metadata` is optional.** Without it the region grid is sized from each
+  mask. The real SR arm is evaluated whole-slide and has no tiling, and a tiled
+  extent is truncated to a whole number of tiles — up to one region row/column
+  shorter than the image — so do not compare a run built one way against a run
+  built the other.
 - **Σ comes from the floor, never from the observed discrepancies** — whitening by the
   covariance of what you are measuring normalises the bias away. `whiten.py` takes Σ as
   an explicit argument so there is no code path that gets this wrong.
@@ -517,19 +528,80 @@ Notes that will bite otherwise:
 - Bias against a real target is **not** computed yet: it needs the floor measured (§7)
   and, for kidney, the liver-trained segmenter validated out of distribution (§6.2).
 
+#### Choosing `--white_thresh` — the plateau, not a guess
+
+```bash
+sbatch scripts/calibrate_white_thresh.sh                       # H&E arm
+sbatch --export=ALL,HE_DIR=/path/real_sr_wsis,TILES_METADATA=none,\
+OUTDIR=/path/white_thresh_sr scripts/calibrate_white_thresh.sh  # SR arm
+```
+
+Sweeps the threshold over a few slides and writes `white_thresh.png` (brightness
+histogram inside tissue, the `lumen_fraction` curve, and |d ln(lumen)/dt|),
+`white_thresh.csv` and `white_thresh.json`. **Run it for both stains** — they sit
+at different whitespace levels, and `estimate_floor` takes a separate
+`--white_thresh_psr`.
+
+Two things it decides, and only the first is obvious:
+
+- **The stable window.** The footprint fails at *both* ends. Too high and the
+  slide background stops reading as bright, so `binary_fill_holes` absorbs it and
+  `tissue_fraction` jumps — +21% at 0.725 on every UC liver slide. Too low and the
+  tissue itself reads as bright and the footprint erodes — 0.59 → 0.12 by 0.500 on
+  the SR. `stable_window` takes the longest run where `tissue_fraction` moves less
+  than 0.5% per step; outside it the number describes a different object, not a
+  smaller lumen.
+- **Whether a plateau exists at all.** A threshold is only reproducible where the
+  measurement stops depending on it, so the tool requires |d ln(lumen)/dt| below
+  an absolute cut, not merely the flattest point available — without that a
+  uniformly sloped curve reports its own middle as a plateau.
+
+Measured on the UC liver cohort: **H&E stable 0.500–0.675, SR 0.600–0.700,
+intersection 0.600–0.675, and no plateau in either** (12% and 9% per step). So
+`lumen_fraction` there is a convention rather than a measurement; **0.65** is the
+committed choice, clear of both cliffs. Use the same value in
+`compute_phi_uncertainty.py` and `estimate_floor.py`.
+
+Everything is computed on the per-pixel channel **minimum**, which is what
+`he_bright` thresholds — a Fiji 8-bit conversion shows a channel *average* and so
+bounds the threshold from above rather than being it.
+
 #### Per-descriptor floor — the go/no-go pilot
 
 Run this **before** building on the bias term. If the observed discrepancy lands near
 the floor there is no headroom and `bias² = observed² − d` comes out at or below zero.
 
 ```bash
+sbatch scripts/estimate_floor.sh              # 12 h / 96 G, single job
+
+# or directly; --tiles_metadata omitted, so the grid is sized from each mask
 python estimate_floor.py \
     --real_psr /path/psr_masks/real/psr_masks_wsi_final \
-    --tiles_metadata /path/tiles/testB \
-    --real_he /path/reconstructed_he \
-    --real_psr_rgb /path/real_sr_wsis/ \
-    --white_thresh 0.70 --white_thresh_psr 0.72 \
+    --white_thresh 0.65 \
     --outdir ./floor_pilot/
+```
+
+Not an array job: the variogram bins region pairs across the whole cohort, so the
+slides cannot be split over tasks. It loads a full-slide mask per WSI and runs
+`betti` plus a structure tensor over every region — hours, not minutes.
+
+Outputs `floor_per_descriptor.csv`, `floor.json` (covariances, the variogram
+curve, provenance) and **`floor.png`**: panel A the verdict per descriptor over
+the usable/marginal/floor-limited bands with the bracket drawn, panel B the
+variogram curves normalised by their own plateau. Read B before believing A — a
+floor from a sill that never flattened is an under-estimate, and an
+under-estimated floor makes bias read high.
+
+`--region_mm`, `--min_tissue_fraction`, `--min_object_px` and `--closing_px` must
+match the `compute_phi_uncertainty` run this floor is compared against, or it
+bounds a different discrepancy than the one being measured.
+
+Sweep region size and pool the runs — the one knob that moves the verdict:
+
+```bash
+sbatch --export=ALL,REGION_MM=0.75,OUTDIR=./floor_075 scripts/estimate_floor.sh
+python plot_floor_sweep.py --runs ./floor_075 ./floor_150 ./floor_250 \
+    --outdir ./floor_sweep/
 ```
 
 `--real_psr` supplies **masks**; the cross-stain bound additionally needs the PSR
@@ -538,6 +610,23 @@ measured on both images. Passing `--real_he` alone gives no cross-stain bound an
 so — it used to build both sides from the same image, making the delta identically
 zero, and a zero floor reads as maximal bias. `cross_stain_floor` now raises on an
 all-zero delta rather than returning a bound that measures nothing.
+
+**On the UC liver cohort the cross-stain arm is not computable** and the committed
+`scripts/estimate_floor.sh` leaves it off. It bounds only `lumen_fraction` and
+`tissue_fraction`, and the SR can measure neither — its footprint is unstable
+across the whole sweep, so the bound would describe the thresholds rather than the
+level offset. Nothing is lost: the variogram covers all six descriptors and
+outranks cross-stain in precedence. Those two rows then read *unknown*, which is
+what a level-A descriptor with no estimate should say.
+
+Estimators skip **uncomputable columns, not every row**: a descriptor that is NaN
+throughout is dropped from Σ and reported as unknown, rather than the row filter
+discarding every region and taking the computable descriptors with it.
+
+**Split-half pairs stay inside a slide.** Pairing across cases folds between-case
+biology into a quantity that is supposed to be within-slide sampling noise, which
+inflated the lower bound past the variogram upper bound for every descriptor —
+an incoherent bracket.
 
 The two stains sit at different whitespace levels (~180 grey for H&E against ~185 for
 SR on the UC cohort), hence a separate `--white_thresh_psr`; it defaults to
@@ -594,6 +683,28 @@ about bias, never a point estimate.
 
 If the topological terms come back floor-limited, CPA stands alone and the §5.3
 lumen-filler blind spot reopens — a real result, worth knowing early.
+
+**Result on the UC liver cohort (2026-08-15): no headroom at any region size.**
+
+| region | CPA | β₀ | β₁ | dispersion | regions | variogram pairs / lag span |
+|---|---|---|---|---|---|---|
+| 0.75 mm | 1.06 | 1.11 | 1.00 | 1.23 | 1058 | 13,690 / 4.9× |
+| 1.5 mm | 0.87 | 0.97 | 0.80 | 1.19 | 279 | 1,197 / 2.2× |
+| 2.5 mm | 0.71 | 0.76 | 0.67 | 0.93 | 99 | 120 / 1.4× |
+
+The ratios improve with region size exactly as §4.2 predicts — the floor averages
+out faster than the biology — but nothing reaches `usable` (<0.5), and the best
+numbers rest on the weakest variogram: at 2.5 mm the sill spans 1.4× of lag over
+120 pairs, where a flat curve is the absence of evidence rather than evidence of a
+plateau. At 0.75 mm, where the estimate is well conditioned, every descriptor is
+floor-limited. Extrapolating, CPA would need ~6 mm regions to clear 0.5, at which
+point ~15 regions survive across 20 slides.
+
+**So the bias branch is closed on this cohort.** Report the procedural vs
+data-exposure decomposition as the result and this sweep as the documented reason
+bias is not claimed. The only estimator that would reopen it is `--psr_level_b`, a
+second real PSR level per case, which supersedes the variogram with a measured
+cross-level floor.
 
 #### Stain-perturbation sensitivity — is the "bias" really the segmenter?
 
@@ -795,8 +906,16 @@ Inference tiles must be stitched into whole slides first (`reconstruct.py`, or
 Label convention: `0` background, `1` tissue, `2` PSR-positive. `compare_psr.py`
 reads masks with `tifffile` and takes `[..., 0]` for 3-channel TIFs.
 
-`-npp`/`-nps` are nnU-Net worker counts; keep them at 1 on constrained nodes —
-the committed scripts request 256 GB and run CPU-only on the `paula` partition.
+`-npp`/`-nps` are nnU-Net worker counts; keep them at 1 on constrained nodes.
+
+**Request 256 GB.** These are whole slides at 0.221 µm/px and nnU-Net holds several
+full-size arrays at once: the input as float32 RGB, one float32 logit plane per
+class, and a Gaussian accumulator. On a 34677×40514 case that is ~43 GB before any
+transient copy, and 64 GB OOM-kills the job **after** the sliding window has
+finished — leaving a header-only TIF that reads back as shape `(0,)` and fails two
+frames later in `apply_he_mask` rather than at the read. When the GPU cannot hold
+the logits nnU-Net prints "Moving results arrays to CPU" and the host takes the
+whole burden, so VRAM pressure arrives as a RAM request.
 
 ### PSR Mask Post-Processing
 
@@ -902,6 +1021,12 @@ sbatch I2I-Stain-Zoo/scripts/infer_small_models.sh
 
 Every script has a pre-flight skip guard and is safe to re-submit after an
 interruption.
+
+Open with `set -eo pipefail`, **not** `-euo`. The Anaconda module runs `activate.d`
+hooks that read unset variables, so `-u` there kills the job before the first echo
+and the log comes back empty. Switch `-u` on after `conda activate`, as the grid
+family does. Whether it bites depends on the submitting environment, since
+`--export=ALL` carries whatever conda state the login shell had.
 
 **Scaling study (54 configs):**
 
@@ -1066,4 +1191,4 @@ and were moved here when MIUDiff was removed — CycleDiffusion imports them fro
 - No external diffusion libraries — DDPM/DDIM sampling is implemented from scratch.
 - No `requirements.txt`. Dependencies: torch, torchvision, numpy, scipy, pandas,
   matplotlib, pillow, tifffile, tqdm, pytest (plus nnU-Net v2 for CPA only).
-- Test suite: `pytest tests/ -q` — 239 tests, CPU-only, ~5 s.
+- Test suite: `pytest tests/ -q` — 264 tests, CPU-only, ~5 s.

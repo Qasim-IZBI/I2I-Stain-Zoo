@@ -43,6 +43,12 @@ The **bias branch compares against the real PSR**, which sits at a different
 section level. That needs region correspondence and a measured floor — and either
 gate can come back saying "no headroom here".
 
+> **It did.** The §7 floor pilot was run on the liver cohort at 0.75, 1.5 and
+> 2.5 mm regions, and no descriptor reaches `usable` at any of them (§4a). The
+> bias branch is **closed on this cohort**; branch A is the result. What follows
+> still describes how to run branch B, because the kidney arm and any cohort with
+> a second PSR level need it.
+
 **So: run the uncertainty branch while you resolve the bias gates.** Do not
 sequence them one after the other; the first does not depend on the second.
 
@@ -156,12 +162,21 @@ final per-region numbers and only the three means need pooling. Every task still
 reads **all five folds**: the split is over WSIs, never over folds, because one fold
 alone yields procedural variance and no data-exposure term at all.
 
+Pass `QC_DIR=` to write one region per WSI as a TIF pair — the label mask
+(0 outside, 1 tissue, 2 lumen) beside its H&E crop, openable in Fiji — and look at
+a couple before pooling. `lumen_fraction` is thresholded, so the number alone
+cannot distinguish "found the lumens" from "found pale tissue". `QC_MAX_PX=2000`
+keeps the crops small.
+
 **Check `mu_lumen_fraction` in `per_region.csv` on the first slide that finishes.** A
 value around 1e-5 means `--white_thresh` (`WHITE_THRESH=` on the SLURM scripts, default
 0.85) sits above this cohort's lumens and they are being counted as tissue. `he_bright`
 needs **every channel** over the cut, so set it from the per-pixel channel *minimum* —
-an 8-bit conversion shows a channel average, which is always higher. The UC liver H&E
-has lumens at grey ~180. Only the two H&E-referenced descriptors move when you change
+an 8-bit conversion shows a channel average, which is always higher. On the UC liver
+cohort the committed value is **0.65**, from `scripts/calibrate_white_thresh.sh`:
+the H&E footprint is stable over 0.500-0.675 and the SR over 0.600-0.700, and
+neither stain has a plateau inside its window — so the number is a convention held
+fixed across both arms, not a measurement. Only the two H&E-referenced descriptors move when you change
 it; both are identical across members and contribute zero variance, so the
 procedural/data split does not need recomputing — but re-run before quoting the
 level-A columns, and use the same value for `estimate_floor.py`.
@@ -280,14 +295,19 @@ would break the fixed-anatomy premise; if it climbs past a percent, narrow
 ### Gate 2 — is there any headroom above the floor?
 
 ```bash
-python estimate_floor.py \
-    --real_psr /path/real_psr_kidney/psr_masks_wsi_final/ \
-    --tiles_metadata /path/tiles/testB \
-    --real_he /path/reconstructed_he/ \
-    --real_psr_rgb /path/real_sr_wsis/ \
-    --white_thresh 0.70 --white_thresh_psr 0.72 \
-    --outdir ./floor_kidney/
+sbatch scripts/estimate_floor.sh          # 12 h / 96 G, single job, not an array
+
+# region-size sweep — the one knob that moves the verdict
+sbatch --export=ALL,REGION_MM=0.75,OUTDIR=./floor_075 scripts/estimate_floor.sh
+python plot_floor_sweep.py --runs ./floor_075 ./floor_150 ./floor_250 \
+    --outdir ./floor_sweep/
 ```
+
+`--tiles_metadata` is optional and the committed script omits it: the real SR has
+no tiling, so the grid is sized from each mask. Outputs now include **`floor.png`**
+— panel A the verdict per descriptor over the usable/marginal/floor-limited bands,
+panel B the variogram curves. Read B first: a floor from a sill that never
+flattened is an under-estimate, and an under-estimated floor makes bias read high.
 
 `--real_psr` gives masks; the cross-stain bound also needs the PSR **RGB**
 (`--real_psr_rgb`), since the two stain-invariant descriptors must be measured on both
@@ -295,6 +315,30 @@ images. `--real_he` alone produces no cross-stain bound and says so. Set
 `--white_thresh` to the same value used for `compute_phi_uncertainty.py`, or the floor
 and the quantity it bounds are measured differently; `--white_thresh_psr` exists because
 the two stains sit at different whitespace levels and defaults to `--white_thresh`.
+
+### 4a. What it returned on the liver cohort
+
+| region | CPA | β₀ | β₁ | dispersion | regions | pairs / lag span |
+|---|---|---|---|---|---|---|
+| 0.75 mm | 1.06 | 1.11 | 1.00 | 1.23 | 1058 | 13,690 / 4.9× |
+| 1.5 mm | 0.87 | 0.97 | 0.80 | 1.19 | 279 | 1,197 / 2.2× |
+| 2.5 mm | 0.71 | 0.76 | 0.67 | 0.93 | 99 | 120 / 1.4× |
+
+Ratios improve with region size, as §4.2 predicts — the floor averages out faster
+than the biology. But **nothing reaches `usable` (<0.5)**, and the best numbers
+rest on the weakest evidence: at 2.5 mm the sill spans 1.4× of lag over 120 pairs,
+where a flat variogram is the absence of evidence rather than evidence of a
+plateau. At 0.75 mm, where the estimate is well conditioned, everything is
+floor-limited. CPA would need ~6 mm regions to clear 0.5, leaving ~15 regions
+across 20 slides.
+
+The cross-stain arm contributed nothing here and is off in the committed script:
+it bounds only the two level-A descriptors, and the SR can measure neither — its
+footprint is unstable across the whole threshold sweep. Those rows read *unknown*.
+
+**Conclusion: bias is not claimable on the liver cohort.** Report branch A and
+this sweep as the documented reason. `--psr_level_b` — a second real PSR level per
+case — is the only estimator that supersedes the variogram and would reopen it.
 
 **What the floor is.** The real PSR sits at a different section level from the H&E the
 model saw. Two levels of the same block differ for purely biological reasons, and that
@@ -361,7 +405,8 @@ region scale — which is what everything is already built for.
 
 | Piece | Needed for | Status |
 |---|---|---|
-| Region correspondence to real PSR | bias | in progress |
+| **Bias on the liver cohort** | — | **closed: no headroom at 0.75/1.5/2.5 mm (§4a)** |
+| Region correspondence to real PSR | bias | in progress; moot on liver until a second PSR level exists |
 | Real-PSR segmentation script | bias, floor | `scripts/segment_psr_real.sh` for the original registered SR WSIs; still manual for the stitched-testB route |
 | **Cluster-robust intervals, case as unit** | every reported interval | **not started** |
 | Cortex masks themselves | kidney arm | manual annotation; `--roi_dir` consumes them |
@@ -393,6 +438,8 @@ interval, and the manuscript already commits to clustering on the case. Nothing 
     └─ 4a. eyeball kidney masks                 ── free
        4b. stain_sensitivity.py                 ── hours, GATE
        4c. estimate_floor.py                    ── hours, GATE
+           sweep region size, pool with plot_floor_sweep.py
+           LIVER: returned no headroom at any size — branch closed
            │
            └─ 5. bias, once registration lands
 ```
