@@ -29,7 +29,7 @@
 #
 #   sbatch --export=ALL,\
 #   HE_DIR=/work2/bz66izin-UC_project/ID_SR/no_overlap/testB/export_rgb/testB,\
-#   TILES_METADATA=/work2/bz66izin-UC_project/ID_SR/no_overlap/testB/tiles/testB,\
+#   TILES_METADATA=,\
 #   OUTDIR=/work2/bz66izin-UC_project/white_thresh_sr \
 #       I2I-Stain-Zoo/scripts/calibrate_white_thresh.sh
 
@@ -56,6 +56,8 @@ PROJECT_ROOT=I2I-Stain-Zoo
 # Paths — overridable via --export. Defaults are the liver H&E arm.
 # -----------------------------
 HE_DIR="${HE_DIR:-/work2/bz66izin-UC_project/ID_HE/no_overlap/testA/export_rgb/testA}"
+# Optional. The real SR arm is evaluated whole-slide and has no tiling, so
+# leave it empty there and the grid is sized from each image instead.
 TILES_METADATA="${TILES_METADATA:-/work2/bz66izin-UC_project/ID_HE/no_overlap/testA/tiles/testA}"
 OUTDIR="${OUTDIR:-/work2/bz66izin-UC_project/white_thresh_he}"
 
@@ -75,11 +77,18 @@ if [ ! -d "${HE_DIR}" ]; then
     exit 1
 fi
 
-if [ ! -d "${TILES_METADATA}" ]; then
-    echo "[ERROR] tiles_metadata root not found: ${TILES_METADATA}"
-    echo "        The region grid comes from here, and its source_file entries"
-    echo "        must name the images in ${HE_DIR}."
-    exit 1
+META_ARGS=()
+if [ -n "${TILES_METADATA}" ]; then
+    if [ ! -d "${TILES_METADATA}" ]; then
+        echo "[ERROR] tiles_metadata root not found: ${TILES_METADATA}"
+        echo "        Its source_file entries must name the images in ${HE_DIR}."
+        echo "        Set TILES_METADATA= (empty) to size the grid from the"
+        echo "        images instead — the real SR arm has no tiling."
+        exit 1
+    fi
+    META_ARGS=(--tiles_metadata "${TILES_METADATA}")
+else
+    echo "[INFO] No tiles_metadata: region grid sized from each image."
 fi
 
 N_IMG=$(find "${HE_DIR}" -maxdepth 1 -type f \( -name '*.tif' -o -name '*.tiff' \) | wc -l)
@@ -96,7 +105,7 @@ fi
 mkdir -p "${OUTDIR}"
 
 echo "H&E dir  : ${HE_DIR} (${N_IMG} slides, sweeping ${N_WSIS})"
-echo "Metadata : ${TILES_METADATA}"
+echo "Metadata : ${TILES_METADATA:-<none, sized from the images>}"
 echo "Output   : ${OUTDIR}"
 echo "Sweep    : ${T_MIN} to ${T_MAX} step ${T_STEP}, current marked at ${CURRENT}"
 
@@ -109,7 +118,7 @@ run_cmd() {
 
 run_cmd python "${PROJECT_ROOT}/calibrate_white_thresh.py" \
     --he_dir         "${HE_DIR}" \
-    --tiles_metadata "${TILES_METADATA}" \
+    "${META_ARGS[@]}" \
     --outdir         "${OUTDIR}" \
     --n_wsis         "${N_WSIS}" \
     --t_min          "${T_MIN}" \

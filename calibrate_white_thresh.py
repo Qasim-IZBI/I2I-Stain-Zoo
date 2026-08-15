@@ -46,7 +46,13 @@ import tifffile
 from scipy import ndimage
 
 from uncertainty_phi.descriptors import WHITE_THRESH
-from uncertainty_phi.regions import SOURCE_MPP, iter_metadata_csvs, region_grid, wsi_extent
+from uncertainty_phi.regions import (
+    SOURCE_MPP,
+    iter_metadata_csvs,
+    region_grid,
+    region_grid_from_extent,
+    wsi_extent,
+)
 
 # Categorical slots 1 and 3 of the validated palette; slide lines are muted ink so
 # the pooled mean stays the figure's subject.
@@ -160,27 +166,83 @@ def suggest_threshold(counts: np.ndarray, centres: np.ndarray,
     }
 
 
+def footprint_breakdown(t: np.ndarray, tissue: np.ndarray,
+                        max_jump: float = 0.005) -> Optional[float]:
+    """Lowest threshold at which the footprint stops being the tissue footprint.
+
+    Slide background is only excluded from the footprint while it reads as
+    bright. Once the cut rises past it, `~bright` contains the background,
+    `binary_fill_holes` absorbs it, and `tissue_fraction` jumps — on the UC liver
+    H&E by 0.6% at 0.700 and then 21% at 0.725, against 0.05-0.09% per
+    step while it is stable. Past that point lumen_fraction is not a
+    high estimate of the same quantity, it is a measurement of a different
+    object, and it goes non-monotonic to prove it.
+
+    Returns the first threshold in the broken regime, or None if the footprint
+    is stable across the whole sweep.
+    """
+    for i in range(1, len(t)):
+        if tissue[i - 1] > 0 and abs(tissue[i] / tissue[i - 1] - 1.0) > max_jump:
+            return float(t[i])
+    return None
+
+
 def find_plateau(t: np.ndarray, lumen: np.ndarray,
-                 tolerance: float = 2.0) -> Optional[dict]:
+                 tissue: Optional[np.ndarray] = None,
+                 tolerance: float = 2.0, abs_max: float = 1.0,
+                 max_jump: float = 0.005) -> dict:
     """The stretch of thresholds over which lumen_fraction barely moves.
 
-    Sensitivity is |d ln(lumen)/dt|, so it asks "what relative change in the
-    measurement does a small change in the threshold buy" — scale-free, which
-    matters because lumen_fraction spans orders of magnitude across the sweep.
-    The plateau is the contiguous run within `tolerance` x the minimum.
+    Sensitivity is |d ln(lumen)/dt|: the relative change in the measurement per
+    unit of threshold, scale-free because lumen_fraction spans orders of
+    magnitude across a sweep. At the 0.025 step used here, sensitivity 1.0 means
+    ~2.5% per step and sensitivity 5 means ~13%.
 
-    This is the operational answer: a threshold inside it is reproducible, one
-    outside it is a number about your cut rather than about the tissue.
+    Two conditions, and the second is the one that matters. Relative: within
+    `tolerance` x the flattest point. **Absolute**: below `abs_max`. Without the
+    absolute test a uniformly sloped curve reports its own middle as a plateau —
+    which is exactly what the UC liver H&E does, sloping ~12% per step from 0.50
+    to 0.675 with no flat spot anywhere.
+
+    Thresholds at or above `footprint_breakdown` are excluded before any of this,
+    since their lumen values describe a footprint that has swallowed the slide
+    background.
     """
+    out: dict = {"lo": None, "hi": None, "reason": None, "valid_hi": None,
+                 "sensitivity_floor": None, "tolerance": tolerance,
+                 "abs_max": abs_max}
+
     with np.errstate(divide="ignore", invalid="ignore"):
         sens = np.abs(np.gradient(np.log(np.where(lumen > 0, lumen, np.nan)), t))
-    ok = np.isfinite(sens)
-    if ok.sum() < 3:
-        return None
+    out["sensitivity"] = sens.tolist()
 
-    floor = np.nanmin(sens[ok])
-    inside = ok & (sens <= max(floor * tolerance, floor + 1e-12))
+    valid = np.isfinite(sens)
+    if tissue is not None:
+        broken_at = footprint_breakdown(t, np.asarray(tissue, dtype=float), max_jump)
+        out["breakdown"] = broken_at
+        if broken_at is not None:
+            # the step INTO the breakdown is already contaminated, and so is the
+            # central difference on either side of it
+            valid &= t < broken_at
+            if valid.any():
+                out["valid_hi"] = float(t[valid].max())
+    if valid.sum() < 3:
+        out["reason"] = "fewer than three usable thresholds below the breakdown"
+        return out
 
+    floor = float(np.nanmin(sens[valid]))
+    out["sensitivity_floor"] = floor
+    if floor > abs_max:
+        pct = (np.exp(floor * float(np.median(np.diff(t)))) - 1) * 100
+        out["reason"] = (
+            f"no threshold is flat: the least sensitive point still moves "
+            f"lumen_fraction by {pct:.0f}% per step. The tissue and whitespace "
+            f"brightness distributions overlap, so any value here is a "
+            f"convention, not a measurement."
+        )
+        return out
+
+    inside = valid & (sens <= min(max(floor * tolerance, floor + 1e-12), abs_max))
     best, run = None, None
     for i, flag in enumerate(inside):
         if flag:
@@ -190,10 +252,11 @@ def find_plateau(t: np.ndarray, lumen: np.ndarray,
         else:
             run = None
     if best is None:
-        return None
-    return {"lo": float(t[best[0]]), "hi": float(t[best[1]]),
-            "sensitivity_floor": float(floor), "tolerance": tolerance,
-            "sensitivity": sens.tolist()}
+        out["reason"] = "no contiguous flat run"
+        return out
+
+    out["lo"], out["hi"] = float(t[best[0]]), float(t[best[1]])
+    return out
 
 
 def make_figure(df: pd.DataFrame, hist_counts: np.ndarray, hist_centres: np.ndarray,
@@ -220,10 +283,16 @@ def make_figure(df: pd.DataFrame, hist_counts: np.ndarray, hist_centres: np.ndar
         ax.tick_params(colors=C_MUTED, labelsize=9)
 
     def mark(ax, shade: bool = True):
-        """Plateau band, then the two vertical rules."""
-        if shade and plateau:
-            ax.axvspan(plateau["lo"], plateau["hi"], color=C_ACCENT, alpha=0.12,
-                       zorder=1, linewidth=0)
+        """Invalid region, plateau band, then the two vertical rules."""
+        if shade and plateau.get("breakdown") is not None:
+            ax.axvspan(plateau["breakdown"], ax.get_xlim()[1], color=C_MUTED,
+                       alpha=0.10, zorder=1, linewidth=0)
+        if shade and plateau.get("lo") is not None:
+            lo, hi = plateau["lo"], plateau["hi"]
+            if hi - lo < 1e-9:              # single point: give it visible width
+                half = 0.4 * float(np.median(np.diff(mean.index.to_numpy())))
+                lo, hi = lo - half, hi + half
+            ax.axvspan(lo, hi, color=C_ACCENT, alpha=0.12, zorder=1, linewidth=0)
         ax.axvline(current, color=C_MUTED, linewidth=1.5, linestyle=":", zorder=2)
         if suggestion:
             ax.axvline(suggestion["threshold"], color=C_ACCENT, linewidth=2, zorder=3)
@@ -286,11 +355,16 @@ def make_figure(df: pd.DataFrame, hist_counts: np.ndarray, hist_centres: np.ndar
     # --- C: the plateau, made objective -------------------------------------
     ax = axes[2]
     ts = mean.index.to_numpy()
-    sens = (np.asarray(plateau["sensitivity"]) if plateau
-            else np.full(len(ts), np.nan))
+    sens = np.asarray(plateau["sensitivity"])
     ax.plot(ts, sens, color=C_MEAN, linewidth=2.5, marker="o", markersize=5, zorder=5)
     mark(ax)
-    if plateau:
+    if plateau.get("breakdown") is not None:
+        ax.annotate("footprint broken\n(background absorbed)",
+                    xy=(plateau["breakdown"], 1.0),
+                    xycoords=("data", "axes fraction"),
+                    xytext=(4, -8), textcoords="offset points",
+                    color=C_MUTED, fontsize=8, va="top", ha="left")
+    if plateau.get("lo") is not None:
         ax.annotate(f"plateau {plateau['lo']:.3f}–{plateau['hi']:.3f}",
                     xy=(0.5 * (plateau["lo"] + plateau["hi"]), 1.0),
                     xycoords=("data", "axes fraction"),
@@ -306,9 +380,11 @@ def make_figure(df: pd.DataFrame, hist_counts: np.ndarray, hist_centres: np.ndar
     note = (f"dotted = current {current:g}"
             + (f"   ·   green line = histogram valley {suggestion['threshold']:.3f}"
                if suggestion else "   ·   no valley found: modes not separated")
-            + (f"   ·   green band = plateau {plateau['lo']:.3f}–{plateau['hi']:.3f}, "
-               f"where the measurement stops depending on the cut"
-               if plateau else "   ·   no plateau: every threshold is on a slope"))
+            + (f"   ·   green band = plateau {plateau['lo']:.3f}–{plateau['hi']:.3f}"
+               if plateau.get("lo") is not None
+               else "   ·   NO PLATEAU: " + (plateau.get("reason") or "").split(".")[0])
+            + (f"   ·   grey = footprint broken at {plateau['breakdown']:.3f}"
+               if plateau.get("breakdown") is not None else ""))
     fig.text(0.011, 0.015, note, color=C_MUTED, fontsize=9)
     fig.suptitle("Choosing --white_thresh: sit in the valley, not on the slope",
                  color=C_INK, fontsize=13, x=0.011, ha="left", y=0.99)
@@ -321,9 +397,12 @@ def main() -> None:
     ap = argparse.ArgumentParser("Calibrate --white_thresh from the H&E itself")
     ap.add_argument("--he_dir", type=Path, required=True,
                     help="Directory of H&E RGB WSIs (originals or reconstructions).")
-    ap.add_argument("--tiles_metadata", type=Path, required=True,
+    ap.add_argument("--tiles_metadata", type=Path, default=None,
                     help="Dataset root with per-WSI tiles_metadata.csv, for the "
-                         "region grid the histogram is pooled over.")
+                         "region grid the histogram is pooled over. OPTIONAL: "
+                         "without it the grid is sized from each image, which is "
+                         "what the real SR arm wants — it is evaluated "
+                         "whole-slide and has no tiling.")
     ap.add_argument("--outdir", type=Path, default=Path("white_thresh"))
     ap.add_argument("--n_wsis", type=int, default=3,
                     help="How many slides to sweep. Each is a full-slide fill per "
@@ -352,11 +431,17 @@ def main() -> None:
     centres = 0.5 * (edges[:-1] + edges[1:])
     done = 0
 
-    for csv_path in iter_metadata_csvs(args.tiles_metadata):
+    # The grid only sizes the histogram pool, so the extent can come from the
+    # image itself when the arm was never tiled.
+    if args.tiles_metadata is not None:
+        sources = [(Path(wsi_extent(c)[0]).stem, c)
+                   for c in iter_metadata_csvs(args.tiles_metadata)]
+    else:
+        sources = [(stem, None) for stem in sorted(he_index)]
+
+    for stem, csv_path in sources:
         if done >= args.n_wsis:
             break
-        source, _, _ = wsi_extent(csv_path)
-        stem = Path(source).stem
         if stem not in he_index:
             print(f"[skip] no H&E for {stem}")
             continue
@@ -366,7 +451,10 @@ def main() -> None:
         print(f"        {mn.shape[0]}x{mn.shape[1]}, "
               f"{len(thresholds)} thresholds")
 
-        regions = region_grid(csv_path, region_mm=args.region_mm, mpp=args.mpp)
+        regions = (region_grid(csv_path, region_mm=args.region_mm, mpp=args.mpp)
+                   if csv_path is not None else
+                   region_grid_from_extent(stem, mn.shape[0], mn.shape[1],
+                                           region_mm=args.region_mm, mpp=args.mpp))
         hist_total += tissue_histogram(mn, regions, args.bins)
 
         for row in sweep_slide(mn, thresholds):
@@ -379,7 +467,9 @@ def main() -> None:
         done += 1
 
     if not rows:
-        raise SystemExit("no slides processed — do the H&E stems match source_file?")
+        raise SystemExit(
+            "no slides processed — with --tiles_metadata the image stems must "
+            "match its source_file entries; without it, check --he_dir has TIFs")
 
     df = pd.DataFrame(rows)[
         ["wsi", "white_thresh", "lumen_fraction", "tissue_fraction", "n_tissue_px"]
@@ -388,16 +478,17 @@ def main() -> None:
     df.to_csv(csv_path, index=False)
 
     suggestion = suggest_threshold(hist_total, centres)
-    mean_curve = df.groupby("white_thresh")["lumen_fraction"].mean()
-    plateau = find_plateau(mean_curve.index.to_numpy(), mean_curve.to_numpy())
+    mean_curve = df.groupby("white_thresh")[["lumen_fraction", "tissue_fraction"]].mean()
+    plateau = find_plateau(mean_curve.index.to_numpy(),
+                           mean_curve["lumen_fraction"].to_numpy(),
+                           mean_curve["tissue_fraction"].to_numpy())
     make_figure(df, hist_total, centres, suggestion, plateau, args.current,
                 args.outdir / "white_thresh.png")
 
     payload = {
         "suggested": suggestion,
-        "plateau": ({k: v for k, v in plateau.items() if k != "sensitivity"}
-                    if plateau else None),
-        "sensitivity": plateau["sensitivity"] if plateau else None,
+        "plateau": {k: v for k, v in plateau.items() if k != "sensitivity"},
+        "sensitivity": plateau["sensitivity"],
         "current": args.current,
         "n_wsis": int(df["wsi"].nunique()),
         "thresholds": [float(t) for t in thresholds],
@@ -419,16 +510,22 @@ def main() -> None:
         print("no valley found: the tissue and whitespace modes are not separated "
               "in this histogram, so no threshold here is stable. Read panel A "
               "before choosing one by hand.")
-    if plateau:
+    if plateau.get("breakdown") is not None:
+        print(f"BREAKDOWN : {plateau['breakdown']:.3f} — at and above this the "
+              f"footprint has absorbed the slide background.")
+        print(f"            Usable range is <= {plateau['valid_hi']:.3f}. A value "
+              f"above it measures a different object, not a smaller lumen.")
+    if plateau.get("lo") is not None:
         inside = plateau["lo"] <= args.current <= plateau["hi"]
         print(f"plateau   : {plateau['lo']:.3f} to {plateau['hi']:.3f}  "
               f"(lumen_fraction stops depending on the cut here)")
         print(f"current   : {args.current:g}  "
               f"{'INSIDE the plateau' if inside else 'OUTSIDE the plateau'}")
     else:
-        print("plateau   : none — every threshold in the sweep is on a slope, so "
-              "no choice here is reproducible")
-        print(f"current   : {args.current:g}")
+        print(f"plateau   : NONE. {plateau.get('reason')}")
+        print(f"current   : {args.current:g}"
+              + ("  — ABOVE the usable range" if plateau.get("valid_hi") is not None
+                 and args.current > plateau["valid_hi"] else ""))
     print(f"\nwrote {csv_path}")
     print(f"wrote {args.outdir / 'white_thresh.json'}")
 
