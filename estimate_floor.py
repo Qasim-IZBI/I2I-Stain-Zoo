@@ -51,7 +51,7 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 
-from uncertainty_phi.descriptors import phi_struct
+from uncertainty_phi.descriptors import PHI_NAMES, phi_struct
 from uncertainty_phi.ensemble import _stem_index, load_label_mask, load_rgb
 from uncertainty_phi.floor import (
     cross_level_floor,
@@ -149,6 +149,128 @@ def _phi_for_dir(mask_dir: Path, args, *, he_dir: Optional[Path] = None,
     if with_geometry:
         return phi, np.vstack(coords), labels_out
     return phi
+
+
+
+# Status palette — verdicts always ship with their text label, never colour alone.
+C_GOOD, C_WARN, C_CRIT = "#0ca30c", "#fab219", "#d03b3b"
+C_INK, C_MUTED, C_GRID = "#0b0b0b", "#52514e", "#e3e3df"
+# Categorical slots 1-4, for the variogram curves.
+C_SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7")
+
+
+def make_figure(rows: List[dict], curve: Optional[dict], outpath: Path) -> None:
+    """Two panels: the verdict, and the assumption the verdict rests on.
+
+    A is the go/no-go itself — floor SD over between-region SD, per descriptor,
+    against the bands that define the verdicts. B is the variogram, because when
+    a descriptor's floor comes from the sill, the number is only as good as the
+    curve having actually flattened.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    have_curve = curve is not None and len(curve.get("lag_mm", [])) > 1
+    fig, axes = plt.subplots(1, 2 if have_curve else 1,
+                             figsize=(15 if have_curve else 8.5, 5.2),
+                             squeeze=False)
+    axes = axes[0]
+    for ax in axes:
+        ax.set_facecolor("white")
+        ax.grid(True, color=C_GRID, linewidth=0.8, zorder=0)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        for side in ("left", "bottom"):
+            ax.spines[side].set_color(C_GRID)
+        ax.tick_params(colors=C_MUTED, labelsize=9)
+
+    # --- A: the go/no-go -----------------------------------------------------
+    ax = axes[0]
+    names = [r["descriptor"] for r in rows]
+    ys = np.arange(len(rows))[::-1]           # first descriptor at the top
+
+    ratios = [r["floor_to_signal"] for r in rows]
+    finite = [v for v in ratios if v is not None and np.isfinite(v)]
+    xmax = max(1.3, min(3.0, (max(finite) * 1.25) if finite else 1.3))
+
+    ax.axvspan(0, 0.5, color=C_GOOD, alpha=0.10, zorder=1, linewidth=0)
+    ax.axvspan(0.5, 0.9, color=C_WARN, alpha=0.13, zorder=1, linewidth=0)
+    ax.axvspan(0.9, xmax, color=C_CRIT, alpha=0.10, zorder=1, linewidth=0)
+    for x in (0.5, 0.9):
+        ax.axvline(x, color=C_MUTED, linewidth=1, linestyle=":", zorder=2)
+
+    for y, r in zip(ys, rows):
+        ratio, sig = r["floor_to_signal"], r["between_region_sd"]
+        if ratio is None or not np.isfinite(ratio):
+            ax.text(0.02, y, "no floor estimate for this component",
+                    va="center", ha="left", fontsize=9, color=C_MUTED, style="italic")
+            continue
+        # the bracket, in the same units as the point
+        lo, hi = r.get("floor_sd_lower"), r.get("floor_sd_upper")
+        if sig and lo is not None and hi is not None and np.isfinite(sig) and sig > 0:
+            ax.plot([lo / sig, hi / sig], [y, y], color=C_MUTED, linewidth=1.5,
+                    alpha=0.6, zorder=3, solid_capstyle="butt")
+        colour = C_GOOD if ratio < 0.5 else (C_WARN if ratio < 0.9 else C_CRIT)
+        ax.plot([min(ratio, xmax)], [y], "o", markersize=10, color=colour, zorder=5)
+        ax.text(min(ratio, xmax) + 0.03, y,
+                f"{r['verdict']}  ·  {r['floor_source']}",
+                va="center", ha="left", fontsize=9, color=C_MUTED)
+
+    ax.set_yticks(ys)
+    ax.set_yticklabels(names, fontsize=10, color=C_INK)
+    ax.set_xlim(0, xmax)
+    ax.set_ylim(-0.7, len(rows) - 0.3)
+    ax.set_xlabel("floor SD / between-region SD", color=C_MUTED, fontsize=10)
+    ax.set_title("A · Is there headroom above the floor?",
+                 color=C_INK, fontsize=11, loc="left", pad=10)
+    ax.text(0.25, len(rows) - 0.45, "usable", ha="center", fontsize=9, color=C_GOOD)
+    ax.text(0.70, len(rows) - 0.45, "marginal", ha="center", fontsize=9, color="#a06a00")
+    ax.text((0.9 + xmax) / 2, len(rows) - 0.45, "floor-limited",
+            ha="center", fontsize=9, color=C_CRIT)
+
+    # --- B: has the sill actually been reached? ------------------------------
+    if have_curve:
+        ax = axes[1]
+        lags = np.asarray(curve["lag_mm"], dtype=float)
+        covs = np.asarray(curve["cov"], dtype=float)
+        reached = curve.get("sill_reached", {})
+        shown = 0
+        for i, name in enumerate(PHI_NAMES):
+            gamma = np.sqrt(np.clip(covs[:, i, i], 0, None))
+            if not np.isfinite(gamma).any() or np.nanmax(gamma) <= 0:
+                continue
+            # each descriptor normalised by its own plateau, since the raw units
+            # span orders of magnitude and would collapse onto one axis
+            ax.plot(lags, gamma / np.nanmax(gamma), linewidth=2,
+                    color=C_SERIES[shown % len(C_SERIES)], marker="o", markersize=4,
+                    label=f"{name}{'' if reached.get(name, True) else '  (still climbing)'}")
+            shown += 1
+        ax.axhline(1.0, color=C_MUTED, linewidth=1, linestyle=":", zorder=2)
+        # From zero, always. On an auto axis a curve that is already at its sill
+        # fills the panel with a few percent of noise and reads as "climbing
+        # steeply" — the opposite of what it means.
+        ax.set_ylim(0, 1.12)
+        ax.set_xlim(left=0)
+        ax.set_xlabel("separation (mm)", color=C_MUTED, fontsize=10)
+        ax.set_ylabel("floor SD / its own maximum", color=C_MUTED, fontsize=10)
+        ax.set_title("B · The variogram: does it flatten?",
+                     color=C_INK, fontsize=11, loc="left", pad=10)
+        leg = ax.legend(frameon=False, fontsize=8.5, loc="lower right")
+        for txt in leg.get_texts():
+            txt.set_color(C_MUTED)
+
+    fig.suptitle("Per-descriptor floor — the go/no-go",
+                 color=C_INK, fontsize=13, x=0.011, ha="left", y=0.99)
+    fig.text(0.011, 0.015,
+             "A flat curve in B means the sill is the fully-decorrelated limit, so "
+             "it over-estimates the floor and under-states bias — the safe direction. "
+             "A curve still climbing means its bound is an under-estimate.",
+             color=C_MUTED, fontsize=8.5)
+    fig.tight_layout(rect=(0, 0.05, 1, 0.93))
+    fig.savefig(outpath, dpi=150, facecolor="white")
+    print(f"wrote {outpath}")
 
 
 def main() -> None:
@@ -249,7 +371,7 @@ def main() -> None:
         print("[3/4] no --psr_level_b: floor is bracketed, not measured")
 
     # --- variogram sill: the only upper bound that reaches the collagen terms ---
-    vg = None
+    vg, curve = None, None
     if not args.no_variogram:
         try:
             vg, curve = variogram_floor(
@@ -289,6 +411,22 @@ def main() -> None:
         "params": {k: (str(v) if isinstance(v, Path) else v)
                    for k, v in vars(args).items()},
     }
+    if vg is not None:
+        payload["estimates"]["variogram_sill"] = vg.summary()
+    if curve is not None:
+        payload["variogram_curve"] = {
+            "lag_mm": np.asarray(curve["lag_mm"]).tolist(),
+            "n_pairs": np.asarray(curve["n_pairs"]).tolist(),
+            "floor_sd_per_lag": {
+                n: np.sqrt(np.clip(np.asarray(curve["cov"])[:, i, i], 0, None)).tolist()
+                for i, n in enumerate(PHI_NAMES)
+            },
+            "sill_reached": curve.get("sill_reached"),
+            "tail_drift": curve.get("tail_drift"),
+        }
+
+    make_figure(rows, curve, args.outdir / "floor.png")
+
     with open(args.outdir / "floor.json", "w") as fh:
         json.dump(payload, fh, indent=2)
 
