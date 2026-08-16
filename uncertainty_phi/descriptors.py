@@ -1,6 +1,6 @@
 """φ_struct — the structural descriptor vector (kidney_ood_data_plan.md §5.4).
 
-Six marginal statistics of a region, split into two reference classes (§6.0):
+Seven marginal statistics of a region, split into two reference classes (§6.0):
 
     task_specific_value   collagen proportionate area          } referenced to
     beta0_per_mm2         connected components of collagen     } the real PSR at
@@ -8,8 +8,9 @@ Six marginal statistics of a region, split into two reference classes (§6.0):
     regional_dispersion   spread of collagen orientation       } pay the floor
 
     lumen_fraction        enclosed whitespace within tissue    } referenced to the
-    tissue_fraction       tissue coverage of the region        } H&E input at
-                                                               } level A — no floor
+    beta0_lumen_per_mm2   connected components of lumen        } real H&E at level A,
+    beta1_lumen_per_mm2   loops in the lumen space             } the SAME physical
+                                                               } section — no floor
 
 Two rules the whole design rests on:
 
@@ -35,13 +36,20 @@ PHI_NAMES: Tuple[str, ...] = (
     "beta1_per_mm2",
     "regional_dispersion",
     "lumen_fraction",
-    "tissue_fraction",
+    "beta0_lumen_per_mm2",
+    "beta1_lumen_per_mm2",
 )
+
+# tissue_fraction is deliberately NOT in the vector. It is read from the H&E
+# footprint, which is shared by every ensemble member and by the reference, so
+# it has zero variance and zero error — nothing to decompose and nothing to
+# calibrate. `phi_struct` still returns it separately, and the pipeline writes
+# it to per_region.csv as a QC column.
 
 # Which image each component is referenced against — decides whether it pays the
 # biological floor. "psr" = real PSR at level B (floor); "he" = H&E input at
 # level A, same physical section, pixel-aligned (no floor).
-PHI_REFERENCE: Tuple[str, ...] = ("psr", "psr", "psr", "psr", "he", "he")
+PHI_REFERENCE: Tuple[str, ...] = ("psr", "psr", "psr", "psr", "he", "he", "he")
 
 PHI_DIM = len(PHI_NAMES)
 
@@ -192,6 +200,39 @@ def he_tissue_footprint(he_rgb: np.ndarray,
     return ndimage.binary_fill_holes(~he_bright(he_rgb, white_thresh))
 
 
+def lumen_mask(
+    rgb: np.ndarray,
+    tissue_mask: Optional[np.ndarray] = None,
+    white_thresh: float = WHITE_THRESH,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """(lumen, footprint) — enclosed whitespace, and the tissue it sits inside.
+
+    Split out of `lumen_tissue_fraction` so the same mask can feed `betti`: the
+    topology of the lumen space is what distinguishes vessels from any pale
+    patch, and it is the direct test of the §5.3 lumen-filler failure — a model
+    that paints collagen over vessels keeps the area and loses the loops.
+
+    `rgb` is whichever image the whitespace is being read from. On the reference
+    side that is the real H&E; on the virtual side it is the **generated SR**,
+    with `tissue_mask` still the H&E footprint. Taking the footprint from the
+    H&E rather than by thresholding the SR is deliberate: the SR footprint is
+    unstable at both ends of the threshold sweep (it erodes into tissue below
+    ~0.60 and swallows the slide background above ~0.70), while the H&E one is
+    stable across 0.500-0.675.
+    """
+    bright = he_bright(rgb, white_thresh)
+
+    if tissue_mask is not None:
+        footprint = np.asarray(tissue_mask, dtype=bool)
+    else:
+        # pad the border as tissue so a lumen cut by the crop edge is still
+        # enclosed, then strip the pad back off
+        padded = np.pad(~bright, 1, mode="constant", constant_values=True)
+        footprint = ndimage.binary_fill_holes(padded)[1:-1, 1:-1]
+
+    return bright & footprint, footprint
+
+
 def lumen_tissue_fraction(
     he_rgb: np.ndarray,
     tissue_mask: Optional[np.ndarray] = None,
@@ -212,23 +253,14 @@ def lumen_tissue_fraction(
     Caveat (§6.0): tears, folds and processing artefacts also read as whitespace
     and do differ between sections — threshold conservatively.
     """
-    bright = he_bright(he_rgb, white_thresh)
-
-    if tissue_mask is not None:
-        footprint = np.asarray(tissue_mask, dtype=bool)
-    else:
-        # pad the border as tissue so a lumen cut by the crop edge is still
-        # enclosed, then strip the pad back off
-        padded = np.pad(~bright, 1, mode="constant", constant_values=True)
-        footprint = ndimage.binary_fill_holes(padded)[1:-1, 1:-1]
+    lumen, footprint = lumen_mask(he_rgb, tissue_mask, white_thresh)
 
     area = int(footprint.size)
     n_tissue = int(np.count_nonzero(footprint))
     if area == 0 or n_tissue == 0:
         return float("nan"), 0.0
 
-    lumen = float(np.count_nonzero(bright & footprint) / n_tissue)
-    return lumen, float(n_tissue / area)
+    return float(np.count_nonzero(lumen) / n_tissue), float(n_tissue / area)
 
 
 # ---------------------------------------------------------------------------
@@ -248,20 +280,25 @@ def phi_struct(
     label_tissue: int = LABEL_TISSUE,
     label_psr: int = LABEL_PSR,
 ) -> np.ndarray:
-    """Compute the 6-vector for one region.
+    """Compute the 7-vector for one region.
 
     Parameters
     ----------
     psr_labels : [H,W] nnU-Net label map (0 background, 1 tissue, 2 PSR-positive).
-    he_rgb     : [H,W,3] H&E for the same region. If None the two floor-free
-                 components come back NaN and the four collagen terms are still
-                 valid — useful when only masks are on hand.
+    he_rgb     : [H,W,3] for the same region, whichever image the whitespace is
+                 read from — the real H&E on the reference side, the generated
+                 SR on the virtual side. If None the three lumen components come
+                 back NaN and the four collagen terms are still valid.
+    tissue_mask: the H&E footprint, cropped to this region. Supplies the
+                 denominator for the lumen densities as well as the enclosure.
     mpp        : microns per pixel, for the count → density conversion.
 
     Returns
     -------
-    np.ndarray, shape (6,), ordered as PHI_NAMES. NaN marks "not computable
+    np.ndarray, shape (7,), ordered as PHI_NAMES. NaN marks "not computable
     here", never zero — a zero would be silently absorbed by downstream means.
+    `tissue_fraction` is not part of the vector; it is `tissue_mask.mean()`,
+    which the caller already has.
     """
     labels = np.asarray(psr_labels)
     if labels.ndim != 2:
@@ -286,8 +323,20 @@ def phi_struct(
     out[3] = regional_dispersion(collagen, sigma=sigma)
 
     if he_rgb is not None:
-        out[4], out[5] = lumen_tissue_fraction(
-            he_rgb, tissue_mask=tissue_mask, white_thresh=white_thresh
-        )
+        lum, footprint = lumen_mask(he_rgb, tissue_mask, white_thresh)
+        n_footprint = int(np.count_nonzero(footprint))
+        if n_footprint:
+            out[4] = float(np.count_nonzero(lum) / n_footprint)
+
+            # Lumen densities are per mm2 of the H&E FOOTPRINT, not of the
+            # label mask's tissue. The footprint is the one denominator
+            # available on both sides: the virtual side has generated collagen
+            # labels, the reference side is the real H&E with no labels at all,
+            # and a density is only comparable if its denominator is.
+            footprint_mm2 = n_footprint * (mpp ** 2) / 1e6
+            if footprint_mm2 > 0:
+                lb0, lb1 = betti(clean_mask(lum, min_object_px, closing_px))
+                out[5] = lb0 / footprint_mm2
+                out[6] = lb1 / footprint_mm2
 
     return out

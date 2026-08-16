@@ -208,7 +208,7 @@ class TestPhiStruct:
     def test_reference_classes_are_declared(self):
         """The two-reference split of section 6.0 must be machine-readable."""
         assert PHI_REFERENCE[:4] == ("psr", "psr", "psr", "psr")
-        assert PHI_REFERENCE[4:] == ("he", "he")
+        assert PHI_REFERENCE[4:] == ("he", "he", "he")
 
     def test_rejects_3d_labels(self):
         with pytest.raises(ValueError):
@@ -468,3 +468,67 @@ class TestLumenQC:
         phi_for_wsi([member], "s", self._regions(), he_path=he_path, mpp=0.221,
                     white_thresh=0.70)
         assert not list(tmp_path.glob("*_lumen.tif"))
+
+
+class TestLumenTopology:
+    """β₀/β₁ of the lumen space — the direct test of the §5.3 lumen-filler failure.
+
+    A model that paints collagen over vessels keeps the lumen *area* roughly and
+    loses the loops, so area alone cannot see it.
+    """
+
+    @staticmethod
+    def _slide(lumens):
+        """White background, tissue block, `lumens` as (y, x, size) bright squares."""
+        he = np.full((200, 300, 3), 250, np.uint8)
+        he[20:180, 20:280] = 150
+        for y, x, s in lumens:
+            he[y:y + s, x:x + s] = 250
+        return he
+
+    def _phi(self, he, **kw):
+        from uncertainty_phi.descriptors import he_tissue_footprint, phi_struct
+        fp = he_tissue_footprint(he, white_thresh=0.70)
+        labels = np.ones(he.shape[:2], np.uint8)
+        return phi_struct(labels, he, mpp=1.0, tissue_mask=fp, white_thresh=0.70,
+                          min_object_px=1, **kw)
+
+    def test_counts_separate_lumens_as_components(self):
+        one = self._phi(self._slide([(60, 60, 20)]))
+        three = self._phi(self._slide([(60, 60, 20), (60, 120, 20), (120, 60, 20)]))
+        assert three[5] == pytest.approx(3 * one[5], rel=1e-9)   # beta0_lumen density
+        assert three[4] == pytest.approx(3 * one[4], rel=1e-9)   # lumen_fraction
+
+    def test_area_and_topology_disagree_when_a_ring_is_filled(self):
+        """Same bright area, different loop count: an annulus of whitespace has
+        β₁ = 1, and filling its centre with tissue leaves β₁ = 0."""
+        from uncertainty_phi.descriptors import (
+            betti, he_tissue_footprint, lumen_mask,
+        )
+
+        # the WSI-level footprint, as the pipeline supplies it — passing None
+        # instead uses the standalone fallback, which pads the border as tissue
+        # and would count the slide background as lumen
+        he = self._slide([(60, 60, 40)])
+        he[70:90, 70:90] = 150            # tissue plug inside the lumen -> a ring
+        ring, _ = lumen_mask(he, he_tissue_footprint(he, white_thresh=0.70), 0.70)
+        assert betti(ring)[1] == 1
+
+        flat = self._slide([(60, 60, 40)])
+        solid, _ = lumen_mask(flat, he_tissue_footprint(flat, white_thresh=0.70), 0.70)
+        assert betti(solid)[1] == 0
+        assert np.count_nonzero(solid) > np.count_nonzero(ring)   # area differs too
+
+    def test_densities_use_the_footprint_denominator(self):
+        """Not the label mask's tissue: the reference side is the real H&E and
+        has no labels, so only the footprint is available to both sides."""
+        he = self._slide([(60, 60, 20)])
+        v = self._phi(he)
+        footprint_mm2 = (160 * 260) * (1.0 ** 2) / 1e6
+        assert v[5] == pytest.approx(1 / footprint_mm2, rel=1e-9)
+
+    def test_no_rgb_leaves_all_three_lumen_terms_nan(self):
+        from uncertainty_phi.descriptors import phi_struct
+        v = phi_struct(np.ones((40, 40), np.uint8), None, mpp=1.0)
+        assert np.isnan(v[4:]).all()
+        assert np.isfinite(v[0])

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from uncertainty_phi.descriptors import PHI_DIM, PHI_NAMES
+from uncertainty_phi.descriptors import PHI_DIM, PHI_NAMES, PHI_REFERENCE
 from uncertainty_phi.floor import (
     cross_level_floor,
     variogram_floor,
@@ -25,19 +25,23 @@ from uncertainty_phi.whiten import (
 
 # A realistic floor: wildly heterogeneous scales, with beta_0 <-> beta_1
 # correlated because more collagen means more components AND more loops.
-FLOOR_SD = np.array([0.010, 40.0, 12.0, 0.030, 0.008, 0.006])
-CORR = np.eye(6)
+# One entry per PHI_NAMES slot: CPA, beta0/beta1 collagen, dispersion,
+# lumen_fraction, beta0/beta1 lumen. Wildly heterogeneous scales on purpose.
+FLOOR_SD = np.array([0.010, 40.0, 12.0, 0.030, 0.008, 30.0, 20.0])
+assert FLOOR_SD.size == PHI_DIM, "FLOOR_SD must track PHI_NAMES"
+CORR = np.eye(PHI_DIM)
 CORR[1, 2] = CORR[2, 1] = 0.75
 CORR[0, 1] = CORR[1, 0] = 0.45
 CORR[0, 2] = CORR[2, 0] = 0.40
 SIGMA_TRUE = np.outer(FLOOR_SD, FLOOR_SD) * CORR
-BIAS = np.array([0.004, 5.0, 25.0, 0.02, 0.0, 0.0])   # concentrated in beta_1
+BIAS = np.zeros(PHI_DIM)
+BIAS[:4] = [0.004, 5.0, 25.0, 0.02]        # concentrated in beta_1
 
 
 def _sample(n, seed=0, mean=None):
     rng = np.random.default_rng(seed)
     L = np.linalg.cholesky(SIGMA_TRUE)
-    x = rng.standard_normal((n, 6)) @ L.T
+    x = rng.standard_normal((n, PHI_DIM)) @ L.T
     return x if mean is None else x + mean
 
 
@@ -61,9 +65,9 @@ class TestLedoitWolf:
 
     def test_rejects_degenerate_input(self):
         with pytest.raises(ValueError):
-            ledoit_wolf(np.zeros((1, 6)))
+            ledoit_wolf(np.zeros((1, PHI_DIM)))
         with pytest.raises(ValueError):
-            ledoit_wolf(np.zeros(6))
+            ledoit_wolf(np.zeros(PHI_DIM))
 
 
 class TestMahalanobis:
@@ -78,7 +82,7 @@ class TestMahalanobis:
 
     def test_whitening_matrix_is_a_whitener(self):
         W = whitening_matrix(SIGMA_TRUE)
-        np.testing.assert_allclose(W @ SIGMA_TRUE @ W.T, np.eye(6), atol=1e-9)
+        np.testing.assert_allclose(W @ SIGMA_TRUE @ W.T, np.eye(PHI_DIM), atol=1e-9)
 
     def test_shape_mismatch_rejected(self):
         with pytest.raises(ValueError):
@@ -115,7 +119,7 @@ class TestDimensionShares:
     def test_pure_noise_is_roughly_uniform(self):
         sigma_hat, _ = ledoit_wolf(_sample(4000, seed=12))
         shares = dimension_shares(_sample(20000, seed=13), sigma_hat)
-        assert shares.max() < 0.30          # vs 1/6 = 0.167 under the null
+        assert shares.max() < 0.30          # vs 1/PHI_DIM under the null
 
     def test_raw_norm_would_be_dominated_by_counts(self):
         """Motivates the whole module: unnormalised, beta_0 eats the norm."""
@@ -159,7 +163,9 @@ class TestFloor:
         psr = _sample(500, seed=18)
         est = cross_stain_floor(he, psr)
         assert est.kind == "cross_stain"
-        assert est.components == ("lumen_fraction", "tissue_fraction")
+        # exactly the H&E-referenced block, whatever PHI_NAMES currently holds
+        expected = tuple(n for n, ref in zip(PHI_NAMES, PHI_REFERENCE) if ref == "he")
+        assert est.components == expected
         # collagen terms are not computable from H&E -> NaN, not a fabricated 0
         assert np.isnan(est.sigma[0, 0])
         assert np.isfinite(est.sigma[4, 4])
@@ -198,7 +204,7 @@ class TestPerDescriptorReport:
     def _phi(self, n=400, seed=30, scale=None):
         rng = np.random.default_rng(seed)
         scale = FLOOR_SD * 5 if scale is None else scale
-        return rng.standard_normal((n, 6)) * scale
+        return rng.standard_normal((n, PHI_DIM)) * scale
 
     def test_one_row_per_descriptor_with_verdicts(self):
         est = split_half_floor(_sample(2000, seed=31), _sample(2000, seed=32))
@@ -257,7 +263,7 @@ class TestVariogramFloor:
         coords = rng.uniform(0, extent, size=(n, 2))
         groups = np.repeat([f"wsi{i}" for i in range(n_groups)], n // n_groups)
         centres = rng.uniform(0, extent, size=(120, 2))
-        W = rng.standard_normal((120, 6))
+        W = rng.standard_normal((120, PHI_DIM))
         K = np.exp(-((coords[:, None, :] - centres[None]) ** 2).sum(-1) / (2 * corr_mm ** 2))
         phi = K @ W
         return phi / phi.std(0) * FLOOR_SD, coords, groups[: len(coords)]
@@ -357,12 +363,12 @@ class TestPartiallyComputableDescriptors:
         assert est.components == PHI_NAMES[:4]
         assert np.isnan(est.sd[4:]).all()
 
-    def test_report_marks_the_missing_two_unknown_not_usable(self):
+    def test_report_marks_the_missing_unknown_not_usable(self):
         phi = self._phi()
         rows = per_descriptor_report(phi, lower=split_half_floor(phi[:100], phi[100:]))
         by_name = {r["descriptor"]: r for r in rows}
         assert by_name["beta0_per_mm2"]["floor_source"] == "split_half"
-        for name in ("lumen_fraction", "tissue_fraction"):
+        for name in (n for n, ref in zip(PHI_NAMES, PHI_REFERENCE) if ref == "he"):
             assert by_name[name]["floor_source"] is None
             assert by_name[name]["floor_to_signal"] is None
             assert "unknown" in by_name[name]["verdict"]
