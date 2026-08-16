@@ -412,6 +412,30 @@ error — nothing to decompose and nothing to calibrate. It is still written to
 that paints collagen over vessels keeps the whitespace area roughly and loses the
 loops, which area alone cannot see.
 
+> **The three lumen terms are UNAVAILABLE on the UC liver cohort (2026-08-16).**
+> Both routes to a lumen mask are closed, for independent reasons:
+>
+> - **Brightness on the generated SR.** Its histogram has no bimodality and no
+>   plateau: the footprint sweeps from 7% of the canvas to 100% across
+>   0.50–0.725, and at 0.675 only 13.7% is bright where the slide background
+>   alone is ~35–40%. The model does not reproduce whitespace, not even for
+>   background. At the H&E's own 0.65 it calls **22% of the slide lumen** against
+>   the H&E's 4% on the same tissue.
+> - **Enclosed background in the mask.** `Dataset314_SR_light` is trained to label
+>   lumen as *tissue*, so no mask contains enclosed background to find. This is a
+>   property of the **segmenter, not the model** — it applies equally to the real
+>   SR masks, so it is not a virtual-versus-real asymmetry.
+>
+> Run without `--lumen_root`: the three terms come back NaN, `decompose` handles
+> NaN columns, and `calibrate_phi` reports them as having no reference rather than
+> scoring them. The machinery is kept for the kidney arm or any cohort where
+> whitespace survives translation.
+>
+> A consequence worth carrying into the methods: since the segmenter counts lumen
+> as tissue, **CPA's denominator is tissue-including-lumen** on both arms. It is
+> consistent, so it does not bias the comparison, but it is not the same
+> denominator a histologist would assume.
+
 Lumen densities are per mm² of the **H&E footprint**, not of the label mask's
 tissue. The reference side is the real H&E and has no collagen labels at all, and a
 density is only comparable if its denominator is.
@@ -561,6 +585,9 @@ Notes that will bite otherwise:
 
 #### Lumen masks — the stage before φ
 
+> Not runnable on the UC liver cohort — see the note above the threshold section.
+> Kept for cohorts whose generated stain reproduces whitespace.
+
 The three H&E-referenced descriptors are read from each member's **generated SR**,
 so they are member-specific. `phi_for_wsi` loads the H&E once per WSI, outside the
 member loop, and doing this inline would mean several GB of RGB fifty times per
@@ -613,12 +640,14 @@ a reliability curve, and a normalised ECE.
 
 Two arms, independent, either omittable:
 
-- `--real_lumen` scores the three H&E-referenced terms against the real H&E. Same
-  physical section, so **no floor and no frame question** — this arm runs today.
 - `--real_psr` scores the four collagen terms against the real SR. Region *r* is
   only the same tissue if the SR was resampled onto the H&E grid; the geometry is
   checked and a mismatch **exits** rather than scoring different tissue under the
-  same region id.
+  same region id. **On the UC liver cohort this is the only available arm**, which
+  makes that frame check the gate for the whole calibration.
+- `--real_lumen` scores the three H&E-referenced terms against the real H&E. Same
+  physical section, so no floor and no frame question — but see why the lumen
+  terms cannot be computed on this cohort at all.
 
 Regions come from `--phi_csv` verbatim rather than by rebuilding a grid, so the two
 sides cannot drift apart through a parameter that differs by one. **Pass the same

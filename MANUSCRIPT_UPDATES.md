@@ -1,6 +1,6 @@
 # What the manuscript needs to say
 
-> Written 2026-08-16, against the code at `7b8134b`. A handover from the codebase to
+> Written 2026-08-16, against the code at `8ce9ea4`. A handover from the codebase to
 > the paper: what changed since the plan, what can be claimed, what cannot, and the
 > conventions a reviewer will otherwise raise. Companion to `CLAUDE.md` (flags) and
 > `PIPELINE_AFTER_INFERENCE.md` (how to run it).
@@ -28,6 +28,11 @@ So the contribution is now two things:
    crossed 5 subsets × 10 seeds grid.
 2. **φ_struct as a calibration target.** Regen error's failure to calibrate is the
    standing BMVC 2026 result and is **cited, not re-measured**.
+
+**Narrowed on 2026-08-16:** the calibration is over the **four collagen
+descriptors only**. The three lumen terms cannot be measured on this cohort (§3a),
+which removes the floor-free arm and makes the SR/H&E frame check (§6) the gate for
+the whole calibration rather than for half of it.
 
 ---
 
@@ -74,15 +79,15 @@ the answer to "how do you know low variance means correct?".
 
 Seven marginal statistics of a ~1–2 mm region, in two reference classes:
 
-| # | descriptor | read from | referenced against |
-|---|---|---|---|
-| 1 | `task_specific_value` (CPA) | member's collagen mask | real SR |
-| 2 | `beta0_per_mm2` | member's collagen mask | real SR |
-| 3 | `beta1_per_mm2` | member's collagen mask | real SR |
-| 4 | `regional_dispersion` | member's collagen mask | real SR |
-| 5 | `lumen_fraction` | member's **generated SR** | real **H&E** |
-| 6 | `beta0_lumen_per_mm2` | member's generated SR | real H&E |
-| 7 | `beta1_lumen_per_mm2` | member's generated SR | real H&E |
+| # | descriptor | read from | referenced against | status |
+|---|---|---|---|---|
+| 1 | `task_specific_value` (CPA) | member's collagen mask | real SR | measured |
+| 2 | `beta0_per_mm2` | member's collagen mask | real SR | measured |
+| 3 | `beta1_per_mm2` | member's collagen mask | real SR | measured |
+| 4 | `regional_dispersion` | member's collagen mask | real SR | measured |
+| 5 | `lumen_fraction` | member's **generated SR** | real **H&E** | *unmeasurable here, §3a* |
+| 6 | `beta0_lumen_per_mm2` | member's generated SR | real H&E | *unmeasurable here* |
+| 7 | `beta1_lumen_per_mm2` | member's generated SR | real H&E | *unmeasurable here* |
 
 Points the methods section has to make:
 
@@ -92,13 +97,16 @@ Points the methods section has to make:
 - **Counts are densities**, per mm² of tissue, so regions of differing size stay
   comparable. The **lumen** densities are per mm² of the *H&E footprint* — the only
   denominator available on both sides, since the real H&E has no collagen labels.
-- **β₁ of the lumen space is the lumen-filler test.** A model painting collagen
-  over vessels keeps the whitespace area and loses the loops; area alone cannot see
-  it. This is the one descriptor that is *designed* to catch a specific failure.
-- **The lumen reference carries no floor.** It is the same physical section the
-  model generated from, so any discrepancy is model error rather than inter-level
-  biology. That is why the lumen half is the stronger evidence even though the
-  collagen half is the more familiar measurement.
+- **β₁ of the lumen space was the lumen-filler test** — a model painting collagen
+  over vessels keeps the whitespace area and loses the loops, which area alone
+  cannot see. It is the one descriptor designed to catch a specific failure, and
+  §3a explains why it could not be computed. β₁ of the *collagen* mask remains and
+  catches part of the same thing.
+- **The lumen reference would have carried no floor** — same physical section, so
+  any discrepancy is model error rather than inter-level biology. That was the
+  design's main strength, and it is the one lost by §3a: with the lumen terms
+  unmeasurable, every remaining descriptor is referenced to a different section
+  and carries the floor.
 - `tissue_fraction` is reported but not calibrated: it is H&E-derived on both
   sides, so it has zero variance and zero error.
 
@@ -123,10 +131,39 @@ uses.
 
 ---
 
+## 3a. Two findings about representation, and why the lumen arm is closed
+
+Both are results in their own right and belong in the paper, not only in the
+limitations.
+
+**The generated stain does not reproduce whitespace.** Its intensity histogram has
+no bimodality: the brightness-derived tissue footprint sweeps from 7% of the canvas
+to 100% across thresholds 0.50–0.725, and at 0.675 only 13.7% of the canvas is
+bright where the slide background alone is ~35–40%. At the H&E's own threshold
+(0.65) it labels **22% of the slide as whitespace against the H&E's 4% on the same
+tissue**. The model occupies a narrow tonal band and renders neither lumens nor
+slide background as white. This is a concrete characterisation of what unpaired
+translation preserves and what it does not, and it is why intensity-derived
+descriptors were never going to work here — vindicating the mask-never-intensity
+rule the collagen descriptors already follow.
+
+**The collagen segmenter counts lumen as tissue.** `Dataset314_SR_light` is trained
+that way, so no mask — real or virtual — contains enclosed background from which a
+lumen could be recovered. Two consequences for methods: the lumen descriptors have
+no route on either arm, and **CPA's denominator is tissue-including-lumen**
+throughout. The latter is consistent across arms so it does not bias the
+comparison, but it is not the denominator a histologist would assume and should be
+stated.
+
+Together these close the H&E-referenced half of φ on this cohort. The seven-term
+vector and its tooling remain in the codebase for a cohort whose generated stain
+retains whitespace; the paper should describe the four collagen terms as what was
+measured, and can cite the two findings above as why.
+
 ## 4. The calibration (methods + results)
 
-Per descriptor, over regions: σ from the ensemble, error against the real
-reference, then
+Over the four collagen descriptors (see §3a), per region: σ from the ensemble,
+error against the real SR, then
 
 - **Spearman ρ(σ, |error|)** — the headline. Noise in the reference (a floor, a
   registration offset) attenuates ρ toward zero, so a positive value is
@@ -144,8 +181,9 @@ reference, then
 2. **E|e| = σ·√(2/π) ≈ 0.80σ for Gaussian error.** The reliability line is 0.80σ,
    not the diagonal; a diagonal would call a perfectly calibrated ensemble 20%
    over-confident.
-3. **Claim ranking, not absolute calibration**, for the collagen arm — the floor is
-   in the target. The lumen arm has no floor and can support the absolute claim.
+3. **Claim ranking, not absolute calibration.** The floor is in the target, and
+   with the lumen arm closed there is no floor-free descriptor left to carry an
+   absolute claim.
 4. **Cluster on the case** (n = 20) for every interval. Regions within a slide are
    spatially correlated, and in `--prediction fold` the five subset predictions for
    a region share one target.
@@ -182,18 +220,18 @@ kind about it.
 - [ ] **The calibration has not been run on real data.** Everything in §4 is
       validated against injected synthetic ground truth only (calibrated → 1.01,
       2.5× over-confident → 2.50, uninformative → ρ = 0.002).
-- [ ] **Step 0 — is the real SR on the H&E frame?** Decides whether the collagen
-      arm pairs at region level (~6000 points) or falls back to WSI level (n = 20).
-      The lumen arm is unaffected.
+- [ ] **Step 0 — is the real SR on the H&E frame? THE gate.** With the lumen arm
+      closed, this decides whether there is a region-level calibration (~6000
+      points) or only a WSI-level one (n = 20) — for the entire study, not half of
+      it. Five minutes: compare SR and H&E dimensions per case.
 - [ ] **Re-run the floor sweep on current code** before quoting the §2 table. Those
       three runs predate two fixes (the inverted split-half bracket, the NaN-column
       crash). Neither changes the verdicts, but the manuscript should not cite
       figures produced by code that has since been corrected.
 - [ ] **Negative control**: shuffle σ across regions, confirm ρ collapses.
-- [ ] **Confound test**: correlate σ_lumen against mean region brightness. If they
-      track, the lumen descriptor is measuring how pale each member rendered the
-      tissue rather than where it placed vessels — the specific risk of
-      thresholding the SR.
+- [x] ~~**Confound test**: correlate σ_lumen against mean region brightness.~~
+      Superseded — the threshold sweep on the generated SR settled it directly
+      (§3a). The lumen arm is closed, so there is nothing left to confound.
 - [ ] **Cluster-robust intervals**, case as the unit. Not implemented anywhere yet.
 - [ ] **Resolution parity**, if the collagen arm is used: the virtual arm's content
       was synthesised at 0.442 µm/px and upsampled, the real SR is genuinely 0.221.

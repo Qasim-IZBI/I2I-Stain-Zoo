@@ -51,10 +51,11 @@ gate can come back saying "no headroom here".
 
 > **And branch A gained a second half.** Quantifying the spread does not show it
 > is *meaningful* — a reviewer will ask whether low variance means correct. §3a
-> calibrates the spread against φ_struct of the real tissue, per descriptor. The
-> lumen half of that is referenced to the real H&E, the same physical section the
-> model generated from, so it carries no floor and no frame question and can be
-> run today.
+> calibrates the spread against φ_struct of the real tissue, per descriptor.
+> That half was designed with a floor-free lumen arm referenced to the real H&E;
+> on this cohort the lumen descriptors turned out to be unmeasurable (§3a), so
+> the calibration is over the four collagen descriptors against the real SR — and
+> therefore needs the same region correspondence branch B does.
 
 **So: run the uncertainty branch while you resolve the bias gates.** Do not
 sequence them one after the other; the first does not depend on the second.
@@ -221,6 +222,18 @@ Ensemble spread measures disagreement between members, not error, and the BMVC
 2026 result is that cycle-reconstruction error does not calibrate it. This scores
 the spread against an external target — φ_struct of the real tissue.
 
+> **Liver, 2026-08-16: only the collagen arm is available, so Step 0 gates the
+> whole study.** Both routes to a lumen mask are closed. Thresholding the
+> generated SR does not work — its histogram has no bimodality, the footprint
+> sweeps from 7% of the canvas to 100% across the sweep, and at the H&E's own 0.65
+> it calls 22% of the slide lumen against the H&E's 4% on the same tissue; the
+> model does not reproduce whitespace. And `Dataset314_SR_light` labels lumen as
+> tissue, so no mask holds enclosed background to find — a property of the
+> segmenter, applying equally to the real SR. Run without `--lumen_root` and
+> `--real_lumen`; the three terms report as having no reference. This removes the
+> floor-free arm, so the earlier advice to "build the lumen half first, it is
+> unblocked either way" no longer holds.
+
 ```bash
 # 1. lumen masks: the virtual side per member, then the reference from the H&E
 sbatch scripts/make_lumen_masks_grid.sh
@@ -247,13 +260,12 @@ both sides, and taking them from a mask rather than a threshold keeps
 `white_thresh` out of the denominator — which is where the threshold sweep showed
 it does most damage.
 
-**The two arms are not equally blocked.** `--real_lumen` scores the three
-H&E-referenced descriptors against the real H&E: the same physical section, so no
-level offset, no floor, and the same coordinate frame the virtual run used.
-`--real_psr` scores the four collagen descriptors against the real SR, which is
-only paired correctly if that SR was resampled onto the H&E grid — `calibrate_phi`
-checks the geometry and exits rather than scoring different tissue under the same
-region id. Run the lumen arm first; it is unblocked.
+**The collagen arm needs the frame.** `--real_psr` scores the four collagen
+descriptors against the real SR, which is only paired correctly if that SR was
+resampled onto the H&E grid — `calibrate_phi` checks the geometry and exits rather
+than scoring different tissue under the same region id. With the lumen arm closed
+on this cohort, that check decides whether there is a region-level calibration at
+all, or only a WSI-level one at n = 20.
 
 **Read ρ, not the ECE.** ρ(σ, |error|) is the claim that survives noise in the
 reference — a floor or a registration offset attenuates it toward zero, so a
