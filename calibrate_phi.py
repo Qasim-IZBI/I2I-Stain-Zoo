@@ -11,7 +11,7 @@ task-relevant target: φ_struct of the generated stain versus φ_struct of the
         --phi_csv    ./phi_uncertainty/per_region.csv \\
         --real_psr   /path/psr_masks/real/psr_masks_wsi_final \\
         --real_lumen /path/lumen_masks_real \\
-        --he_dir     /path/real_he_wsis \\
+        --he_masks   /path/HE_tissue \\
         --outdir     ./calibration_phi/
 
 The two reference arms are independent, and either may be omitted:
@@ -56,8 +56,14 @@ from uncertainty_phi.descriptors import (
     he_tissue_footprint,
     lumen_descriptors,
     phi_struct,
+    tissue_footprint_from_mask,
 )
-from uncertainty_phi.ensemble import _stem_index, load_label_mask, load_rgb
+from uncertainty_phi.ensemble import (
+    _stem_index,
+    load_label_mask,
+    load_rgb,
+    load_roi_mask,
+)
 from uncertainty_phi.regions import SOURCE_MPP
 
 # For a Gaussian error of scale sigma, E|e| = sigma * sqrt(2/pi). A reliability
@@ -77,6 +83,7 @@ def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
     psr_index = _stem_index(args.real_psr) if args.real_psr else {}
     lum_index = _stem_index(args.real_lumen) if args.real_lumen else {}
     he_index = _stem_index(args.he_dir) if args.he_dir else {}
+    he_mask_index = _stem_index(args.he_masks) if args.he_masks else {}
 
     rows: List[dict] = []
     for wsi, group in df.groupby("wsi", sort=False):
@@ -84,8 +91,18 @@ def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
 
         labels = load_label_mask(psr_index[stem]) if stem in psr_index else None
         lumen = (load_label_mask(lum_index[stem]) > 0) if stem in lum_index else None
+        # The footprint MUST be built the same way the virtual side built it,
+        # or the two sides of the comparison divide by different denominators.
+        # --he_masks is that way; thresholding is the fallback for a phi run
+        # that predates it.
         footprint = None
-        if stem in he_index:
+        if stem in he_mask_index:
+            shape = (labels.shape if labels is not None
+                     else lumen.shape if lumen is not None else None)
+            if shape is not None:
+                footprint = tissue_footprint_from_mask(
+                    load_roi_mask(he_mask_index[stem], shape))
+        elif stem in he_index:
             footprint = he_tissue_footprint(load_rgb(he_index[stem]),
                                             white_thresh=args.white_thresh)
 
@@ -316,9 +333,14 @@ def main() -> None:
                     help="Lumen masks of the real H&E, from make_lumen_masks.py. "
                          "Scores the three H&E-referenced descriptors. Same "
                          "physical section, so no floor and no frame question.")
+    ap.add_argument("--he_masks", type=Path, default=None,
+                    help="H&E tissue masks, for the footprint the lumen "
+                         "densities are divided by. Use whatever the phi run "
+                         "used: a footprint built differently on the two sides "
+                         "means the comparison divides by different denominators.")
     ap.add_argument("--he_dir", type=Path, default=None,
-                    help="Real H&E WSIs, for the footprint the lumen densities "
-                         "are divided by. Required with --real_lumen.")
+                    help="Real H&E WSIs — the fallback footprint source, by "
+                         "thresholding, for a phi run that predates --he_masks.")
     ap.add_argument("--outdir", type=Path, default=Path("calibration_phi"))
 
     ap.add_argument("--prediction", choices=("grand", "fold"), default="grand",
@@ -337,10 +359,10 @@ def main() -> None:
     ap.add_argument("--white_thresh", type=float, default=WHITE_THRESH)
     args = ap.parse_args()
 
-    if args.real_lumen and not args.he_dir:
-        ap.error("--real_lumen needs --he_dir: the lumen densities are per mm2 "
-                 "of the H&E footprint, and without it they are not comparable "
-                 "to the virtual side's")
+    if args.real_lumen and not (args.he_masks or args.he_dir):
+        ap.error("--real_lumen needs --he_masks (or --he_dir): the lumen "
+                 "densities are per mm2 of the H&E footprint, and without it "
+                 "they are not comparable to the virtual side's")
     if not args.real_psr and not args.real_lumen:
         ap.error("give --real_psr, --real_lumen, or both — there is nothing to "
                  "calibrate against otherwise")

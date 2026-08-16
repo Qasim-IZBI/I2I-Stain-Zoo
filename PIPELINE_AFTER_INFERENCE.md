@@ -234,10 +234,18 @@ python aggregate_phi_uncertainty.py --indir .../per_wsi --outdir ... --expect 20
 
 # 3. calibrate, and map
 python calibrate_phi.py --phi_csv .../per_region.csv \
-    --real_lumen /path/lumen_masks_real --he_dir ${HE_DIR} \
+    --real_lumen /path/lumen_masks_real --he_masks ${HE_TISSUE} \
     --real_psr /path/psr_masks/real/psr_masks_wsi_final --outdir ./calibration_phi/
 python plot_uncertainty_heatmap.py --phi_csv .../per_region.csv --downsample 32
 ```
+
+**One footprint everywhere.** `--he_masks` is the same tissue mask
+`apply_he_mask.py` applies to the collagen, filled so internal lumens count as
+inside tissue. Pass it to `make_lumen_masks`, to the φ run and to `calibrate_phi`:
+the enclosure test and every density denominator have to be built the same way on
+both sides, and taking them from a mask rather than a threshold keeps
+`white_thresh` out of the denominator — which is where the threshold sweep showed
+it does most damage.
 
 **The two arms are not equally blocked.** `--real_lumen` scores the three
 H&E-referenced descriptors against the real H&E: the same physical section, so no

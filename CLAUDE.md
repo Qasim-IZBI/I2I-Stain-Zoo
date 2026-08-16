@@ -601,7 +601,7 @@ above half.
 ```bash
 python calibrate_phi.py \
     --phi_csv    ./phi_uncertainty/per_region.csv \
-    --real_lumen /path/lumen_masks_real --he_dir /path/real_he_wsis \
+    --real_lumen /path/lumen_masks_real --he_masks /path/HE_tissue \
     --real_psr   /path/psr_masks/real/psr_masks_wsi_final \
     --outdir     ./calibration_phi/
 ```
@@ -621,7 +621,9 @@ Two arms, independent, either omittable:
   same region id.
 
 Regions come from `--phi_csv` verbatim rather than by rebuilding a grid, so the two
-sides cannot drift apart through a parameter that differs by one.
+sides cannot drift apart through a parameter that differs by one. **Pass the same
+`--he_masks` the φ run used** — a footprint built differently on the two sides means
+the comparison divides by different denominators.
 
 Two conventions that must be stated wherever the numbers are:
 
@@ -911,7 +913,7 @@ sbatch scripts/compute_phi_uncertainty_grid_array.sh # 0-19   one WSI per task
 python aggregate_phi_uncertainty.py --indir .../per_wsi --outdir ... --expect 20
 
 # then the two consumers
-python calibrate_phi.py --phi_csv .../per_region.csv --real_lumen ... --he_dir ...
+python calibrate_phi.py --phi_csv .../per_region.csv --real_lumen ... --he_masks ...
 python plot_uncertainty_heatmap.py --phi_csv .../per_region.csv --downsample 32
 ```
 

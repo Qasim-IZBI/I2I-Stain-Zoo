@@ -1,6 +1,6 @@
 # What the manuscript needs to say
 
-> Written 2026-08-16, against the code at `38c84e0`. A handover from the codebase to
+> Written 2026-08-16, against the code at `7b8134b`. A handover from the codebase to
 > the paper: what changed since the plan, what can be claimed, what cannot, and the
 > conventions a reviewer will otherwise raise. Companion to `CLAUDE.md` (flags) and
 > `PIPELINE_AFTER_INFERENCE.md` (how to run it).
