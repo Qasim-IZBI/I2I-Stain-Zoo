@@ -177,11 +177,18 @@ def phi_for_wsi(
     qc_dir: Optional[Path] = None,
     qc_max_px: int = 0,
     **phi_kwargs,
-) -> np.ndarray:
-    """φ for one WSI across members. Returns [n_members, n_regions, PHI_DIM].
+) -> Tuple[np.ndarray, np.ndarray]:
+    """φ for one WSI across members, plus the per-region tissue fraction.
+
+    Returns ([n_members, n_regions, PHI_DIM], [n_regions]).
 
     A member missing this WSI yields an all-NaN slab rather than being dropped,
     so the member axis stays aligned and the gap is visible downstream.
+
+    tissue_fraction rides along rather than sitting in φ: it is the H&E
+    footprint's coverage, shared by every member and by the reference, so it has
+    no variance to decompose and no error to calibrate. It is still worth
+    reporting, and this is the only place the footprint exists.
     """
     he = load_rgb(he_path) if he_path is not None and Path(he_path).exists() else None
     # WSI-level footprint: a lumen straddling a region boundary is only enclosed
@@ -204,6 +211,12 @@ def phi_for_wsi(
             max_px=qc_max_px,
         )
 
+    tissue_frac = np.array(
+        [float(region.crop(footprint).mean()) if footprint is not None else np.nan
+         for region in regions],
+        dtype=np.float64,
+    )
+
     out = np.full((len(member_dirs), len(regions), PHI_DIM), np.nan, dtype=np.float64)
     for m, mdir in enumerate(member_dirs):
         idx = _stem_index(Path(mdir))
@@ -218,7 +231,7 @@ def phi_for_wsi(
             out[m, r] = phi_struct(
                 lab_crop, he_crop, mpp=mpp, tissue_mask=fp_crop, **phi_kwargs
             )
-    return out
+    return out, tissue_frac
 
 
 def phi_over_ensemble(
@@ -231,14 +244,16 @@ def phi_over_ensemble(
     qc_dir: Optional[Path] = None,
     qc_max_px: int = 0,
     region_mm: float = 1.5,
+    region_px: Optional[int] = None,
     mpp: float,
     min_tissue_fraction: float = 0.25,
     **phi_kwargs,
 ) -> Tuple[np.ndarray, List[Region], List[Path]]:
     """φ for every WSI and member under one ensemble root.
 
-    Returns (phi, regions, member_dirs) with phi [n_members, n_regions_total, d]
-    and `regions` flattened across WSIs in the same order as the second axis.
+    Returns (phi, regions, member_dirs, tissue_fraction) with phi
+    [n_members, n_regions_total, d], `regions` flattened across WSIs in the same
+    order as the second axis, and tissue_fraction [n_regions_total].
 
     The region grid is built once per WSI from the *first available* member's
     mask, so all members are scored on identical boxes — a per-member grid would
@@ -252,6 +267,7 @@ def phi_over_ensemble(
     roi_index = _stem_index(Path(roi_dir)) if roi_dir else {}
 
     all_phi: List[np.ndarray] = []
+    all_tissue: List[np.ndarray] = []
     all_regions: List[Region] = []
     roi_missing: List[str] = []
 
@@ -261,7 +277,8 @@ def phi_over_ensemble(
         wsi_stem, _, _ = wsi_extent(csv_path)
         wsi_stem = Path(wsi_stem).stem
 
-        grid = region_grid(csv_path, region_mm=region_mm, mpp=mpp)
+        grid = region_grid(csv_path, region_mm=region_mm, mpp=mpp,
+                           region_px=region_px)
         if not grid:
             continue
 
@@ -295,12 +312,13 @@ def phi_over_ensemble(
             if not grid:
                 continue
 
-        block = phi_for_wsi(
+        block, tissue_frac = phi_for_wsi(
             member_dirs, wsi_stem, grid,
             he_path=he_index.get(wsi_stem), mpp=mpp, qc_dir=qc_dir,
             qc_max_px=qc_max_px, **phi_kwargs,
         )
         all_phi.append(block)
+        all_tissue.append(tissue_frac)
         all_regions.extend(grid)
 
     if not all_phi:
@@ -316,7 +334,8 @@ def phi_over_ensemble(
         print(f"[WARN] {len(roi_missing)} WSI(s) excluded for a missing ROI mask: "
               f"{', '.join(roi_missing)}")
 
-    return np.concatenate(all_phi, axis=1), all_regions, member_dirs
+    return (np.concatenate(all_phi, axis=1), all_regions, member_dirs,
+            np.concatenate(all_tissue))
 
 
 def mean_and_variance(phi: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:

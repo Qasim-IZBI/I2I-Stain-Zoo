@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, List, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -81,8 +81,16 @@ def region_grid_from_extent(
     region_mm: float = 1.5,
     mpp: float = SOURCE_MPP,
     drop_partial: bool = True,
+    region_px: Optional[int] = None,
 ) -> List[Region]:
     """Non-overlapping grid of ~`region_mm` square regions over one WSI.
+
+    `region_px` overrides `region_mm` and fixes the side in pixels exactly. Sizes
+    are in millimetres by default because reconstructions sit at the source
+    resolution rather than the one the model consumed, and a pixel count silently
+    means a different physical scale on a different cohort. Pass `region_px` only
+    when the pixel grid itself matters — tiling a heatmap overlay, where a
+    fractional region would leave a seam.
 
     Takes the extent directly, for the arms that never get tiled. The real SR is
     evaluated whole-slide — there is no `tiles_metadata.csv` for it and creating
@@ -101,7 +109,7 @@ def region_grid_from_extent(
     row/column of regions, but do not compare a run built one way against a run
     built the other.
     """
-    side = int(round(region_mm * 1000.0 / mpp))
+    side = int(region_px) if region_px else int(round(region_mm * 1000.0 / mpp))
     if side < 1:
         raise ValueError(f"region_mm={region_mm} at mpp={mpp} gives a {side}px region")
 
@@ -123,11 +131,12 @@ def region_grid(
     region_mm: float = 1.5,
     mpp: float = SOURCE_MPP,
     drop_partial: bool = True,
+    region_px: Optional[int] = None,
 ) -> List[Region]:
     """`region_grid_from_extent` for a tiled dataset, sized from its metadata."""
     wsi, h, w = wsi_extent(metadata_csv)
     return region_grid_from_extent(wsi, h, w, region_mm=region_mm, mpp=mpp,
-                                   drop_partial=drop_partial)
+                                   drop_partial=drop_partial, region_px=region_px)
 
 
 def filter_by_tissue(

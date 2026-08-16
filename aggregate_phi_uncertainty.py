@@ -39,6 +39,7 @@ POOL_CRITICAL = (
     "roi_dir",
     "min_roi_fraction",
     "region_mm",
+    "region_px",
     "mpp",
     "min_tissue_fraction",
     "min_object_px",

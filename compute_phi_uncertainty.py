@@ -43,7 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -54,11 +54,31 @@ from uncertainty_phi.ensemble import mean_and_variance, phi_over_ensemble
 from uncertainty_phi.regions import SOURCE_MPP, region_area_mm2
 
 
+def _finite(v) -> Optional[float]:
+    """None rather than NaN, so the CSV reads as missing instead of as a value."""
+    v = float(v)
+    return v if np.isfinite(v) else None
+
+
+def _sd(per_dim, i: int, j: int) -> Optional[float]:
+    """SD from a variance component, or None where it is not defined.
+
+    Negative variance is a real outcome of the ANOVA estimator when the true
+    component is near zero, and it is reported rather than clipped elsewhere —
+    but there is no SD for it, so this returns None instead of a NaN that would
+    read as a failed computation.
+    """
+    if per_dim is None:
+        return None
+    v = float(per_dim[i, j])
+    return float(np.sqrt(v)) if np.isfinite(v) and v >= 0 else None
+
+
 def _collect(roots: List[Path], args) -> tuple:
     """φ for each ensemble root, on a shared region grid."""
-    blocks, regions_ref, members = [], None, []
+    blocks, regions_ref, members, tissue_ref = [], None, [], None
     for root in roots:
-        phi, regions, member_dirs = phi_over_ensemble(
+        phi, regions, member_dirs, tissue_frac = phi_over_ensemble(
             root,
             Path(args.tiles_metadata),
             he_dir=Path(args.he_dir) if args.he_dir else None,
@@ -67,6 +87,7 @@ def _collect(roots: List[Path], args) -> tuple:
             qc_max_px=args.qc_max_px,
             min_roi_fraction=args.min_roi_fraction,
             region_mm=args.region_mm,
+            region_px=args.region_px,
             mpp=args.mpp,
             min_tissue_fraction=args.min_tissue_fraction,
             min_object_px=args.min_object_px,
@@ -74,7 +95,7 @@ def _collect(roots: List[Path], args) -> tuple:
             white_thresh=args.white_thresh,
         )
         if regions_ref is None:
-            regions_ref = regions
+            regions_ref, tissue_ref = regions, tissue_frac
         elif len(regions) != len(regions_ref):
             raise SystemExit(
                 f"fold {root} produced {len(regions)} regions but the first fold "
@@ -83,7 +104,7 @@ def _collect(roots: List[Path], args) -> tuple:
             )
         blocks.append(phi)
         members.append([str(m) for m in member_dirs])
-    return blocks, regions_ref, members
+    return blocks, regions_ref, members, tissue_ref
 
 
 def main() -> None:
@@ -117,6 +138,13 @@ def main() -> None:
 
     ap.add_argument("--region_mm", type=float, default=1.5,
                     help="Region side in mm (section 4.2 recommends 1-2). [%(default)s]")
+    ap.add_argument("--region_px", type=int, default=None,
+                    help="Region side in PIXELS, overriding --region_mm. Sizes "
+                         "are in mm by default because reconstructions sit at "
+                         "the source resolution and a pixel count means a "
+                         "different physical scale on a different cohort. Use "
+                         "this only where the pixel grid itself matters, e.g. "
+                         "2048 for a seamless heatmap overlay.")
     ap.add_argument("--mpp", type=float, default=SOURCE_MPP,
                     help="Microns per pixel OF THE RECONSTRUCTION. [%(default)s]")
     ap.add_argument("--min_tissue_fraction", type=float, default=0.25,
@@ -150,7 +178,7 @@ def main() -> None:
         if not Path(r).is_dir():
             raise SystemExit(f"not a directory: {r}")
 
-    blocks, regions, members = _collect(roots, args)
+    blocks, regions, members, tissue_frac = _collect(roots, args)
     comps = decompose(blocks)
 
     # mu / Var pooled across every member of every fold
@@ -175,9 +203,27 @@ def main() -> None:
             "var_total_anova": float(comps.total[i]),
             "procedural": float(comps.procedural[i]),
             "data_exposure": None if comps.data is None else float(comps.data[i]),
+            # H&E footprint coverage: no variance and no error, so it is not a
+            # phi component, but it is the QC number for a thin region
+            "tissue_fraction": (None if tissue_frac is None
+                                else float(tissue_frac[i])),
         }
         for j, name in enumerate(PHI_NAMES):
             row[f"mu_{name}"] = float(mu[i, j])
+            # Per-descriptor SDs are what calibration pairs with |error|; the
+            # summed scalars above cannot be matched to a single descriptor.
+            row[f"sd_total_{name}"] = _sd(comps.total_per_dim, i, j)
+            row[f"sd_procedural_{name}"] = _sd(comps.procedural_per_dim, i, j)
+            row[f"sd_data_{name}"] = _sd(comps.data_per_dim, i, j)
+        for f, block in enumerate(blocks):
+            # per-fold mu and sd: the subset-level prediction, whose error pairs
+            # with procedural spread alone
+            with np.errstate(invalid="ignore"):
+                fold_mu = np.nanmean(block[:, i, :], axis=0)
+                fold_sd = np.nanstd(block[:, i, :], axis=0, ddof=1)
+            for j, name in enumerate(PHI_NAMES):
+                row[f"fold{f + 1}_mu_{name}"] = _finite(fold_mu[j])
+                row[f"fold{f + 1}_sd_{name}"] = _finite(fold_sd[j])
         rows.append(row)
 
     per_region = args.outdir / "per_region.csv"
@@ -209,6 +255,7 @@ def main() -> None:
             "qc_max_px": args.qc_max_px if args.qc_dir else None,
             "min_roi_fraction": args.min_roi_fraction if args.roi_dir else None,
             "region_mm": args.region_mm,
+            "region_px": args.region_px,
             "mpp": args.mpp,
             "min_tissue_fraction": args.min_tissue_fraction,
             "min_object_px": args.min_object_px,

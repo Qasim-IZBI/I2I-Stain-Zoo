@@ -336,9 +336,12 @@ class TestWhiteThresh:
         tifffile.imwrite(str(he_path), he)
 
         regions = [Region(wsi="s", index=0, y0=0, y1=60, x0=0, x1=60)]
-        out = phi_for_wsi([member], "s", regions, he_path=he_path, mpp=0.221,
-                          white_thresh=0.70)
+        out, tissue_frac = phi_for_wsi([member], "s", regions, he_path=he_path,
+                                       mpp=0.221, white_thresh=0.70)
         assert out[0, 0, 4] == pytest.approx(100 / 1600, rel=1e-6)
+        # rides alongside phi rather than inside it
+        assert tissue_frac.shape == (len(regions),)
+        assert 0.0 <= tissue_frac[0] <= 1.0
 
 
 class TestGridWithoutTiling:
