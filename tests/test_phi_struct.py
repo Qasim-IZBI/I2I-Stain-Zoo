@@ -535,3 +535,55 @@ class TestLumenTopology:
         v = phi_struct(np.ones((40, 40), np.uint8), None, mpp=1.0)
         assert np.isnan(v[4:]).all()
         assert np.isfinite(v[0])
+
+
+class TestPrecomputedLumen:
+    """phi_struct takes a lumen mask from make_lumen_masks.py, not just RGB.
+
+    The mask is member-specific, so the RGB path would load several GB fifty
+    times per slide. It is also cleaned once per slide, which is what keeps
+    lumen_fraction and the Betti numbers measuring the same object.
+    """
+
+    @staticmethod
+    def _case():
+        lum = np.zeros((100, 100), bool)
+        lum[20:40, 20:40] = True          # one 20x20 lumen
+        lum[60, 60] = True                # one speck
+        return lum, np.ones((100, 100), bool)
+
+    def test_precomputed_matches_thresholding_the_same_image(self):
+        from uncertainty_phi.descriptors import (
+            he_tissue_footprint, lumen_mask, phi_struct,
+        )
+
+        he = np.full((100, 140, 3), 150, np.uint8)
+        he[30:50, 30:50] = 250
+        fp = he_tissue_footprint(he, white_thresh=0.70)
+        labels = np.ones(he.shape[:2], np.uint8)
+
+        from_rgb = phi_struct(labels, he, mpp=1.0, tissue_mask=fp, white_thresh=0.70)
+        lum, _ = lumen_mask(he, fp, 0.70)
+        from_mask = phi_struct(labels, None, mpp=1.0, tissue_mask=fp, lumen=lum)
+        np.testing.assert_allclose(from_rgb[4:], from_mask[4:], rtol=1e-12)
+
+    def test_area_and_topology_see_the_same_cleaned_mask(self):
+        """The bug this closes: cleaning inside phi_struct left lumen_fraction on
+        the raw mask while betti ran on the cleaned one, so a speck counted for
+        area but not for beta0."""
+        from uncertainty_phi.descriptors import clean_mask, phi_struct
+
+        lum, fp = self._case()
+        cleaned = clean_mask(lum, 64, 0)          # drops the single-pixel speck
+        v = phi_struct(np.ones((100, 100), np.uint8), None, mpp=1.0,
+                       tissue_mask=fp, lumen=cleaned)
+        assert v[4] == pytest.approx(400 / 10000)   # area of the 20x20 only
+        assert v[5] == pytest.approx(1 / (10000 * 1e-6))  # exactly one component
+
+    def test_lumen_overrides_rgb_when_both_are_given(self):
+        from uncertainty_phi.descriptors import phi_struct
+        lum, fp = self._case()
+        he = np.full((100, 100, 3), 250, np.uint8)   # would be all-bright
+        v = phi_struct(np.ones((100, 100), np.uint8), he, mpp=1.0,
+                       tissue_mask=fp, lumen=lum)
+        assert v[4] < 0.05          # the mask won, not the all-white RGB

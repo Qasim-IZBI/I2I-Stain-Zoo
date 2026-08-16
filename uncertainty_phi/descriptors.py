@@ -277,6 +277,8 @@ def phi_struct(
     sigma: float = 2.0,
     white_thresh: float = WHITE_THRESH,
     tissue_mask: Optional[np.ndarray] = None,
+    lumen: Optional[np.ndarray] = None,
+    lumen_min_px: int = 0,
     label_tissue: int = LABEL_TISSUE,
     label_psr: int = LABEL_PSR,
 ) -> np.ndarray:
@@ -322,21 +324,34 @@ def phi_struct(
 
     out[3] = regional_dispersion(collagen, sigma=sigma)
 
-    if he_rgb is not None:
+    # The lumen mask comes either precomputed (the pipeline, via
+    # make_lumen_masks.py) or straight from an RGB crop (tests, one-off calls).
+    # Precomputed is preferred: it is cleaned once per slide rather than once
+    # per region, and the identical mask feeds both the area and the topology.
+    if lumen is not None:
+        lum = np.asarray(lumen, dtype=bool)
+        footprint = (np.asarray(tissue_mask, dtype=bool)
+                     if tissue_mask is not None else np.ones_like(lum))
+    elif he_rgb is not None:
         lum, footprint = lumen_mask(he_rgb, tissue_mask, white_thresh)
-        n_footprint = int(np.count_nonzero(footprint))
-        if n_footprint:
-            out[4] = float(np.count_nonzero(lum) / n_footprint)
+        if lumen_min_px > 1:
+            lum = clean_mask(lum, lumen_min_px, 0)
+    else:
+        return out
 
-            # Lumen densities are per mm2 of the H&E FOOTPRINT, not of the
-            # label mask's tissue. The footprint is the one denominator
-            # available on both sides: the virtual side has generated collagen
-            # labels, the reference side is the real H&E with no labels at all,
-            # and a density is only comparable if its denominator is.
-            footprint_mm2 = n_footprint * (mpp ** 2) / 1e6
-            if footprint_mm2 > 0:
-                lb0, lb1 = betti(clean_mask(lum, min_object_px, closing_px))
-                out[5] = lb0 / footprint_mm2
-                out[6] = lb1 / footprint_mm2
+    n_footprint = int(np.count_nonzero(footprint))
+    if n_footprint:
+        out[4] = float(np.count_nonzero(lum) / n_footprint)
+
+        # Lumen densities are per mm2 of the H&E FOOTPRINT, not of the label
+        # mask's tissue. The footprint is the one denominator available on both
+        # sides: the virtual side has generated collagen labels, the reference
+        # side is the real H&E with no labels at all, and a density is only
+        # comparable if its denominator is.
+        footprint_mm2 = n_footprint * (mpp ** 2) / 1e6
+        if footprint_mm2 > 0:
+            lb0, lb1 = betti(lum)
+            out[5] = lb0 / footprint_mm2
+            out[6] = lb1 / footprint_mm2
 
     return out

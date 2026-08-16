@@ -21,6 +21,7 @@ Two cautions carried over from the strategy work:
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
@@ -117,7 +118,12 @@ def decompose(phi: Sequence[np.ndarray]) -> VarianceComponents:
     n_folds = len(folds)
     counts = np.array([f.shape[0] for f in folds], dtype=np.float64)
 
-    with np.errstate(invalid="ignore"):
+    # A region where every member is NaN is "not computable here", which is the
+    # intended outcome for background — not a condition to warn about, and at
+    # twenty slides it would bury the log. errstate does not cover these: they
+    # are Python warnings from the nan-reductions, not numpy FP errors.
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
         # per-fold seed mean and *unbiased* seed variance: [n_folds, n_regions, d]
         fold_means = np.stack([np.nanmean(f, axis=0) for f in folds], axis=0)
         fold_vars = np.stack(

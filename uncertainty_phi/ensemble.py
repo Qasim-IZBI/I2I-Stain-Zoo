@@ -18,6 +18,7 @@ images (uncertainty_strategy.md §2.1).
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -173,6 +174,7 @@ def phi_for_wsi(
     regions: List[Region],
     *,
     he_path: Optional[Path] = None,
+    lumen_dirs: Optional[Sequence[Path]] = None,
     mpp: float,
     qc_dir: Optional[Path] = None,
     qc_max_px: int = 0,
@@ -224,13 +226,29 @@ def phi_for_wsi(
         if mpath is None:
             continue
         labels = load_label_mask(mpath)
+
+        # Per-member lumen, precomputed by make_lumen_masks.py. Reading a mask
+        # rather than thresholding the member's RGB here is the whole point of
+        # that stage: the lumen is member-specific, so the RGB path would load
+        # several GB fifty times per slide.
+        member_lumen = None
+        if lumen_dirs is not None:
+            lpath = _stem_index(Path(lumen_dirs[m])).get(wsi_stem)
+            if lpath is not None:
+                member_lumen = load_label_mask(lpath) > 0
         for r, region in enumerate(regions):
             lab_crop = region.crop(labels)
-            he_crop = region.crop(he) if he is not None else None
             fp_crop = region.crop(footprint) if footprint is not None else None
-            out[m, r] = phi_struct(
-                lab_crop, he_crop, mpp=mpp, tissue_mask=fp_crop, **phi_kwargs
-            )
+            if member_lumen is not None:
+                out[m, r] = phi_struct(
+                    lab_crop, None, mpp=mpp, tissue_mask=fp_crop,
+                    lumen=region.crop(member_lumen), **phi_kwargs
+                )
+            else:
+                out[m, r] = phi_struct(
+                    lab_crop, region.crop(he) if he is not None else None,
+                    mpp=mpp, tissue_mask=fp_crop, **phi_kwargs
+                )
     return out, tissue_frac
 
 
@@ -239,6 +257,7 @@ def phi_over_ensemble(
     tiles_metadata_root: Path,
     *,
     he_dir: Optional[Path] = None,
+    lumen_root: Optional[Path] = None,
     roi_dir: Optional[Path] = None,
     min_roi_fraction: float = 0.5,
     qc_dir: Optional[Path] = None,
@@ -262,6 +281,17 @@ def phi_over_ensemble(
     member_dirs = discover_ensemble_dirs(Path(ensemble_root))
     if not member_dirs:
         raise FileNotFoundError(f"no model_* directories under {ensemble_root}")
+
+    lumen_dirs = None
+    if lumen_root is not None:
+        lumen_dirs = discover_ensemble_dirs(Path(lumen_root))
+        if len(lumen_dirs) != len(member_dirs):
+            raise FileNotFoundError(
+                f"{lumen_root} holds {len(lumen_dirs)} model_* directories but "
+                f"{ensemble_root} holds {len(member_dirs)} — member m must be "
+                f"the same model in both, so a mismatch would pair one member's "
+                f"collagen with another's lumen"
+            )
 
     he_index = _stem_index(Path(he_dir)) if he_dir else {}
     roi_index = _stem_index(Path(roi_dir)) if roi_dir else {}
@@ -314,8 +344,8 @@ def phi_over_ensemble(
 
         block, tissue_frac = phi_for_wsi(
             member_dirs, wsi_stem, grid,
-            he_path=he_index.get(wsi_stem), mpp=mpp, qc_dir=qc_dir,
-            qc_max_px=qc_max_px, **phi_kwargs,
+            he_path=he_index.get(wsi_stem), lumen_dirs=lumen_dirs, mpp=mpp,
+            qc_dir=qc_dir, qc_max_px=qc_max_px, **phi_kwargs,
         )
         all_phi.append(block)
         all_tissue.append(tissue_frac)
@@ -351,6 +381,8 @@ def mean_and_variance(phi: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     p = np.asarray(phi, dtype=np.float64)
     if p.ndim != 3:
         raise ValueError(f"expected [n_members, n_regions, d], got {p.shape}")
+    # an all-NaN region is background, not an error worth warning about
+    warnings.simplefilter("ignore", RuntimeWarning)
     with np.errstate(invalid="ignore"):
         mu = np.nanmean(p, axis=0)
         var = np.nanmean(np.nansum((p - mu[None]) ** 2, axis=2), axis=0)

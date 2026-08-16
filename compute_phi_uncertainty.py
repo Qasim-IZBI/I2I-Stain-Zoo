@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import warnings
 from pathlib import Path
 from typing import List, Optional
 
@@ -82,6 +83,7 @@ def _collect(roots: List[Path], args) -> tuple:
             root,
             Path(args.tiles_metadata),
             he_dir=Path(args.he_dir) if args.he_dir else None,
+            lumen_root=Path(args.lumen_root) if args.lumen_root else None,
             roi_dir=Path(args.roi_dir) if args.roi_dir else None,
             qc_dir=Path(args.qc_dir) if args.qc_dir else None,
             qc_max_px=args.qc_max_px,
@@ -124,6 +126,13 @@ def main() -> None:
     ap.add_argument("--he_dir", type=Path, default=None,
                     help="Reconstructed H&E WSIs. Without it the two floor-free "
                          "geometric descriptors are NaN.")
+    ap.add_argument("--lumen_root", type=Path, default=None,
+                    help="Per-member lumen masks from make_lumen_masks.py, laid "
+                         "out as model_NN/ exactly like --ensemble/--fold. With "
+                         "it the three lumen descriptors come from each member's "
+                         "own generated stain; without it they fall back to "
+                         "thresholding --he_dir, which is member-independent and "
+                         "so carries no variance to calibrate.")
     ap.add_argument("--roi_dir", type=Path, default=None,
                     help="Per-WSI binary masks (<stem>.tif) restricting the "
                          "analysis to an anatomical compartment — cortex on the "
@@ -218,7 +227,9 @@ def main() -> None:
         for f, block in enumerate(blocks):
             # per-fold mu and sd: the subset-level prediction, whose error pairs
             # with procedural spread alone
-            with np.errstate(invalid="ignore"):
+            with np.errstate(invalid="ignore"), warnings.catch_warnings():
+                # background regions are all-NaN by design
+                warnings.simplefilter("ignore", RuntimeWarning)
                 fold_mu = np.nanmean(block[:, i, :], axis=0)
                 fold_sd = np.nanstd(block[:, i, :], axis=0, ddof=1)
             for j, name in enumerate(PHI_NAMES):
@@ -250,6 +261,7 @@ def main() -> None:
             "members_per_fold": members,
             "tiles_metadata": str(args.tiles_metadata),
             "he_dir": str(args.he_dir) if args.he_dir else None,
+            "lumen_root": str(args.lumen_root) if args.lumen_root else None,
             "roi_dir": str(args.roi_dir) if args.roi_dir else None,
             "qc_dir": str(args.qc_dir) if args.qc_dir else None,
             "qc_max_px": args.qc_max_px if args.qc_dir else None,

@@ -36,6 +36,7 @@ import pandas as pd
 POOL_CRITICAL = (
     "roots",
     "he_dir",
+    "lumen_root",
     "roi_dir",
     "min_roi_fraction",
     "region_mm",
