@@ -49,6 +49,13 @@ gate can come back saying "no headroom here".
 > still describes how to run branch B, because the kidney arm and any cohort with
 > a second PSR level need it.
 
+> **And branch A gained a second half.** Quantifying the spread does not show it
+> is *meaningful* — a reviewer will ask whether low variance means correct. §3a
+> calibrates the spread against φ_struct of the real tissue, per descriptor. The
+> lumen half of that is referenced to the real H&E, the same physical section the
+> model generated from, so it carries no floor and no frame question and can be
+> run today.
+
 **So: run the uncertainty branch while you resolve the bias gates.** Do not
 sequence them one after the other; the first does not depend on the second.
 
@@ -207,6 +214,50 @@ data_exposure`.
 
 `summary.json` reports `"bias": {"computed": false}` by design. Bias is branch B and
 has not passed its gates.
+
+### 3a. Does the spread predict the error?
+
+Ensemble spread measures disagreement between members, not error, and the BMVC
+2026 result is that cycle-reconstruction error does not calibrate it. This scores
+the spread against an external target — φ_struct of the real tissue.
+
+```bash
+# 1. lumen masks: the virtual side per member, then the reference from the H&E
+sbatch scripts/make_lumen_masks_grid.sh
+python make_lumen_masks.py --rgb_dir ${HE_DIR} --he_dir ${HE_DIR} \
+    --white_thresh 0.65 --min_object_px 64 --outdir /path/lumen_masks_real
+
+# 2. phi with the per-member lumen, on a pixel grid the heatmap can tile
+sbatch --export=ALL,WHITE_THRESH=0.65,LUMEN_ROOT=...,REGION_PX=2048 \
+    scripts/compute_phi_uncertainty_grid_array.sh
+python aggregate_phi_uncertainty.py --indir .../per_wsi --outdir ... --expect 20
+
+# 3. calibrate, and map
+python calibrate_phi.py --phi_csv .../per_region.csv \
+    --real_lumen /path/lumen_masks_real --he_dir ${HE_DIR} \
+    --real_psr /path/psr_masks/real/psr_masks_wsi_final --outdir ./calibration_phi/
+python plot_uncertainty_heatmap.py --phi_csv .../per_region.csv --downsample 32
+```
+
+**The two arms are not equally blocked.** `--real_lumen` scores the three
+H&E-referenced descriptors against the real H&E: the same physical section, so no
+level offset, no floor, and the same coordinate frame the virtual run used.
+`--real_psr` scores the four collagen descriptors against the real SR, which is
+only paired correctly if that SR was resampled onto the H&E grid — `calibrate_phi`
+checks the geometry and exits rather than scoring different tissue under the same
+region id. Run the lumen arm first; it is unblocked.
+
+**Read ρ, not the ECE.** ρ(σ, |error|) is the claim that survives noise in the
+reference — a floor or a registration offset attenuates it toward zero, so a
+positive value is conservative. E|z|/0.80 is the scale: above 1 the ensemble is
+over-confident, errors exceeding its own spread. The normalised ECE is reported for
+continuity with the BMVC pipeline but cannot distinguish a calibrated ensemble from
+an uninformative one on synthetic data.
+
+**Run it twice.** `--prediction grand` pairs the mean of all 50 members with the
+total spread; `--prediction fold` pairs each subset's mean with its procedural
+spread alone. Whether the first calibrates better than the second is the
+data-exposure claim, and a flat seed-only ensemble cannot pose it.
 
 ### The kidney run is cortex-only
 

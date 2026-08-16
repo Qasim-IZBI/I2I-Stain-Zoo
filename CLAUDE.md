@@ -398,10 +398,23 @@ replacement: that one is per-tile per-pixel and produced the BMVC numbers, but
 
 φ_struct is six marginal statistics of a ~1–2 mm region, in two reference classes:
 
-| Component | Reference | Pays the floor |
-|---|---|---|
-| `task_specific_value` (CPA), `beta0_per_mm2`, `beta1_per_mm2`, `regional_dispersion` | real PSR, level B | yes |
-| `lumen_fraction`, `tissue_fraction` | H&E input, level A | **no** |
+| Component | Read from | Reference | Pays the floor |
+|---|---|---|---|
+| `task_specific_value` (CPA), `beta0_per_mm2`, `beta1_per_mm2`, `regional_dispersion` | the member's collagen mask | real PSR, level B | yes |
+| `lumen_fraction`, `beta0_lumen_per_mm2`, `beta1_lumen_per_mm2` | the member's **generated SR**, thresholded inside the H&E footprint | real H&E, level A — the *same physical section* | **no** |
+
+`tissue_fraction` is **not** in the vector. It is the H&E footprint's coverage,
+shared by every member and by the reference, so it has zero variance *and* zero
+error — nothing to decompose and nothing to calibrate. It is still written to
+`per_region.csv` as a QC column.
+
+`beta1_lumen_per_mm2` is the direct test of the §5.3 lumen-filler failure: a model
+that paints collagen over vessels keeps the whitespace area roughly and loses the
+loops, which area alone cannot see.
+
+Lumen densities are per mm² of the **H&E footprint**, not of the label mask's
+tissue. The reference side is the real H&E and has no collagen labels at all, and a
+density is only comparable if its denominator is.
 
 ```bash
 # One ensemble -> procedural uncertainty only
@@ -434,8 +447,26 @@ variogram floor assumes. `--min_roi_fraction` (default 0.5) thresholds on
 measurement. A WSI with no matching mask is **excluded and warned about**, never
 passed through whole: a missing case is recoverable, a contaminated one is not.
 
-Outputs `per_region.csv` (μ per descriptor, Var, procedural, data_exposure) and
-`summary.json` (aggregates, reference classes, parameter record).
+Outputs `per_region.csv` and `summary.json` (aggregates, reference classes,
+parameter record). Per region the CSV carries:
+
+| column | what |
+|---|---|
+| `mu_<name>` | ensemble mean, the point prediction |
+| `sd_total_<name>` / `sd_procedural_<name>` / `sd_data_<name>` | per-descriptor spread — what calibration pairs with an error |
+| `foldN_mu_<name>` / `foldN_sd_<name>` | the subset-level prediction, one per training subset |
+| `var_total_descriptor_space`, `var_total_anova`, `procedural`, `data_exposure` | the summed scalars |
+| `tissue_fraction` | QC only — H&E footprint coverage |
+| `y0/y1/x0/x1`, `area_mm2` | the region box, which the heatmap and the calibration reuse verbatim |
+
+A negative variance component is a real ANOVA outcome near zero and is reported
+rather than clipped, but it has no square root, so its `sd_` column is empty
+rather than NaN.
+
+`--region_px` fixes the region side in pixels exactly, overriding `--region_mm`.
+Sizes are in mm by default because reconstructions sit at source resolution and a
+pixel count means a different physical scale on a different cohort; use it where
+the pixel grid itself matters, i.e. a seamless heatmap.
 
 `per_region.csv` carries **two** totals and they are not the same number.
 `var_total_descriptor_space` is the pooled plug-in variance over every member of
@@ -527,6 +558,103 @@ Notes that will bite otherwise:
   the go/no-go signal that the discrepancy has sunk into the floor.
 - Bias against a real target is **not** computed yet: it needs the floor measured (§7)
   and, for kidney, the liver-trained segmenter validated out of distribution (§6.2).
+
+#### Lumen masks — the stage before φ
+
+The three H&E-referenced descriptors are read from each member's **generated SR**,
+so they are member-specific. `phi_for_wsi` loads the H&E once per WSI, outside the
+member loop, and doing this inline would mean several GB of RGB fifty times per
+slide. So it is a pipeline stage, in the shape of segment → clean → fill:
+
+```bash
+sbatch scripts/make_lumen_masks_grid.sh        # --array=0-49, the virtual side
+
+# the reference side is a single run: the real H&E against its own footprint
+python make_lumen_masks.py --rgb_dir ${HE_DIR} --he_dir ${HE_DIR} \
+    --white_thresh 0.65 --min_object_px 64 --outdir /path/lumen_masks_real
+```
+
+Then `compute_phi_uncertainty.py --lumen_root .../lumen_masks` consumes
+`model_NN/` directories in parallel with the collagen ones. Member *m* must be the
+same model in both; a count mismatch is refused rather than pairing one member's
+collagen with another's lumen.
+
+**The footprint always comes from the H&E, never from thresholding the SR.** On the
+SR the footprint fails at both ends of the sweep — eroding into tissue below ~0.60,
+swallowing the slide background above ~0.70 — while the H&E is stable across
+0.500–0.675. Enclosure from the stable image, brightness from the image under test.
+
+**`--min_object_px` removes speckle once per slide, not per region**, and must be
+identical on both arms (the rule §5.4.4 already imposes on collagen). Cleaning per
+region would leave `lumen_fraction` measured on the raw mask while β₀/β₁ were
+measured on a cleaned one — area and topology disagreeing about what a lumen is.
+The default 64 px is ~3.1 µm² at 0.221 µm/px, i.e. speckle; a 10 µm capillary is
+~1600 px. Each run reports what fraction of raw lumen area it removed and warns
+above half.
+
+#### Calibration — does the spread predict the error?
+
+```bash
+python calibrate_phi.py \
+    --phi_csv    ./phi_uncertainty/per_region.csv \
+    --real_lumen /path/lumen_masks_real --he_dir /path/real_he_wsis \
+    --real_psr   /path/psr_masks/real/psr_masks_wsi_final \
+    --outdir     ./calibration_phi/
+```
+
+Ensemble spread measures disagreement between members, not error. The BMVC 2026
+result is that cycle error does not calibrate it; this asks the same question of an
+external target. Per descriptor: Spearman ρ(σ, |error|), E|z| where z = |error|/σ,
+a reliability curve, and a normalised ECE.
+
+Two arms, independent, either omittable:
+
+- `--real_lumen` scores the three H&E-referenced terms against the real H&E. Same
+  physical section, so **no floor and no frame question** — this arm runs today.
+- `--real_psr` scores the four collagen terms against the real SR. Region *r* is
+  only the same tissue if the SR was resampled onto the H&E grid; the geometry is
+  checked and a mismatch **exits** rather than scoring different tissue under the
+  same region id.
+
+Regions come from `--phi_csv` verbatim rather than by rebuilding a grid, so the two
+sides cannot drift apart through a parameter that differs by one.
+
+Two conventions that must be stated wherever the numbers are:
+
+- **σ is a predictive SD** — the spread of members, not the standard error of the
+  mean. σ/√50 would be tiny and the test would collapse into a test of bias.
+- **Reliability is absolute, and the line is E|e| = 0.80σ, not the diagonal.** For
+  Gaussian error the mean absolute deviation is σ·√(2/π), so a diagonal would call
+  a perfectly calibrated ensemble 20% over-confident. `reliability_bins` in
+  `uncertainty_calibration.py` min-max normalises both axes because *pixel*
+  uncertainty and *pixel* error carry different units; σ_CPA and |ΔCPA| are both in
+  CPA, so normalising here would discard exactly what makes this stronger. The
+  normalised ECE is reported for continuity but on synthetic data reads ~0.35
+  whether the ensemble is calibrated, over-confident or useless — do not lead with
+  it.
+
+`--prediction grand` pairs the mean of all 50 with the total spread (the deployed
+prediction); `--prediction fold` pairs each subset's mean with its procedural spread
+alone. Comparing them is the data-exposure claim, which a flat seed-only ensemble
+cannot pose.
+
+#### Uncertainty heatmaps
+
+```bash
+python plot_uncertainty_heatmap.py --phi_csv ./phi_uncertainty/per_region.csv \
+    --downsample 32 --outdir ./uncertainty_heatmaps/
+```
+
+One PNG per slide (σ on the top row, σ/μ below, one column per descriptor) plus a
+float32 TIF per descriptor for overlaying in Fiji or QuPath, carrying its geometry
+in the TIFF description. Pair with `--region_px 2048` on the φ run so the blocks
+tile without a seam.
+
+**Read both rows.** σ for a count-based descriptor rises with how much structure a
+region holds, so a raw σ map can be a collagen-density map wearing an uncertainty
+label; σ/μ divides that out. Three states stay distinct: blank = the tissue filter
+dropped that region (an absent measurement is not a low one), "constant" = the
+descriptor has no spread at all, and a colour ramp only where there is real range.
 
 #### Choosing `--white_thresh` — the plateau, not a guess
 
@@ -764,12 +892,23 @@ sbatch scripts/apply_he_mask_grid.sh                 # 0-49
 sbatch scripts/fill_tissue_holes_grid.sh             # 0-49   -> wsi_masks_final/
 ```
 
+Lumen masks first, if the H&E-referenced descriptors are wanted (they are what
+the calibration study scores):
+
+```bash
+sbatch scripts/make_lumen_masks_grid.sh              # 0-49   -> lumen_masks/
+```
+
 Then φ_struct over the finished grid, either in one job or one per WSI:
 
 ```bash
 sbatch scripts/compute_phi_uncertainty_grid.sh       # all folds, all WSIs, one job
 sbatch scripts/compute_phi_uncertainty_grid_array.sh # 0-19   one WSI per task
 python aggregate_phi_uncertainty.py --indir .../per_wsi --outdir ... --expect 20
+
+# then the two consumers
+python calibrate_phi.py --phi_csv .../per_region.csv --real_lumen ... --he_dir ...
+python plot_uncertainty_heatmap.py --phi_csv .../per_region.csv --downsample 32
 ```
 
 These two are **not** part of the shared decomposition above: they split over WSIs,
@@ -1191,4 +1330,4 @@ and were moved here when MIUDiff was removed — CycleDiffusion imports them fro
 - No external diffusion libraries — DDPM/DDIM sampling is implemented from scratch.
 - No `requirements.txt`. Dependencies: torch, torchvision, numpy, scipy, pandas,
   matplotlib, pillow, tifffile, tqdm, pytest (plus nnU-Net v2 for CPA only).
-- Test suite: `pytest tests/ -q` — 264 tests, CPU-only, ~5 s.
+- Test suite: `pytest tests/ -q` — 283 tests, CPU-only, ~5 s.
