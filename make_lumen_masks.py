@@ -8,23 +8,24 @@ rather than several GB of RGB per ensemble member.
     # virtual side — one run per member
     python make_lumen_masks.py \\
         --rgb_dir /path/ensemble/.../reconstructed/model_01 \\
-        --he_dir  /path/real_he_wsis \\
+        --he_masks /path/HE_tissue \\
         --white_thresh 0.65 --min_object_px 64 \\
         --outdir  /path/ensemble/.../lumen_masks/model_01
 
     # reference side — the real H&E thresholded against its own footprint
     python make_lumen_masks.py \\
-        --rgb_dir /path/real_he_wsis --he_dir /path/real_he_wsis \\
+        --rgb_dir /path/real_he_wsis --he_masks /path/HE_tissue \\
         --white_thresh 0.65 --min_object_px 64 --outdir /path/lumen_masks_real
 
 Two decisions this stage encodes
 -------------------------------
-**The footprint always comes from the H&E, never from thresholding `--rgb_dir`.**
-On the SR the footprint is unstable at both ends of the threshold sweep — it
-erodes into tissue below ~0.60 and swallows the slide background above ~0.70 —
-while the H&E footprint is stable across 0.500-0.675. Taking enclosure from the
-stable image and brightness from the image under test keeps the measurement on
-one axis.
+**The footprint comes from the H&E tissue mask, never from thresholding
+`--rgb_dir`.** Two reasons. It is the same tissue boundary `apply_he_mask.py`
+applies to the collagen masks, so the study carries one definition of tissue
+rather than two. And it removes `white_thresh` from the denominator: the footprint
+is exactly what breaks across the threshold sweep, so deriving it by thresholding
+would leave an unstable parameter under every lumen density. The threshold then
+affects only the lumen numerator.
 
 **Small components are removed here, once, not per region.** Cleaning at region
 scale would leave `lumen_fraction` measured on the raw mask while β₀/β₁ were
@@ -45,10 +46,10 @@ import tifffile
 from uncertainty_phi.descriptors import (
     WHITE_THRESH,
     clean_mask,
-    he_tissue_footprint,
     lumen_mask,
+    tissue_footprint_from_mask,
 )
-from uncertainty_phi.ensemble import _stem_index, load_rgb
+from uncertainty_phi.ensemble import _stem_index, load_rgb, load_roi_mask
 from utils import write_label_mask
 
 
@@ -58,19 +59,18 @@ def main() -> None:
                     help="WSIs whose whitespace is being read: a member's "
                          "reconstructed SR on the virtual side, the real H&E on "
                          "the reference side.")
-    ap.add_argument("--he_dir", type=Path, required=True,
-                    help="Real H&E WSIs. Supplies the tissue footprint — the "
-                         "enclosure and the density denominator — and is matched "
-                         "to --rgb_dir by file stem.")
+    ap.add_argument("--he_masks", type=Path, required=True,
+                    help="H&E tissue masks — the same ones apply_he_mask.py "
+                         "applies to the collagen masks. Supplies the footprint: "
+                         "the enclosure test and the density denominator. Matched "
+                         "to --rgb_dir by stem, resized nearest-neighbour if it "
+                         "was annotated at a different magnification.")
     ap.add_argument("--outdir", type=Path, required=True)
 
     ap.add_argument("--white_thresh", type=float, default=WHITE_THRESH,
                     help="Whitespace cut. EVERY channel must clear it, so set it "
                          "from the per-pixel channel minimum, not from a Fiji "
                          "8-bit grey level. [%(default)s]")
-    ap.add_argument("--footprint_thresh", type=float, default=None,
-                    help="Cut for the H&E FOOTPRINT, if the two stains need "
-                         "different values. Defaults to --white_thresh.")
     ap.add_argument("--min_object_px", type=int, default=64,
                     help="Drop lumen components below this many pixels. At "
                          "0.221 um/px, 64 px is ~3.1 um2 — speckle, not lumen. "
@@ -80,11 +80,8 @@ def main() -> None:
                     help="Redo slides that already have an output mask.")
     args = ap.parse_args()
 
-    if args.footprint_thresh is None:
-        args.footprint_thresh = args.white_thresh
-
     rgb_index = _stem_index(args.rgb_dir)
-    he_index = _stem_index(args.he_dir)
+    he_index = _stem_index(args.he_masks)
     if not rgb_index:
         raise SystemExit(f"no images in {args.rgb_dir}")
 
@@ -92,7 +89,7 @@ def main() -> None:
     if missing:
         # An H&E-less slide has no footprint, so its lumen would be measured
         # against the whole canvas — a different quantity wearing the same name.
-        print(f"[WARN] no H&E for {len(missing)} slide(s), skipping: "
+        print(f"[WARN] no H&E tissue mask for {len(missing)} slide(s), skipping: "
               f"{', '.join(missing[:3])}{' ...' if len(missing) > 3 else ''}")
 
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -104,17 +101,13 @@ def main() -> None:
             print(f"[skip] {stem}")
             continue
 
-        he = load_rgb(he_index[stem])
-        footprint = he_tissue_footprint(he, white_thresh=args.footprint_thresh)
-        del he
-
         rgb = load_rgb(rgb_index[stem])
-        if rgb.shape[:2] != footprint.shape:
-            raise SystemExit(
-                f"{stem}: {args.rgb_dir.name} is {rgb.shape[:2]} but the H&E "
-                f"footprint is {footprint.shape}. These must be the same frame — "
-                f"a resized mask would silently move every region."
-            )
+        # load_roi_mask resizes nearest-neighbour, the same convention
+        # apply_he_mask uses when the tissue mask was made at a different
+        # magnification from the reconstruction.
+        footprint = tissue_footprint_from_mask(
+            load_roi_mask(he_index[stem], rgb.shape[:2])
+        )
 
         lum, _ = lumen_mask(rgb, footprint, args.white_thresh)
         del rgb

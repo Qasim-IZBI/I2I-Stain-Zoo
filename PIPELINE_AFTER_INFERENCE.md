@@ -224,7 +224,7 @@ the spread against an external target — φ_struct of the real tissue.
 ```bash
 # 1. lumen masks: the virtual side per member, then the reference from the H&E
 sbatch scripts/make_lumen_masks_grid.sh
-python make_lumen_masks.py --rgb_dir ${HE_DIR} --he_dir ${HE_DIR} \
+python make_lumen_masks.py --rgb_dir ${HE_RGB} --he_masks ${HE_TISSUE} \
     --white_thresh 0.65 --min_object_px 64 --outdir /path/lumen_masks_real
 
 # 2. phi with the per-member lumen, on a pixel grid the heatmap can tile

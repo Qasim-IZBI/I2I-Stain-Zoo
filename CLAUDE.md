@@ -570,7 +570,7 @@ slide. So it is a pipeline stage, in the shape of segment → clean → fill:
 sbatch scripts/make_lumen_masks_grid.sh        # --array=0-49, the virtual side
 
 # the reference side is a single run: the real H&E against its own footprint
-python make_lumen_masks.py --rgb_dir ${HE_DIR} --he_dir ${HE_DIR} \
+python make_lumen_masks.py --rgb_dir ${HE_RGB} --he_masks ${HE_TISSUE} \
     --white_thresh 0.65 --min_object_px 64 --outdir /path/lumen_masks_real
 ```
 
@@ -579,10 +579,14 @@ Then `compute_phi_uncertainty.py --lumen_root .../lumen_masks` consumes
 same model in both; a count mismatch is refused rather than pairing one member's
 collagen with another's lumen.
 
-**The footprint always comes from the H&E, never from thresholding the SR.** On the
-SR the footprint fails at both ends of the sweep — eroding into tissue below ~0.60,
-swallowing the slide background above ~0.70 — while the H&E is stable across
-0.500–0.675. Enclosure from the stable image, brightness from the image under test.
+**The footprint comes from the H&E tissue mask** (`--he_masks`), the same one
+`apply_he_mask.py` applies to the collagen masks — so the study carries one
+definition of tissue, not two. It also keeps `--white_thresh` out of the
+denominator: the footprint is what breaks across the threshold sweep, so deriving
+it by thresholding would leave an unstable parameter under every lumen density.
+Holes are filled, so a tissue segmentation that excluded lumens still works. Pass
+the same directory to `compute_phi_uncertainty.py --he_masks`, which then needs no
+H&E RGB at all.
 
 **`--min_object_px` removes speckle once per slide, not per region**, and must be
 identical on both arms (the rule §5.4.4 already imposes on collagen). Cleaning per

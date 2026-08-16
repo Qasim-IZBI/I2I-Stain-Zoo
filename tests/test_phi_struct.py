@@ -587,3 +587,45 @@ class TestPrecomputedLumen:
         v = phi_struct(np.ones((100, 100), np.uint8), he, mpp=1.0,
                        tissue_mask=fp, lumen=lum)
         assert v[4] < 0.05          # the mask won, not the all-white RGB
+
+
+class TestFootprintFromTissueMask:
+    """The footprint comes from the H&E tissue mask the CPA pipeline uses.
+
+    Deriving it by thresholding instead puts white_thresh under every lumen
+    density and under the enclosure test — and the footprint is the thing that
+    breaks across the threshold sweep, not the numerator.
+    """
+
+    def test_fills_lumens_a_tissue_segmentation_left_out(self):
+        """A real tissue mask has lumens as holes. Unfilled, every lumen would
+        sit outside the tissue it belongs to and count as slide background."""
+        from uncertainty_phi.descriptors import tissue_footprint_from_mask
+
+        mask = np.zeros((100, 100), np.uint8)
+        mask[20:80, 20:80] = 1
+        mask[40:60, 40:60] = 0              # a lumen, excluded by the segmenter
+        fp = tissue_footprint_from_mask(mask)
+        assert fp[50, 50]                    # restored
+        assert not fp[5, 5]                  # true background stays out
+        assert fp.sum() == 60 * 60
+
+    def test_is_a_no_op_when_lumens_are_already_included(self):
+        from uncertainty_phi.descriptors import tissue_footprint_from_mask
+        mask = np.zeros((100, 100), np.uint8)
+        mask[20:80, 20:80] = 1
+        np.testing.assert_array_equal(tissue_footprint_from_mask(mask), mask > 0)
+
+    def test_agrees_with_the_brightness_footprint_on_the_same_slide(self):
+        """The two routes must not disagree, or the study carries two
+        definitions of tissue."""
+        from uncertainty_phi.descriptors import (
+            he_tissue_footprint, tissue_footprint_from_mask,
+        )
+        he = np.full((120, 160, 3), 250, np.uint8)
+        he[20:100, 20:140] = 150
+        he[50:70, 50:70] = 250                       # a lumen
+
+        by_brightness = he_tissue_footprint(he, white_thresh=0.90)
+        by_mask = tissue_footprint_from_mask(he.min(axis=2) < 230)
+        np.testing.assert_array_equal(by_brightness, by_mask)

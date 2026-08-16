@@ -267,6 +267,29 @@ def lumen_tissue_fraction(
 # the vector
 # ---------------------------------------------------------------------------
 
+def tissue_footprint_from_mask(mask: np.ndarray) -> np.ndarray:
+    """Tissue footprint from the H&E tissue mask the CPA pipeline already uses.
+
+    Preferred over `he_tissue_footprint`, which derives the same boundary by
+    thresholding the H&E and so inherits `white_thresh`. That parameter has no
+    plateau on this cohort and the footprint is precisely what breaks with it —
+    `tissue_fraction` jumps 21% at 0.725 and erodes below 0.60. Since the
+    footprint is the denominator for every lumen density and the enclosure test
+    for whether a bright pixel is a lumen or slide background, taking it from an
+    external mask leaves the threshold affecting only the lumen *numerator*.
+
+    It is also the same tissue boundary `apply_he_mask.py` applies to the
+    collagen masks, so the study stops carrying two definitions of tissue.
+
+    Holes are filled so that internal lumens count as inside the tissue: a
+    vessel is enclosed by tissue, and a footprint that excluded it would make
+    every lumen sit outside the tissue it belongs to. Filling is a no-op if the
+    supplied mask already includes them, so this is safe either way — the same
+    reasoning as `fill_tissue_holes.py`.
+    """
+    return ndimage.binary_fill_holes(np.asarray(mask) > 0)
+
+
 def lumen_descriptors(
     lumen: np.ndarray,
     footprint: np.ndarray,

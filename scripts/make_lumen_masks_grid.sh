@@ -25,7 +25,7 @@
 # thresholded against its own footprint:
 #
 #   python I2I-Stain-Zoo/make_lumen_masks.py \
-#       --rgb_dir ${HE_DIR} --he_dir ${HE_DIR} \
+#       --rgb_dir ${HE_RGB_DIR} --he_masks ${HE_MASKS} \
 #       --white_thresh ${WHITE_THRESH_HE} --min_object_px ${MIN_OBJECT_PX} \
 #       --outdir /work2/.../lumen_masks_real
 #
@@ -59,13 +59,14 @@ PROJECT_ROOT=I2I-Stain-Zoo
 # -----------------------------
 GRID_ROOT="${GRID_ROOT:-/work2/bz66izin-UC_project/ensemble/cyclegan}"
 MODEL_SIZE="${MODEL_SIZE:-model_small}"
-HE_DIR="${HE_DIR:-/work2/bz66izin-UC_project/ID_HE/no_overlap/testA/export_rgb/testA}"
+# The tissue masks apply_he_mask_grid.sh already uses — one definition of
+# tissue across the study, and white_thresh stays out of the denominator.
+HE_MASKS="${HE_MASKS:-/work2/bz66izin-UC_project/ID_HE/no_overlap/testA/export_tissue/testA}"
 
-# Thresholds: the SR one reads the generated stain, the H&E one builds the
-# footprint. Both from scripts/calibrate_white_thresh.sh — run it on a member's
-# reconstructions, not on the real SR, since that is what enters phi.
+# One threshold, on the generated stain only — the footprint no longer depends
+# on it. From scripts/calibrate_white_thresh.sh, run on a member's
+# reconstructions rather than the real SR, since that is what enters phi.
 WHITE_THRESH_SR="${WHITE_THRESH_SR:-0.65}"
-WHITE_THRESH_HE="${WHITE_THRESH_HE:-0.65}"
 MIN_OBJECT_PX="${MIN_OBJECT_PX:-64}"
 
 N_MEMBERS=10
@@ -83,9 +84,9 @@ OUT_DIR="${ENSEMBLE_ROOT}/lumen_masks/model_${MEMBER}"
 
 echo "TASK_ID=${SLURM_ARRAY_TASK_ID}  SUBSET=${RANGE_TAG}  MEMBER=${MEMBER}"
 echo "Input   : ${IN_DIR}"
-echo "H&E     : ${HE_DIR}"
+echo "Tissue  : ${HE_MASKS}"
 echo "Output  : ${OUT_DIR}"
-echo "Thresh  : SR ${WHITE_THRESH_SR}, H&E footprint ${WHITE_THRESH_HE}"
+echo "Thresh  : SR ${WHITE_THRESH_SR}"
 echo "Speckle : min_object_px ${MIN_OBJECT_PX}"
 
 # -----------------------------
@@ -97,10 +98,10 @@ if [ ! -d "${IN_DIR}" ] || [ -z "$(ls -A "${IN_DIR}" 2>/dev/null)" ]; then
     exit 1
 fi
 
-if [ ! -d "${HE_DIR}" ]; then
-    echo "[ERROR] H&E directory not found: ${HE_DIR}"
-    echo "        The footprint comes from the H&E, never from thresholding the"
-    echo "        SR: the SR footprint is unstable at both ends of the sweep."
+if [ ! -d "${HE_MASKS}" ]; then
+    echo "[ERROR] H&E tissue masks not found: ${HE_MASKS}"
+    echo "        These are the same masks apply_he_mask_grid.sh applies to the"
+    echo "        collagen masks — not the H&E RGB."
     exit 1
 fi
 
@@ -117,9 +118,8 @@ run_cmd() {
 # an interruption resumes rather than repeating.
 run_cmd python "${PROJECT_ROOT}/make_lumen_masks.py" \
     --rgb_dir           "${IN_DIR}" \
-    --he_dir            "${HE_DIR}" \
+    --he_masks          "${HE_MASKS}" \
     --white_thresh      "${WHITE_THRESH_SR}" \
-    --footprint_thresh  "${WHITE_THRESH_HE}" \
     --min_object_px     "${MIN_OBJECT_PX}" \
     --outdir            "${OUT_DIR}"
 

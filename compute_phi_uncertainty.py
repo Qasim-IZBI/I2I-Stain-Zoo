@@ -83,6 +83,7 @@ def _collect(roots: List[Path], args) -> tuple:
             root,
             Path(args.tiles_metadata),
             he_dir=Path(args.he_dir) if args.he_dir else None,
+            he_masks_dir=Path(args.he_masks) if args.he_masks else None,
             lumen_root=Path(args.lumen_root) if args.lumen_root else None,
             roi_dir=Path(args.roi_dir) if args.roi_dir else None,
             qc_dir=Path(args.qc_dir) if args.qc_dir else None,
@@ -126,6 +127,14 @@ def main() -> None:
     ap.add_argument("--he_dir", type=Path, default=None,
                     help="Reconstructed H&E WSIs. Without it the two floor-free "
                          "geometric descriptors are NaN.")
+    ap.add_argument("--he_masks", type=Path, default=None,
+                    help="H&E tissue masks — the same ones apply_he_mask.py "
+                         "applies to the collagen masks. Preferred source for "
+                         "the tissue footprint: it keeps one definition of "
+                         "tissue across the study, and keeps --white_thresh out "
+                         "of the denominator, which is where it does most "
+                         "damage. Without it the footprint is derived by "
+                         "thresholding --he_dir.")
     ap.add_argument("--lumen_root", type=Path, default=None,
                     help="Per-member lumen masks from make_lumen_masks.py, laid "
                          "out as model_NN/ exactly like --ensemble/--fold. With "
@@ -261,6 +270,7 @@ def main() -> None:
             "members_per_fold": members,
             "tiles_metadata": str(args.tiles_metadata),
             "he_dir": str(args.he_dir) if args.he_dir else None,
+            "he_masks": str(args.he_masks) if args.he_masks else None,
             "lumen_root": str(args.lumen_root) if args.lumen_root else None,
             "roi_dir": str(args.roi_dir) if args.roi_dir else None,
             "qc_dir": str(args.qc_dir) if args.qc_dir else None,

@@ -31,6 +31,7 @@ from uncertainty_phi.descriptors import (
     he_bright,
     he_tissue_footprint,
     phi_struct,
+    tissue_footprint_from_mask,
 )
 from uncertainty_phi.regions import (
     Region,
@@ -174,6 +175,7 @@ def phi_for_wsi(
     regions: List[Region],
     *,
     he_path: Optional[Path] = None,
+    he_mask_path: Optional[Path] = None,
     lumen_dirs: Optional[Sequence[Path]] = None,
     mpp: float,
     qc_dir: Optional[Path] = None,
@@ -193,17 +195,24 @@ def phi_for_wsi(
     reporting, and this is the only place the footprint exists.
     """
     he = load_rgb(he_path) if he_path is not None and Path(he_path).exists() else None
+
     # WSI-level footprint: a lumen straddling a region boundary is only enclosed
     # (and therefore only counted) when the fill is done on the whole slide.
     #
-    # The footprint and the lumen count must use ONE threshold — `lumen_fraction`
-    # is `bright & footprint`, so a footprint built at a different cut would
-    # intersect two different definitions of whitespace. Hence reading it out of
-    # phi_kwargs rather than letting each default independently.
-    footprint = (
-        he_tissue_footprint(he, white_thresh=phi_kwargs.get("white_thresh", WHITE_THRESH))
-        if he is not None else None
-    )
+    # Preferred source is the H&E tissue mask — the same boundary
+    # apply_he_mask.py applies to the collagen masks, and independent of
+    # white_thresh, which the footprint is otherwise the most sensitive thing to.
+    # Falls back to thresholding the H&E, in which case the footprint and the
+    # lumen count must use ONE threshold: `lumen_fraction` is `bright &
+    # footprint`, so two cuts would intersect two definitions of whitespace.
+    footprint = None
+    if he_mask_path is not None and Path(he_mask_path).exists():
+        shape = he.shape[:2] if he is not None else load_label_mask(
+            _stem_index(Path(member_dirs[0])).get(wsi_stem)).shape
+        footprint = tissue_footprint_from_mask(load_roi_mask(he_mask_path, shape))
+    elif he is not None:
+        footprint = he_tissue_footprint(
+            he, white_thresh=phi_kwargs.get("white_thresh", WHITE_THRESH))
 
     if qc_dir is not None and he is not None and footprint is not None:
         # Once per WSI, not per member: both H&E terms are member-independent.
@@ -257,6 +266,7 @@ def phi_over_ensemble(
     tiles_metadata_root: Path,
     *,
     he_dir: Optional[Path] = None,
+    he_masks_dir: Optional[Path] = None,
     lumen_root: Optional[Path] = None,
     roi_dir: Optional[Path] = None,
     min_roi_fraction: float = 0.5,
@@ -294,6 +304,7 @@ def phi_over_ensemble(
             )
 
     he_index = _stem_index(Path(he_dir)) if he_dir else {}
+    he_mask_index = _stem_index(Path(he_masks_dir)) if he_masks_dir else {}
     roi_index = _stem_index(Path(roi_dir)) if roi_dir else {}
 
     all_phi: List[np.ndarray] = []
@@ -344,7 +355,9 @@ def phi_over_ensemble(
 
         block, tissue_frac = phi_for_wsi(
             member_dirs, wsi_stem, grid,
-            he_path=he_index.get(wsi_stem), lumen_dirs=lumen_dirs, mpp=mpp,
+            he_path=he_index.get(wsi_stem),
+            he_mask_path=he_mask_index.get(wsi_stem),
+            lumen_dirs=lumen_dirs, mpp=mpp,
             qc_dir=qc_dir, qc_max_px=qc_max_px, **phi_kwargs,
         )
         all_phi.append(block)

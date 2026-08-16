@@ -106,6 +106,13 @@ Points the methods section has to make:
 pixels so the heatmap tiles without a seam. Partial edge regions are dropped so
 every region has the same area. Regions below 25% tissue coverage are excluded.
 
+**The tissue footprint** comes from the H&E tissue masks the CPA pipeline already
+applies (`apply_he_mask.py`), with holes filled so internal lumens count as inside
+tissue. Worth one sentence in methods, because it means the study uses **one**
+definition of tissue throughout, and because it keeps the whitespace threshold out
+of every denominator — the threshold then affects only which pixels are called
+lumen, not what they are divided by.
+
 **Thresholds.** The whitespace cut is a per-cohort measurement, not a constant, and
 must be reported: H&E stable window 0.500–0.675, SR 0.600–0.700, **neither with a
 plateau** (12% and 9% change per 0.025 step). The committed value is 0.65, inside
