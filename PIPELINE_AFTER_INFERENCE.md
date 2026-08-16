@@ -233,6 +233,20 @@ the spread against an external target — φ_struct of the real tissue.
 > `--real_lumen`; the three terms report as having no reference. This removes the
 > floor-free arm, so the earlier advice to "build the lumen half first, it is
 > unblocked either way" no longer holds.
+>
+> ```bash
+> sbatch scripts/check_frame_alignment.sh     # Step 0 — run this first
+> ```
+>
+> Header reads only, seconds across twenty multi-GB slides. It pairs by the
+> `SR_`/`HE_` rule, reports unpaired stems first (a naming mismatch otherwise
+> reads as a dimension mismatch), gives the scale ratio on any differing case —
+> a clean 2.000 is a magnification level apart, a different fix from a
+> registration problem — flags mismatched `XResolution`, and checks each slide
+> against the *region extent* from `tiles_metadata`, which is what
+> `calibrate_phi` actually compares against. Identical dimensions are necessary
+> but not sufficient: two slides can match in size and still be offset, so
+> overlay one case before trusting it.
 
 ```bash
 # 1. lumen masks: the virtual side per member, then the reference from the H&E

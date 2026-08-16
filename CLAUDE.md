@@ -626,6 +626,8 @@ above half.
 #### Calibration — does the spread predict the error?
 
 ```bash
+sbatch scripts/check_frame_alignment.sh   # Step 0: does the SR share the H&E frame?
+
 python calibrate_phi.py \
     --phi_csv    ./phi_uncertainty/per_region.csv \
     --real_lumen /path/lumen_masks_real --he_masks /path/HE_tissue \

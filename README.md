@@ -476,7 +476,7 @@ fill_tissue_holes.py        hole filling inside the CPA pipeline
 plot_combined_metrics.py    2×2 metric overview
 plot_ranking_correlation.py cross-metric rank agreement
 
-scripts/                    66 SLURM job scripts for the full study
+scripts/                    67 SLURM job scripts for the full study
 ```
 
 SLURM scripts resolve Python via `PROJECT_ROOT=I2I-Stain-Zoo`, a path relative

@@ -223,7 +223,7 @@ kind about it.
 - [ ] **Step 0 — is the real SR on the H&E frame? THE gate.** With the lumen arm
       closed, this decides whether there is a region-level calibration (~6000
       points) or only a WSI-level one (n = 20) — for the entire study, not half of
-      it. Five minutes: compare SR and H&E dimensions per case.
+      it. `sbatch scripts/check_frame_alignment.sh` — seconds, header reads only.
 - [ ] **Re-run the floor sweep on current code** before quoting the §2 table. Those
       three runs predate two fixes (the inverted split-half bracket, the NaN-column
       crash). Neither changes the verdicts, but the manuscript should not cite
