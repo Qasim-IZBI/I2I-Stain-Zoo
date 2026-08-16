@@ -102,3 +102,35 @@ class TestPair:
         ref = self._ref().assign(region_index=[7, 8, 9])
         with pytest.raises(SystemExit, match="no regions matched"):
             pair(self._virtual(), ref, "grand", 5)
+
+
+class TestHeatmapRaster:
+    """Painting per-region values back onto slide geometry."""
+
+    @staticmethod
+    def _group():
+        import pandas as pd
+        # two regions of a 2x2 grid; the other two were dropped by the filter
+        return pd.DataFrame({
+            "y0": [0, 100], "y1": [100, 200],
+            "x0": [0, 100], "x1": [100, 200],
+            "sd_total_task_specific_value": [0.4, 0.8],
+        })
+
+    def test_each_region_paints_its_own_block(self):
+        from plot_uncertainty_heatmap import raster_for
+        r = raster_for(self._group(), "sd_total_task_specific_value", 10, (20, 20))
+        assert r[0, 0] == pytest.approx(0.4)
+        assert r[15, 15] == pytest.approx(0.8)
+
+    def test_regions_the_filter_dropped_stay_blank(self):
+        """An absent measurement is not a low one — it must not read as dark."""
+        from plot_uncertainty_heatmap import raster_for
+        r = raster_for(self._group(), "sd_total_task_specific_value", 10, (20, 20))
+        assert np.isnan(r[0, 15])      # top-right region was never measured
+        assert np.isnan(r[15, 0])
+
+    def test_a_missing_column_gives_an_empty_raster_not_a_crash(self):
+        from plot_uncertainty_heatmap import raster_for
+        r = raster_for(self._group(), "sd_total_absent", 10, (20, 20))
+        assert np.isnan(r).all()
