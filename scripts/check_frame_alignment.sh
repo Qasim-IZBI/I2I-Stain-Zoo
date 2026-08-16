@@ -98,7 +98,14 @@ def geom(p):
 # The extent the region grid actually runs to, per WSI. A slide can be large
 # enough overall and still fall short of the last region box.
 extent = {}
-if tiles_meta and tiles_meta != "none" and Path(tiles_meta).is_dir():
+if not tiles_meta or tiles_meta == "none":
+    print("[note] no TILES_METADATA: the region-extent check is SKIPPED. "
+          "Dimensions alone are checked.")
+elif not Path(tiles_meta).is_dir():
+    print(f"[WARN] TILES_METADATA is not a directory: {tiles_meta}\n"
+          f"       The region-extent check is SKIPPED — a slide can match on "
+          f"dimensions and still fall short of the last region box.")
+else:
     import pandas as pd
     for csv in sorted(Path(tiles_meta).glob("*/tiles_metadata.csv")):
         df = pd.read_csv(csv)
@@ -109,6 +116,12 @@ if tiles_meta and tiles_meta != "none" and Path(tiles_meta).is_dir():
             int((df["y"] + df["tile_size"]).max()),
             int((df["x"] + df["tile_size"]).max()),
         )
+
+    if not extent:
+        print(f"[WARN] no */tiles_metadata.csv under {tiles_meta} — the "
+              f"region-extent check is SKIPPED.")
+    else:
+        print(f"[note] region extents loaded for {len(extent)} WSI")
 
 he, sr = index(he_dir), index(sr_dir)
 common = sorted(set(he) & set(sr))
@@ -178,6 +191,10 @@ if unset_res:
           f"reads {mpp:.4f} um/px.")
     print("   Not a mismatch — matching pixel dimensions already imply a shared "
           "scale. Use --mpp for the value.")
+elif all(_unset(geom(he[k])[2]) for k in common[:1]):
+    print("\n[note] neither side carries a resolution tag, so this run gives no "
+          "independent confirmation of --mpp. Verify it against the scan "
+          "protocol before sizing regions in mm.")
 
 if aligned == len(common) and not short:
     print("\n=> ALIGNED. Region-level pairing is available:")
