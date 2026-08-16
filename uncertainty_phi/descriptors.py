@@ -267,6 +267,33 @@ def lumen_tissue_fraction(
 # the vector
 # ---------------------------------------------------------------------------
 
+def lumen_descriptors(
+    lumen: np.ndarray,
+    footprint: np.ndarray,
+    mpp: float,
+) -> Tuple[float, float, float]:
+    """(lumen_fraction, beta0_per_mm2, beta1_per_mm2) from a cleaned lumen mask.
+
+    Split out so the reference side can compute the three H&E-referenced terms
+    without also running `betti` over a collagen mask it has no use for — the
+    real H&E has no collagen labels at all.
+
+    Densities are per mm2 of FOOTPRINT, the one denominator both sides share.
+    """
+    lum = np.asarray(lumen, dtype=bool)
+    fp = np.asarray(footprint, dtype=bool)
+    n_fp = int(np.count_nonzero(fp))
+    if n_fp == 0:
+        return float("nan"), float("nan"), float("nan")
+
+    frac = float(np.count_nonzero(lum) / n_fp)
+    fp_mm2 = n_fp * (mpp ** 2) / 1e6
+    if fp_mm2 <= 0:
+        return frac, float("nan"), float("nan")
+    b0, b1 = betti(lum)
+    return frac, b0 / fp_mm2, b1 / fp_mm2
+
+
 def phi_struct(
     psr_labels: np.ndarray,
     he_rgb: Optional[np.ndarray] = None,
@@ -339,19 +366,5 @@ def phi_struct(
     else:
         return out
 
-    n_footprint = int(np.count_nonzero(footprint))
-    if n_footprint:
-        out[4] = float(np.count_nonzero(lum) / n_footprint)
-
-        # Lumen densities are per mm2 of the H&E FOOTPRINT, not of the label
-        # mask's tissue. The footprint is the one denominator available on both
-        # sides: the virtual side has generated collagen labels, the reference
-        # side is the real H&E with no labels at all, and a density is only
-        # comparable if its denominator is.
-        footprint_mm2 = n_footprint * (mpp ** 2) / 1e6
-        if footprint_mm2 > 0:
-            lb0, lb1 = betti(lum)
-            out[5] = lb0 / footprint_mm2
-            out[6] = lb1 / footprint_mm2
-
+    out[4], out[5], out[6] = lumen_descriptors(lum, footprint, mpp)
     return out

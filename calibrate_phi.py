@@ -1,0 +1,398 @@
+#!/usr/bin/env python
+"""Does the ensemble's spread predict its structural error?
+
+Ensemble variance measures disagreement between members, not error. The BMVC
+2026 result is that cycle-reconstruction error — the cheap self-consistency
+proxy — does not calibrate it. This asks the same question against an external,
+task-relevant target: φ_struct of the generated stain versus φ_struct of the
+**real** tissue, per descriptor, per region.
+
+    python calibrate_phi.py \\
+        --phi_csv    ./phi_uncertainty/per_region.csv \\
+        --real_psr   /path/psr_masks/real/psr_masks_wsi_final \\
+        --real_lumen /path/lumen_masks_real \\
+        --he_dir     /path/real_he_wsis \\
+        --outdir     ./calibration_phi/
+
+The two reference arms are independent, and either may be omitted:
+
+* `--real_lumen` scores lumen_fraction and the two lumen Betti numbers against
+  the **real H&E** — the same physical section the model generated from, so
+  there is no level offset and no biological floor. Its regions are on the H&E
+  frame, the same frame the virtual run used, so pairing is exact.
+* `--real_psr` scores CPA and the collagen Betti/dispersion terms against the
+  real SR, which sits at a different section level. Pairing region *r* across
+  the two requires the SR to share the H&E's coordinate frame; the run checks
+  the geometry and refuses rather than measuring different tissue.
+
+Regions come from `--phi_csv` verbatim — the same y0/y1/x0/x1 boxes the virtual
+run used — rather than rebuilding a grid, so the two sides cannot drift apart
+through a parameter that differs by one.
+
+Outputs
+-------
+per_region_calibration.csv   mu, sd, reference, error and z per region x descriptor
+summary.json                 Spearman rho, E|z|, ECE and reliability bins
+calibration_phi.png          reliability per descriptor, plus a rho summary
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import warnings
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+from scipy.stats import spearmanr
+
+from uncertainty_calibration import expected_calibration_error, reliability_bins
+from uncertainty_phi.descriptors import (
+    PHI_NAMES,
+    PHI_REFERENCE,
+    WHITE_THRESH,
+    he_tissue_footprint,
+    lumen_descriptors,
+    phi_struct,
+)
+from uncertainty_phi.ensemble import _stem_index, load_label_mask, load_rgb
+from uncertainty_phi.regions import SOURCE_MPP
+
+# For a Gaussian error of scale sigma, E|e| = sigma * sqrt(2/pi). A reliability
+# line of slope 1 would therefore call a perfectly calibrated ensemble 20%
+# over-confident.
+HALF_NORMAL = float(np.sqrt(2.0 / np.pi))
+
+COLLAGEN = [i for i, r in enumerate(PHI_REFERENCE) if r == "psr"]
+LUMEN = [i for i, r in enumerate(PHI_REFERENCE) if r == "he"]
+
+C_SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7", "#e34948")
+C_INK, C_MUTED, C_GRID = "#0b0b0b", "#52514e", "#e3e3df"
+
+
+def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
+    """φ of the real tissue, on the exact region boxes the virtual run used."""
+    psr_index = _stem_index(args.real_psr) if args.real_psr else {}
+    lum_index = _stem_index(args.real_lumen) if args.real_lumen else {}
+    he_index = _stem_index(args.he_dir) if args.he_dir else {}
+
+    rows: List[dict] = []
+    for wsi, group in df.groupby("wsi", sort=False):
+        stem = Path(str(wsi)).stem
+
+        labels = load_label_mask(psr_index[stem]) if stem in psr_index else None
+        lumen = (load_label_mask(lum_index[stem]) > 0) if stem in lum_index else None
+        footprint = None
+        if stem in he_index:
+            footprint = he_tissue_footprint(load_rgb(he_index[stem]),
+                                            white_thresh=args.white_thresh)
+
+        if labels is None and lumen is None:
+            print(f"[skip] no reference for {stem}")
+            continue
+
+        # The boxes were built on the H&E frame. A reference image of a
+        # different size is a different frame, and cropping it at these
+        # coordinates would score different tissue under the same region id.
+        for name, arr in (("--real_psr", labels), ("--real_lumen", lumen),
+                          ("--he_dir", footprint)):
+            if arr is None:
+                continue
+            need_y = int(group["y1"].max())
+            need_x = int(group["x1"].max())
+            if arr.shape[0] < need_y or arr.shape[1] < need_x:
+                raise SystemExit(
+                    f"{stem}: {name} is {arr.shape[:2]} but the regions in "
+                    f"--phi_csv run to {need_y}x{need_x}. These are different "
+                    f"frames — region r would be different tissue on each side. "
+                    f"For the collagen arm this is the registration gate: the SR "
+                    f"must be resampled onto the H&E grid, not merely registered."
+                )
+
+        for row in group.itertuples():
+            ys, xs = slice(row.y0, row.y1), slice(row.x0, row.x1)
+            out: Dict[str, float] = {"wsi": wsi, "region_index": row.region_index}
+
+            if labels is not None:
+                v = phi_struct(labels[ys, xs], None, mpp=args.mpp,
+                               min_object_px=args.min_object_px,
+                               closing_px=args.closing_px)
+                for j in COLLAGEN:
+                    out[f"real_{PHI_NAMES[j]}"] = float(v[j])
+
+            if lumen is not None and footprint is not None:
+                frac, b0, b1 = lumen_descriptors(lumen[ys, xs], footprint[ys, xs],
+                                                 args.mpp)
+                out[f"real_{PHI_NAMES[LUMEN[0]]}"] = frac
+                out[f"real_{PHI_NAMES[LUMEN[1]]}"] = b0
+                out[f"real_{PHI_NAMES[LUMEN[2]]}"] = b1
+
+            rows.append(out)
+
+    if not rows:
+        raise SystemExit("no reference regions produced — check the stems match")
+    return pd.DataFrame(rows)
+
+
+def pair(df: pd.DataFrame, ref: pd.DataFrame, mode: str, n_folds: int) -> pd.DataFrame:
+    """Long table of (prediction, uncertainty, reference) per region x descriptor.
+
+    `grand` pairs the mean over all members with the total spread — the
+    deployed prediction. `fold` pairs each subset's mean with that subset's
+    procedural spread alone, giving one row per subset and asking whether
+    procedural uncertainty suffices without the data-exposure term.
+    """
+    merged = df.merge(ref, on=["wsi", "region_index"], how="inner")
+    if merged.empty:
+        raise SystemExit("no regions matched between --phi_csv and the reference")
+
+    out = []
+    sources = ([("grand", "mu_{n}", "sd_total_{n}")] if mode == "grand"
+               else [(f"fold{f}", f"fold{f}_mu_{{n}}", f"fold{f}_sd_{{n}}")
+                     for f in range(1, n_folds + 1)])
+
+    for label, mu_key, sd_key in sources:
+        for name in PHI_NAMES:
+            mu_col, sd_col, real_col = (mu_key.format(n=name),
+                                        sd_key.format(n=name), f"real_{name}")
+            if not {mu_col, sd_col, real_col} <= set(merged.columns):
+                continue
+            block = merged[["wsi", "region_index", mu_col, sd_col, real_col]].copy()
+            block.columns = ["wsi", "region_index", "mu", "sd", "real"]
+            block["descriptor"] = name
+            block["prediction"] = label
+            out.append(block)
+
+    if not out:
+        raise SystemExit(
+            f"no descriptor had all of mu/sd/reference for mode '{mode}'. "
+            f"For 'fold', --phi_csv must come from a multi-fold run."
+        )
+    t = pd.concat(out, ignore_index=True)
+    t["error"] = (t["mu"] - t["real"]).abs()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t["z"] = np.where(t["sd"] > 0, t["error"] / t["sd"], np.nan)
+    return t
+
+
+def score(t: pd.DataFrame, n_bins: int) -> List[dict]:
+    """Per descriptor: does sd rank error, and is its scale right?"""
+    rows = []
+    for name, g in t.groupby("descriptor", sort=False):
+        g = g.dropna(subset=["sd", "error"])
+        g = g[np.isfinite(g["sd"]) & np.isfinite(g["error"]) & (g["sd"] > 0)]
+        if len(g) < 3:
+            rows.append({"descriptor": name, "n": int(len(g)),
+                         "note": "too few finite regions to score"})
+            continue
+
+        sd, err = g["sd"].to_numpy(), g["error"].to_numpy()
+        rho, p = spearmanr(sd, err)
+
+        # Absolute reliability: sd and error share units here, unlike the pixel
+        # case, so the bins stay in raw units and the calibrated line is
+        # E|e| = sd * sqrt(2/pi) rather than a normalised diagonal.
+        edges = np.quantile(sd, np.linspace(0, 1, n_bins + 1))
+        edges[0], edges[-1] = -np.inf, np.inf
+        idx = np.digitize(sd, edges[1:-1])
+        bins = []
+        for b in range(n_bins):
+            sel = idx == b
+            if sel.any():
+                bins.append({"mean_sd": float(sd[sel].mean()),
+                             "mean_error": float(err[sel].mean()),
+                             "n": int(sel.sum())})
+
+        # and the normalised ECE, for continuity with uncertainty_calibration.py
+        bu, be, bc = reliability_bins(sd, err, n_bins, sd.min(), sd.max(),
+                                      err.min(), err.max())
+        rows.append({
+            "descriptor": name,
+            "reference_class": (PHI_REFERENCE[PHI_NAMES.index(name)]
+                                if name in PHI_NAMES else None),
+            "n": int(len(g)),
+            "n_wsi": int(g["wsi"].nunique()),
+            "spearman_rho": float(rho),
+            "spearman_p": float(p),
+            "mean_abs_z": float(np.nanmean(g["z"])),
+            "calibration_ratio": float(np.nanmean(g["z"]) / HALF_NORMAL),
+            "ece_normalised": float(expected_calibration_error(bu, be, bc)),
+            "mean_sd": float(sd.mean()),
+            "mean_error": float(err.mean()),
+            "bins": bins,
+        })
+    return rows
+
+
+def make_figure(t: pd.DataFrame, rows: List[dict], outpath: Path, title: str) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    scored = [r for r in rows if "spearman_rho" in r]
+    fig, axes = plt.subplots(2, 4, figsize=(19, 8.6))
+    axes = axes.ravel()
+    for ax in axes:
+        ax.set_facecolor("white")
+        ax.grid(True, color=C_GRID, linewidth=0.8, zorder=0)
+        ax.set_axisbelow(True)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+        for s in ("left", "bottom"):
+            ax.spines[s].set_color(C_GRID)
+        ax.tick_params(colors=C_MUTED, labelsize=8.5)
+
+    for k, name in enumerate(PHI_NAMES):
+        ax = axes[k]
+        r = next((x for x in scored if x["descriptor"] == name), None)
+        if r is None or not r["bins"]:
+            ax.set_axis_off()
+            ax.text(0.5, 0.5, f"{name}\nno reference", ha="center", va="center",
+                    transform=ax.transAxes, fontsize=9, color=C_MUTED, style="italic")
+            continue
+
+        x = np.array([b["mean_sd"] for b in r["bins"]])
+        y = np.array([b["mean_error"] for b in r["bins"]])
+        hi = max(x.max(), y.max()) * 1.1
+        # the calibrated line, not the diagonal
+        ax.plot([0, hi], [0, hi * HALF_NORMAL], color=C_MUTED, linewidth=1.5,
+                linestyle="--", zorder=3, label="calibrated  E|e| = 0.80 σ")
+        ax.plot(x, y, color=C_SERIES[k % len(C_SERIES)], linewidth=2, marker="o",
+                markersize=6, zorder=5)
+        ax.set_xlim(0, hi); ax.set_ylim(0, hi)
+        ax.set_xlabel("ensemble σ", color=C_MUTED, fontsize=9)
+        ax.set_ylabel("|error| vs real", color=C_MUTED, fontsize=9)
+        ax.set_title(f"{name}\nρ = {r['spearman_rho']:.2f}   E|z|/0.80 = "
+                     f"{r['calibration_ratio']:.2f}",
+                     color=C_INK, fontsize=9.5, loc="left", pad=8)
+        if k == 0:
+            leg = ax.legend(frameon=False, fontsize=7.5, loc="upper left")
+            for txt in leg.get_texts():
+                txt.set_color(C_MUTED)
+
+    # summary panel: rho per descriptor, the headline
+    ax = axes[len(PHI_NAMES)]
+    if scored:
+        names = [r["descriptor"] for r in scored]
+        rhos = [r["spearman_rho"] for r in scored]
+        ys = np.arange(len(names))[::-1]
+        ax.axvline(0, color=C_MUTED, linewidth=1, zorder=2)
+        ax.barh(ys, rhos, color=[C_SERIES[PHI_NAMES.index(n) % len(C_SERIES)]
+                                 for n in names], height=0.6, zorder=4)
+        for y, r in zip(ys, scored):
+            ax.text(r["spearman_rho"] + (0.02 if r["spearman_rho"] >= 0 else -0.02),
+                    y, f"p={r['spearman_p']:.1e}", va="center", fontsize=7.5,
+                    ha="left" if r["spearman_rho"] >= 0 else "right", color=C_MUTED)
+        ax.set_yticks(ys)
+        ax.set_yticklabels(names, fontsize=8)
+        ax.set_xlim(min(-0.1, min(rhos) * 1.3), max(0.6, max(rhos) * 1.45))
+    ax.set_xlabel("Spearman ρ(σ, |error|)", color=C_MUTED, fontsize=9)
+    ax.set_title("does σ rank the error?", color=C_INK, fontsize=9.5,
+                 loc="left", pad=8)
+
+    fig.suptitle(title, color=C_INK, fontsize=13, x=0.008, ha="left", y=0.995)
+    fig.text(0.008, 0.012,
+             "ρ is the claim that survives noise in the reference: a floor or a "
+             "registration offset attenuates it toward zero, so a positive value "
+             "is conservative. The dashed line is E|e| = 0.80 σ, not the diagonal — "
+             "for Gaussian error the mean absolute deviation is σ·√(2/π).",
+             color=C_MUTED, fontsize=8.5)
+    fig.tight_layout(rect=(0, 0.035, 1, 0.955))
+    fig.savefig(outpath, dpi=150, facecolor="white")
+    print(f"wrote {outpath}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser("Calibrate phi_struct uncertainty against real tissue")
+    ap.add_argument("--phi_csv", type=Path, required=True,
+                    help="per_region.csv from compute_phi_uncertainty.py "
+                         "(or the pooled one from aggregate_phi_uncertainty.py).")
+    ap.add_argument("--real_psr", type=Path, default=None,
+                    help="Real SR collagen masks. Scores the four PSR-referenced "
+                         "descriptors — needs the SR on the H&E frame.")
+    ap.add_argument("--real_lumen", type=Path, default=None,
+                    help="Lumen masks of the real H&E, from make_lumen_masks.py. "
+                         "Scores the three H&E-referenced descriptors. Same "
+                         "physical section, so no floor and no frame question.")
+    ap.add_argument("--he_dir", type=Path, default=None,
+                    help="Real H&E WSIs, for the footprint the lumen densities "
+                         "are divided by. Required with --real_lumen.")
+    ap.add_argument("--outdir", type=Path, default=Path("calibration_phi"))
+
+    ap.add_argument("--prediction", choices=("grand", "fold"), default="grand",
+                    help="'grand' pairs the mean of all members with the total "
+                         "spread — the deployed prediction. 'fold' pairs each "
+                         "subset's mean with its procedural spread alone, and "
+                         "comparing the two is the data-exposure claim. "
+                         "[%(default)s]")
+    ap.add_argument("--n_folds", type=int, default=5)
+    ap.add_argument("--n_bins", type=int, default=10)
+
+    # must match the run that produced --phi_csv
+    ap.add_argument("--mpp", type=float, default=SOURCE_MPP)
+    ap.add_argument("--min_object_px", type=int, default=16)
+    ap.add_argument("--closing_px", type=int, default=0)
+    ap.add_argument("--white_thresh", type=float, default=WHITE_THRESH)
+    args = ap.parse_args()
+
+    if args.real_lumen and not args.he_dir:
+        ap.error("--real_lumen needs --he_dir: the lumen densities are per mm2 "
+                 "of the H&E footprint, and without it they are not comparable "
+                 "to the virtual side's")
+    if not args.real_psr and not args.real_lumen:
+        ap.error("give --real_psr, --real_lumen, or both — there is nothing to "
+                 "calibrate against otherwise")
+
+    df = pd.read_csv(args.phi_csv)
+    print(f"[1/3] {len(df)} regions over {df['wsi'].nunique()} WSI from {args.phi_csv}")
+
+    ref = reference_phi(df, args)
+    print(f"[2/3] reference phi for {len(ref)} regions")
+
+    t = pair(df, ref, args.prediction, args.n_folds)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        rows = score(t, args.n_bins)
+
+    args.outdir.mkdir(parents=True, exist_ok=True)
+    t.to_csv(args.outdir / "per_region_calibration.csv", index=False)
+    make_figure(t, rows, args.outdir / "calibration_phi.png",
+                f"φ_struct calibration — {args.prediction} prediction")
+
+    payload = {
+        "prediction": args.prediction,
+        "n_regions": int(df.shape[0]),
+        "per_descriptor": rows,
+        "conventions": {
+            "sigma": "predictive SD (spread of members), not the standard error "
+                     "of the mean — sigma/sqrt(M) would be tiny and the test "
+                     "would collapse into a test of bias",
+            "calibrated_mean_abs_z": HALF_NORMAL,
+            "calibration_ratio": ">1 is over-confident: errors exceed the spread",
+        },
+        "params": {k: (str(v) if isinstance(v, Path) else v)
+                   for k, v in vars(args).items()},
+    }
+    with open(args.outdir / "summary.json", "w") as fh:
+        json.dump(payload, fh, indent=2)
+
+    print("\n=== φ_struct calibration ===")
+    print(f"{'descriptor':24s} {'ref':>5s} {'n':>6s} {'rho':>7s} {'p':>9s} "
+          f"{'E|z|/0.80':>10s}")
+    for r in rows:
+        if "spearman_rho" not in r:
+            print(f"{r['descriptor']:24s} {'':>5s} {r['n']:>6d}   {r.get('note', '')}")
+            continue
+        print(f"{r['descriptor']:24s} {r['reference_class']:>5s} {r['n']:>6d} "
+              f"{r['spearman_rho']:>7.3f} {r['spearman_p']:>9.2e} "
+              f"{r['calibration_ratio']:>10.2f}")
+    print("\nrho > 0 means uncertain regions are the wrong ones. E|z|/0.80 > 1")
+    print("means the ensemble is over-confident: errors exceed its own spread.")
+    print(f"\nwrote {args.outdir / 'per_region_calibration.csv'}")
+    print(f"wrote {args.outdir / 'summary.json'}")
+
+
+if __name__ == "__main__":
+    main()
