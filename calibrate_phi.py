@@ -110,22 +110,44 @@ def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
             print(f"[skip] no reference for {stem}")
             continue
 
-        # The boxes were built on the H&E frame. A reference image of a
-        # different size is a different frame, and cropping it at these
-        # coordinates would score different tissue under the same region id.
+        # The boxes were built on one frame. A reference of a different size is
+        # a different frame, and cropping it at these coordinates scores
+        # different tissue under the same region id.
+        #
+        # "Large enough" is NOT the test. A slide can exceed the region extent
+        # and still be a different crop — one UC case is 34794x27942 against the
+        # H&E's 32521x23201, which covers every box while aligning with none of
+        # them. So compare against the recorded frame where the phi run wrote
+        # one, and fall back to the extent bound only for older CSVs.
+        want = None
+        if {"wsi_h", "wsi_w"} <= set(group.columns):
+            h, w = group["wsi_h"].iloc[0], group["wsi_w"].iloc[0]
+            if pd.notna(h) and pd.notna(w):
+                want = (int(h), int(w))
+        need = (int(group["y1"].max()), int(group["x1"].max()))
+
         for name, arr in (("--real_psr", labels), ("--real_lumen", lumen),
-                          ("--he_dir", footprint)):
+                          ("--he_masks/--he_dir", footprint)):
             if arr is None:
                 continue
-            need_y = int(group["y1"].max())
-            need_x = int(group["x1"].max())
-            if arr.shape[0] < need_y or arr.shape[1] < need_x:
+            got = (int(arr.shape[0]), int(arr.shape[1]))
+            if want is not None and got != want:
                 raise SystemExit(
-                    f"{stem}: {name} is {arr.shape[:2]} but the regions in "
-                    f"--phi_csv run to {need_y}x{need_x}. These are different "
-                    f"frames — region r would be different tissue on each side. "
-                    f"For the collagen arm this is the registration gate: the SR "
-                    f"must be resampled onto the H&E grid, not merely registered."
+                    f"{stem}: {name} is {got[0]}x{got[1]} but the phi run was "
+                    f"gridded on {want[0]}x{want[1]}. Different frames — region r "
+                    f"is different tissue on each side. Note it is not enough to "
+                    f"be larger than the regions: this checks the frame, not the "
+                    f"bound. Run scripts/check_frame_alignment.sh; for the "
+                    f"collagen arm the SR must be RESAMPLED onto the H&E grid, "
+                    f"not merely registered to it."
+                )
+            if want is None and (got[0] < need[0] or got[1] < need[1]):
+                raise SystemExit(
+                    f"{stem}: {name} is {got[0]}x{got[1]} but the regions run to "
+                    f"{need[0]}x{need[1]}. Different frames. (This CSV predates "
+                    f"the wsi_h/wsi_w columns, so only the bound could be "
+                    f"checked — re-run compute_phi_uncertainty for an exact "
+                    f"frame check.)"
                 )
 
         for row in group.itertuples():

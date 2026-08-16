@@ -482,6 +482,7 @@ parameter record). Per region the CSV carries:
 | `var_total_descriptor_space`, `var_total_anova`, `procedural`, `data_exposure` | the summed scalars |
 | `tissue_fraction` | QC only — H&E footprint coverage |
 | `y0/y1/x0/x1`, `area_mm2` | the region box, which the heatmap and the calibration reuse verbatim |
+| `wsi_h`, `wsi_w` | the frame the boxes were cut from, so a reference can be checked for *matching* it rather than merely covering it |
 
 A negative variance component is a real ANOVA outcome near zero and is reported
 rather than clipped, but it has no square root, so its `sd_` column is empty
@@ -644,8 +645,10 @@ Two arms, independent, either omittable:
 
 - `--real_psr` scores the four collagen terms against the real SR. Region *r* is
   only the same tissue if the SR was resampled onto the H&E grid; the geometry is
-  checked and a mismatch **exits** rather than scoring different tissue under the
-  same region id. **On the UC liver cohort this is the only available arm**, which
+  checked against `wsi_h`/`wsi_w` and a mismatch **exits** rather than scoring
+  different tissue under the same region id. Being *larger* than the regions is
+  not enough — one UC slide is 34794×27942 against the H&E's 32521×23201, which
+  covers every box while aligning with none of them. **On the UC liver cohort this is the only available arm**, which
   makes that frame check the gate for the whole calibration.
 - `--real_lumen` scores the three H&E-referenced terms against the real H&E. Same
   physical section, so no floor and no frame question — but see why the lumen
@@ -1367,4 +1370,4 @@ and were moved here when MIUDiff was removed — CycleDiffusion imports them fro
 - No external diffusion libraries — DDPM/DDIM sampling is implemented from scratch.
 - No `requirements.txt`. Dependencies: torch, torchvision, numpy, scipy, pandas,
   matplotlib, pillow, tifffile, tqdm, pytest (plus nnU-Net v2 for CPA only).
-- Test suite: `pytest tests/ -q` — 283 tests, CPU-only, ~5 s.
+- Test suite: `pytest tests/ -q` — 289 tests, CPU-only, ~5 s.

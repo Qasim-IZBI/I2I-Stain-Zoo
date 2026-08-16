@@ -629,3 +629,47 @@ class TestFootprintFromTissueMask:
         by_brightness = he_tissue_footprint(he, white_thresh=0.90)
         by_mask = tissue_footprint_from_mask(he.min(axis=2) < 230)
         np.testing.assert_array_equal(by_brightness, by_mask)
+
+
+class TestPlanarTiffReading:
+    """Planar (C,H,W) exports must read the same as interleaved (H,W,C).
+
+    Both readers index the LAST axis — arr[..., :3], arr[..., 0] — so on a
+    planar file they slice along width and return silent garbage rather than
+    failing. One SR slide in the UC cohort is stored this way.
+    """
+
+    @staticmethod
+    def _pair(tmp_path):
+        import tifffile
+        img = np.zeros((40, 60, 3), np.uint8)
+        img[..., 0], img[..., 1], img[..., 2] = 10, 20, 30
+        tifffile.imwrite(tmp_path / "hwc.tif", img)
+        tifffile.imwrite(tmp_path / "chw.tif", np.moveaxis(img, -1, 0),
+                         planarconfig="separate")
+        return tmp_path / "hwc.tif", tmp_path / "chw.tif"
+
+    def test_load_rgb_agrees_across_layouts(self, tmp_path):
+        from uncertainty_phi.ensemble import load_rgb
+        hwc, chw = self._pair(tmp_path)
+        a, b = load_rgb(hwc), load_rgb(chw)
+        assert a.shape == b.shape == (40, 60, 3)
+        np.testing.assert_array_equal(a, b)
+        np.testing.assert_array_equal(a.reshape(-1, 3).mean(0), [10, 20, 30])
+
+    def test_load_label_mask_agrees_across_layouts(self, tmp_path):
+        from uncertainty_phi.ensemble import load_label_mask
+        hwc, chw = self._pair(tmp_path)
+        a, b = load_label_mask(hwc), load_label_mask(chw)
+        assert a.shape == b.shape == (40, 60)
+        np.testing.assert_array_equal(a, b)
+
+    def test_a_genuinely_small_three_row_image_is_left_alone(self):
+        """The shape heuristic only applies without axis metadata, and a channel
+        axis is the shortest by orders of magnitude on a slide."""
+        from uncertainty_phi.ensemble import _to_channels_last
+        arr = np.zeros((3, 4, 5), np.uint8)
+        # axes say channels-last already -> untouched
+        np.testing.assert_array_equal(_to_channels_last(arr, "YXS").shape, (3, 4, 5))
+        # axes say channels-first -> moved
+        assert _to_channels_last(arr, "SYX").shape == (4, 5, 3)

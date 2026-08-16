@@ -78,8 +78,9 @@ def _sd(per_dim, i: int, j: int) -> Optional[float]:
 def _collect(roots: List[Path], args) -> tuple:
     """φ for each ensemble root, on a shared region grid."""
     blocks, regions_ref, members, tissue_ref = [], None, [], None
+    shapes_ref = {}
     for root in roots:
-        phi, regions, member_dirs, tissue_frac = phi_over_ensemble(
+        phi, regions, member_dirs, tissue_frac, shapes = phi_over_ensemble(
             root,
             Path(args.tiles_metadata),
             he_dir=Path(args.he_dir) if args.he_dir else None,
@@ -98,7 +99,7 @@ def _collect(roots: List[Path], args) -> tuple:
             white_thresh=args.white_thresh,
         )
         if regions_ref is None:
-            regions_ref, tissue_ref = regions, tissue_frac
+            regions_ref, tissue_ref, shapes_ref = regions, tissue_frac, shapes
         elif len(regions) != len(regions_ref):
             raise SystemExit(
                 f"fold {root} produced {len(regions)} regions but the first fold "
@@ -107,7 +108,7 @@ def _collect(roots: List[Path], args) -> tuple:
             )
         blocks.append(phi)
         members.append([str(m) for m in member_dirs])
-    return blocks, regions_ref, members, tissue_ref
+    return blocks, regions_ref, members, tissue_ref, shapes_ref
 
 
 def main() -> None:
@@ -196,7 +197,7 @@ def main() -> None:
         if not Path(r).is_dir():
             raise SystemExit(f"not a directory: {r}")
 
-    blocks, regions, members, tissue_frac = _collect(roots, args)
+    blocks, regions, members, tissue_frac, shapes = _collect(roots, args)
     comps = decompose(blocks)
 
     # mu / Var pooled across every member of every fold
@@ -212,6 +213,10 @@ def main() -> None:
             "wsi": region.wsi,
             "region_index": region.index,
             "y0": region.y0, "y1": region.y1, "x0": region.x0, "x1": region.x1,
+            # the frame the boxes were cut from, so a reference can be checked
+            # for matching it rather than merely being large enough
+            "wsi_h": shapes.get(Path(region.wsi).stem, (None, None))[0],
+            "wsi_w": shapes.get(Path(region.wsi).stem, (None, None))[1],
             "area_mm2": region_area_mm2(region, args.mpp),
             "var_total_descriptor_space": float(var[i]),
             # The ANOVA total summary.json reports — procedural + data, not the

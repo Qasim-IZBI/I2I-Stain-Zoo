@@ -57,7 +57,7 @@ There is no `requirements.txt`; the full dependency set is exactly:
 Verify the install:
 
 ```bash
-pytest tests/ -q          # 283 tests, ~5 s on CPU
+pytest tests/ -q          # 289 tests, ~5 s on CPU
 ```
 
 **Optional — collagen segmentation.** The task-specific CPA metric
@@ -455,7 +455,7 @@ utils.py  base_models.py    shared blocks (ResNet, PatchGAN, DDPM UNet)
 models/                     6 architectures
 datasets/                   unpaired / single-domain loaders
 trainer/                    step-based training loop, auto-resume
-tests/                      pytest suite (283 tests)
+tests/                      pytest suite (289 tests)
 
 uncertainty.py              ensemble variance maps
 aggregate_uncertainty.py    per-tile σ̄ → per-WSI CSVs

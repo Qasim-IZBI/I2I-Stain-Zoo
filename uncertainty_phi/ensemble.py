@@ -45,6 +45,34 @@ from uncertainty_phi.regions import (
 from uncertainty import discover_ensemble_dirs  # noqa: F401
 
 
+def _to_channels_last(arr: np.ndarray, axes: Optional[str] = None) -> np.ndarray:
+    """Normalise a 3D array to H,W,C.
+
+    Some exports store planar (C,H,W) rather than interleaved (H,W,C). Both
+    readers below index the LAST axis — `arr[..., :3]`, `arr[..., 0]` — so on a
+    planar file they slice along width and return silent garbage rather than
+    failing. One SR slide in the UC cohort is stored this way.
+
+    `axes` from `tifffile`'s series is authoritative when present ("SYX"/"CYX"
+    against "YXS"). Without it, fall back to shape: a channel axis is 1, 3 or 4
+    and on a whole slide is always the shortest by orders of magnitude.
+    """
+    if arr.ndim != 3:
+        return arr
+    if axes and len(axes) == 3:
+        return np.moveaxis(arr, 0, -1) if axes[0] in "SCP" else arr
+    if arr.shape[0] in (1, 3, 4) and arr.shape[0] < min(arr.shape[1], arr.shape[2]):
+        return np.moveaxis(arr, 0, -1)
+    return arr
+
+
+def _imread_hwc(path: Path) -> np.ndarray:
+    """`tifffile.imread` with the channel axis put last if it was first."""
+    with tifffile.TiffFile(str(path)) as tf:
+        series = tf.series[0]
+        return _to_channels_last(series.asarray(), series.axes)
+
+
 def load_label_mask(path: Path) -> np.ndarray:
     """Read an nnU-Net label TIF as a 2D array.
 
@@ -52,14 +80,14 @@ def load_label_mask(path: Path) -> np.ndarray:
     channel carries the labels. Same convention as `apply_he_mask.py:load_mask`
     and `compare_psr.py:compute_psr_fraction`.
     """
-    arr = tifffile.imread(str(path))
+    arr = _imread_hwc(path)
     if arr.ndim > 2:
         arr = arr[..., 0]
     return arr
 
 
 def load_rgb(path: Path) -> np.ndarray:
-    arr = tifffile.imread(str(path))
+    arr = _imread_hwc(path)
     if arr.ndim == 2:
         arr = np.stack([arr] * 3, axis=-1)
     return arr[..., :3]
@@ -280,9 +308,12 @@ def phi_over_ensemble(
 ) -> Tuple[np.ndarray, List[Region], List[Path]]:
     """φ for every WSI and member under one ensemble root.
 
-    Returns (phi, regions, member_dirs, tissue_fraction) with phi
+    Returns (phi, regions, member_dirs, tissue_fraction, shapes) with phi
     [n_members, n_regions_total, d], `regions` flattened across WSIs in the same
-    order as the second axis, and tissue_fraction [n_regions_total].
+    order as the second axis, tissue_fraction [n_regions_total], and `shapes`
+    mapping WSI stem to the (h, w) frame the regions were cut from — recorded so
+    a reference can be checked for *matching* that frame rather than merely
+    covering it.
 
     The region grid is built once per WSI from the *first available* member's
     mask, so all members are scored on identical boxes — a per-member grid would
@@ -309,6 +340,7 @@ def phi_over_ensemble(
 
     all_phi: List[np.ndarray] = []
     all_tissue: List[np.ndarray] = []
+    shapes: Dict[str, Tuple[int, int]] = {}
     all_regions: List[Region] = []
     roi_missing: List[str] = []
 
@@ -363,6 +395,7 @@ def phi_over_ensemble(
         all_phi.append(block)
         all_tissue.append(tissue_frac)
         all_regions.extend(grid)
+        shapes[wsi_stem] = (int(reference.shape[0]), int(reference.shape[1]))
 
     if not all_phi:
         hint = (
@@ -378,7 +411,7 @@ def phi_over_ensemble(
               f"{', '.join(roi_missing)}")
 
     return (np.concatenate(all_phi, axis=1), all_regions, member_dirs,
-            np.concatenate(all_tissue))
+            np.concatenate(all_tissue), shapes)
 
 
 def mean_and_variance(phi: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:

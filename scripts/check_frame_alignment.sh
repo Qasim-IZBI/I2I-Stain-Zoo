@@ -133,6 +133,7 @@ print(f"{'case':30s} {'H&E h x w':>19s} {'SR h x w':>19s}  verdict")
 print("-" * 92)
 
 aligned = short = 0
+unset_res = []
 for k in common:
     hy, hx, hres = geom(he[k])
     sy, sx, sres = geom(sr[k])
@@ -153,13 +154,30 @@ for k in common:
             short += 1
             print(f"{'':30s} {'':19s} {'':19s}  [!] short of the region extent "
                   f"{ey} x {ex} — calibrate_phi would exit here")
-    if hres != sres:
-        # same frame but different scale still confounds every CPA difference
-        print(f"{'':30s} {'':19s} {'':19s}  [!] XResolution {hres} vs {sres}")
+    # A missing tag is not a scale mismatch. The UC SR exports carry (1, 1),
+    # meaning "unset", while the H&E carries 4524109/1000000 px per um = 0.221
+    # um/px. Only flag when both are set and disagree — a real difference in
+    # scale confounds every CPA difference even on a shared frame.
+    def _unset(r):
+        return r is None or tuple(r) == (1, 1)
+
+    if not _unset(hres) and not _unset(sres) and tuple(hres) != tuple(sres):
+        print(f"{'':30s} {'':19s} {'':19s}  [!] XResolution {hres} vs {sres} "
+              f"— different scale, CPA differences are confounded")
+    elif _unset(sres) and not _unset(hres):
+        mpp = hres[1] / hres[0]
+        unset_res.append((k, mpp))
 
 print("-" * 92)
 print(f"{aligned}/{len(common)} share the H&E frame"
       + (f", {short} short of the region extent" if short else ""))
+
+if unset_res:
+    mpp = unset_res[0][1]
+    print(f"\n{len(unset_res)} SR slide(s) carry no resolution tag; the H&E "
+          f"reads {mpp:.4f} um/px.")
+    print("   Not a mismatch — matching pixel dimensions already imply a shared "
+          "scale. Use --mpp for the value.")
 
 if aligned == len(common) and not short:
     print("\n=> ALIGNED. Region-level pairing is available:")
