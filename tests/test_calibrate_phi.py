@@ -299,3 +299,62 @@ class TestFrameGuard:
                       extra=("--tile_size", "256"))
         assert r.returncode != 0
         assert "--tile_size must match the tiling" in r.stdout + r.stderr
+
+
+class TestReliabilityBins:
+    """The reliability diagram's own data is written out, not only plotted.
+
+    A figure whose numbers exist only inside a PNG cannot be restyled for the
+    manuscript, quoted in text, or checked by a reviewer.
+    """
+
+    @staticmethod
+    def _table(n_wsi=8, per=30, seed=0):
+        rng = np.random.default_rng(seed)
+        out = []
+        for w in range(n_wsi):
+            sd = np.abs(rng.normal(2.0 + rng.normal(0, 0.4), 0.5, per))
+            err = sd * np.abs(rng.normal(0, 1, per))
+            out.append(pd.DataFrame({
+                "descriptor": "task_specific_value", "wsi": f"w{w}",
+                "region_index": range(per), "sd": sd, "error": err,
+                "z": err / sd}))
+        return pd.concat(out, ignore_index=True)
+
+    def test_bins_carry_the_plotted_quantities(self):
+        from calibrate_phi import score
+        b = score(self._table(), 5)[0]["bins"]
+        assert len(b) == 5
+        for d in b:
+            assert {"bin", "sd_lo", "sd_hi", "mean_sd", "mean_error",
+                    "expected_error", "ratio_obs_over_expected",
+                    "se_error_by_case", "n", "n_wsi"} <= set(d)
+
+    def test_expected_error_is_the_calibrated_line(self):
+        """0.80σ, not σ. A diagonal would call a calibrated ensemble 20%
+        over-confident."""
+        from calibrate_phi import HALF_NORMAL, score
+        for d in score(self._table(), 5)[0]["bins"]:
+            assert d["expected_error"] == pytest.approx(HALF_NORMAL * d["mean_sd"])
+            assert d["ratio_obs_over_expected"] == pytest.approx(
+                d["mean_error"] / d["expected_error"])
+
+    def test_error_bars_are_clustered_on_the_case(self):
+        """A plain SEM over regions would be ~sqrt(regions/cases) times tighter,
+        which at these counts is the difference between a visible error bar and
+        an invisible one."""
+        from calibrate_phi import score
+        b = score(self._table(n_wsi=8, per=30), 5)[0]["bins"]
+        for d in b:
+            assert d["n_wsi"] <= 8 and d["n_wsi"] > 1
+            assert d["n"] > d["n_wsi"]          # many regions per case
+            assert np.isfinite(d["se_error_by_case"])
+
+    def test_a_bin_from_one_case_reports_no_error_bar(self):
+        """One case gives no between-case spread to estimate. NaN is the honest
+        answer; 0 would draw a point with false precision."""
+        from calibrate_phi import score
+        t = self._table(n_wsi=1, per=40)
+        b = score(t, 4)[0]["bins"]
+        assert all(np.isnan(d["se_error_by_case"]) for d in b)
+        assert all(d["n_wsi"] == 1 for d in b)

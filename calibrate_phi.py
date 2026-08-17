@@ -32,8 +32,10 @@ through a parameter that differs by one.
 Outputs
 -------
 per_region_calibration.csv   mu, sd, reference, error and z per region x descriptor
+reliability_bins.csv         the reliability diagram's own data, one row per bin
 summary.json                 Spearman rho, E|z|, ECE and reliability bins
-calibration_phi.png          reliability per descriptor, plus a rho summary
+calibration_phi.png          working panel: reliability per descriptor + rho summary
+reliability_phi.png          the reliability diagram alone, at figure quality
 """
 
 from __future__ import annotations
@@ -394,15 +396,40 @@ def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[
         # case, so the bins stay in raw units and the calibrated line is
         # E|e| = sd * sqrt(2/pi) rather than a normalised diagonal.
         edges = np.quantile(sd, np.linspace(0, 1, n_bins + 1))
+        raw_edges = edges.copy()          # keep the finite ones for the record
         edges[0], edges[-1] = -np.inf, np.inf
         idx = np.digitize(sd, edges[1:-1])
+        wsi = g["wsi"].to_numpy()
         bins = []
         for b in range(n_bins):
             sel = idx == b
-            if sel.any():
-                bins.append({"mean_sd": float(sd[sel].mean()),
-                             "mean_error": float(err[sel].mean()),
-                             "n": int(sel.sum())})
+            if not sel.any():
+                continue
+            # Error bar on the bin mean, clustered on the CASE. Regions inside a
+            # slide are spatially correlated, so a plain SEM over regions would
+            # be far too tight — often invisible at this scale, which is worse
+            # than no error bar because it looks like precision.
+            per_case = pd.Series(err[sel]).groupby(wsi[sel]).mean().to_numpy()
+            n_case = int(per_case.size)
+            se = (float(per_case.std(ddof=1) / np.sqrt(n_case))
+                  if n_case > 1 else float("nan"))
+            m_sd, m_err = float(sd[sel].mean()), float(err[sel].mean())
+            bins.append({
+                "bin": b,
+                "sd_lo": float(raw_edges[b]),
+                "sd_hi": float(raw_edges[b + 1]),
+                "mean_sd": m_sd,
+                "median_sd": float(np.median(sd[sel])),
+                "mean_error": m_err,
+                "median_error": float(np.median(err[sel])),
+                # what a calibrated ensemble would show in this bin
+                "expected_error": HALF_NORMAL * m_sd,
+                "ratio_obs_over_expected": (m_err / (HALF_NORMAL * m_sd)
+                                            if m_sd > 0 else float("nan")),
+                "se_error_by_case": se,
+                "n": int(sel.sum()),
+                "n_wsi": n_case,
+            })
 
         # and the normalised ECE, for continuity with uncertainty_calibration.py
         bu, be, bc = reliability_bins(sd, err, n_bins, sd.min(), sd.max(),
@@ -441,6 +468,130 @@ def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[
             "bins": bins,
         })
     return rows
+
+
+def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None:
+    """The reliability diagram on its own, at figure quality.
+
+    Separate from `calibration_phi.png`, which is a working panel. Three things
+    it adds, each because the compact version can mislead:
+
+    * **Error bars clustered on the case.** Without them a bin mean over ~285
+      regions looks precise, when those regions come from twenty slides.
+    * **The bin population**, as a bar strip underneath. Quantile bins hold equal
+      counts by construction but *not* equal numbers of slides, and a bin drawn
+      from three cases should not be read like one drawn from twenty.
+    * **Raw units on both axes.** sigma_CPA and |dCPA| are both in CPA, so
+      normalising — which `uncertainty_calibration.py` must do for pixels — would
+      throw away exactly what makes this comparison strong.
+
+    The reference line is E|e| = 0.80 sigma, not the diagonal: for Gaussian error
+    the mean absolute deviation is sigma*sqrt(2/pi), so a diagonal would call a
+    perfectly calibrated ensemble 20% over-confident.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec
+
+    scored = [r for r in rows if r.get("bins")]
+    if not scored:
+        print("[note] no binned descriptor to plot — reliability figure skipped")
+        return
+
+    ncol = len(scored)
+    fig = plt.figure(figsize=(4.0 * ncol + 0.6, 5.4))
+    gs = GridSpec(2, ncol, height_ratios=[3.4, 1.0], hspace=0.32, wspace=0.28,
+                  figure=fig)
+
+    for k, r in enumerate(scored):
+        b = r["bins"]
+        x = np.array([d["mean_sd"] for d in b])
+        y = np.array([d["mean_error"] for d in b])
+        se = np.array([d.get("se_error_by_case", np.nan) for d in b], float)
+        n = np.array([d["n"] for d in b])
+        nw = np.array([d.get("n_wsi", 0) for d in b])
+        colour = C_SERIES[PHI_NAMES.index(r["descriptor"]) % len(C_SERIES)]
+
+        ax = fig.add_subplot(gs[0, k])
+        # Axes are scaled to their OWN data, not forced equal. A shared scale is
+        # the textbook reliability diagram, but it only works while sigma and
+        # error are comparable: on an over-confident descriptor (beta0 here has
+        # sigma ~40 against an error ~500) equal limits crush every point into a
+        # corner and the panel shows nothing. The calibration line carries the
+        # comparison instead — read the points against the line, not against 45
+        # degrees, which is why the diagonal is not drawn at all.
+        xhi = float(x.max()) * 1.15
+        yhi = float(max(np.nanmax(y + np.nan_to_num(se)), xhi * HALF_NORMAL)) * 1.12
+        ax.plot([0, xhi], [0, xhi * HALF_NORMAL], color=C_MUTED, linewidth=1.4,
+                linestyle="--", zorder=3, label="calibrated   E|e| = 0.80 σ")
+        ax.errorbar(x, y, yerr=se, color=colour, linewidth=2, marker="o",
+                    markersize=6, capsize=3, elinewidth=1.2, zorder=5,
+                    markeredgecolor="white", markeredgewidth=0.8)
+        ax.set_xlim(0, xhi)
+        ax.set_ylim(0, yhi)
+        ax.set_xlabel("ensemble σ", color=C_MUTED, fontsize=9)
+        if k == 0:
+            ax.set_ylabel("|error| vs real tissue", color=C_MUTED, fontsize=9)
+        ratio = r["calibration_ratio"]
+        verdict = ("over-confident" if ratio > 1.1
+                   else "under-confident" if ratio < 0.9 else "calibrated")
+        rho_txt = (f"ρ = {r['spearman_rho']:+.3f}"
+                   if np.isfinite(r["spearman_rho"]) else "ρ undefined")
+        if np.isfinite(r.get("rho_ci_lo", np.nan)):
+            rho_txt += f" [{r['rho_ci_lo']:+.2f}, {r['rho_ci_hi']:+.2f}]"
+        ax.set_title(f"{r['descriptor']}\n{rho_txt}\n"
+                     f"E|z|/0.80 = {ratio:.2f}  ({verdict})",
+                     color=C_INK, fontsize=9.5, loc="left", pad=8)
+        ax.grid(True, color=C_GRID, linewidth=0.8, zorder=0)
+        ax.set_axisbelow(True)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+        for s in ("left", "bottom"):
+            ax.spines[s].set_color(C_GRID)
+        ax.tick_params(colors=C_MUTED, labelsize=8.5)
+        if k == 0:
+            leg = ax.legend(frameon=False, fontsize=7.5, loc="upper left")
+            for txt in leg.get_texts():
+                txt.set_color(C_MUTED)
+
+        # bin population: equal region counts by construction, but NOT equal
+        # numbers of slides, which is what the interval actually rests on
+        axb = fig.add_subplot(gs[1, k])
+        axb.bar(np.arange(len(n)), n, color=colour, alpha=0.32, zorder=3,
+                edgecolor="white", linewidth=0.6)
+        for i, (cnt, cases) in enumerate(zip(n, nw)):
+            axb.text(i, cnt, f"{cases}", ha="center", va="bottom", fontsize=6.5,
+                     color=C_MUTED)
+        axb.set_xlabel("σ bin (low → high)", color=C_MUTED, fontsize=8.5)
+        if k == 0:
+            axb.set_ylabel("regions", color=C_MUTED, fontsize=8.5)
+        axb.set_xticks(np.arange(len(n)))
+        axb.set_xticklabels([str(i + 1) for i in range(len(n))], fontsize=7)
+        axb.set_ylim(0, n.max() * 1.28)
+        axb.grid(True, axis="y", color=C_GRID, linewidth=0.8, zorder=0)
+        axb.set_axisbelow(True)
+        for s in ("top", "right"):
+            axb.spines[s].set_visible(False)
+        for s in ("left", "bottom"):
+            axb.spines[s].set_color(C_GRID)
+        axb.tick_params(colors=C_MUTED, labelsize=7.5)
+
+    fig.suptitle(title, color=C_INK, fontsize=13, x=0.006, ha="left", y=0.985)
+    fig.text(0.006, 0.005,
+             "Points are bin means in raw descriptor units; error bars are ±1 SE "
+             "clustered on the case, not on the region. Dashed line = calibration "
+             "(E|e| = 0.80σ for Gaussian error); points above it are\n"
+             "over-confident. Axes are scaled per panel, so the line's slope "
+             "differs between them — read each panel against its own line. Bars "
+             "below give each bin's region count, annotated with its slide count.",
+             fontsize=7.5, color=C_MUTED, linespacing=1.5)
+    # Not tight_layout: the reliability axes are set_aspect("equal"), which it
+    # cannot solve for, and it says so on every run.
+    fig.subplots_adjust(left=0.06, right=0.985, top=0.80, bottom=0.155)
+    fig.savefig(outpath, dpi=200, facecolor="white")
+    plt.close(fig)
+    print(f"wrote {outpath}")
 
 
 def make_figure(t: pd.DataFrame, rows: List[dict], outpath: Path, title: str) -> None:
@@ -612,8 +763,22 @@ def main() -> None:
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     t.to_csv(args.outdir / "per_region_calibration.csv", index=False)
+
+    # The reliability diagram's own data, flat, so the figure can be rebuilt or
+    # restyled for the manuscript without re-running the calibration — and so
+    # the numbers behind each point are quotable rather than only plotted.
+    bin_rows = [{"descriptor": r["descriptor"],
+                 "reference_class": r["reference_class"],
+                 "prediction": args.prediction, **b}
+                for r in rows if r.get("bins") for b in r["bins"]]
+    if bin_rows:
+        pd.DataFrame(bin_rows).to_csv(
+            args.outdir / "reliability_bins.csv", index=False)
+
     make_figure(t, rows, args.outdir / "calibration_phi.png",
                 f"φ_struct calibration — {args.prediction} prediction")
+    make_reliability_figure(rows, args.outdir / "reliability_phi.png",
+                            f"φ_struct reliability — {args.prediction} prediction")
 
     payload = {
         "prediction": args.prediction,
@@ -656,6 +821,9 @@ def main() -> None:
           "control: mean\n|rho| with the pairing broken, which must sit near 0 "
           "for rho to mean anything.")
     print(f"\nwrote {args.outdir / 'per_region_calibration.csv'}")
+    if bin_rows:
+        print(f"wrote {args.outdir / 'reliability_bins.csv'}  "
+              f"({len(bin_rows)} bins — the reliability diagram's own data)")
     print(f"wrote {args.outdir / 'summary.json'}")
 
 

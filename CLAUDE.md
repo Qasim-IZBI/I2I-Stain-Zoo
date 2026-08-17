@@ -692,6 +692,28 @@ sides cannot drift apart through a parameter that differs by one. **Pass the sam
 `--he_masks` the φ run used** — a footprint built differently on the two sides means
 the comparison divides by different denominators.
 
+Outputs `per_region_calibration.csv`, `summary.json`, `calibration_phi.png` (the
+working panel) and, as the figure-quality pair, **`reliability_phi.png` plus
+`reliability_bins.csv`** — the diagram and the exact numbers behind every point,
+so it can be restyled for the manuscript without re-running the calibration. Per
+bin: `sd_lo`/`sd_hi`, `mean_sd`, `mean_error`, `expected_error` (= 0.80·σ),
+`ratio_obs_over_expected`, `se_error_by_case`, `n`, `n_wsi`.
+
+Three things the reliability figure does that the compact panel does not, each
+because the compact one can mislead:
+
+- **Error bars clustered on the case**, not the region. Over ~285 regions a bin
+  mean looks precise when those regions come from twenty slides.
+- **The bin population underneath**, annotated with its slide count. Quantile
+  bins hold equal region counts by construction but *not* equal numbers of
+  slides, and a bin drawn from three cases should not read like one drawn from
+  twenty.
+- **Axes scaled per panel**, so the calibration line's slope differs between
+  them. A shared scale is the textbook form but only works while σ and error are
+  comparable — on an over-confident descriptor (β₀ at σ ~40 against error ~500)
+  equal limits crush every point into a corner. The diagonal is not drawn at all:
+  read the points against the dashed line.
+
 Two conventions that must be stated wherever the numbers are:
 
 - **σ is a predictive SD** — the spread of members, not the standard error of the

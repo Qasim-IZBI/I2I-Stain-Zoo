@@ -238,7 +238,9 @@ this** — worth saying, since it justifies the 5×10 design over a 50-seed run.
 |---|---|---|
 | `floor_sweep.png` | `plot_floor_sweep.py` | floor ÷ signal against region size, with the evidence behind each point |
 | `floor.png` | `estimate_floor.py` | per-descriptor verdict, and the variogram it rests on |
-| `calibration_phi.png` | `calibrate_phi.py` | reliability per descriptor + a ρ summary panel |
+| `reliability_phi.png` | `calibrate_phi.py` | **the reliability diagram** — bin means vs σ, case-clustered error bars, bin populations |
+| `reliability_bins.csv` | `calibrate_phi.py` | the numbers behind that figure, one row per descriptor × bin |
+| `calibration_phi.png` | `calibrate_phi.py` | working panel: reliability per descriptor + a ρ summary |
 | `<wsi>_uncertainty.png` | `plot_uncertainty_heatmap.py` | σ and σ/μ per descriptor over the slide |
 | `white_thresh.png` | `calibrate_white_thresh.py` | how the threshold was chosen (supplementary) |
 | `<wsi>_*_lumen.tif` | `--qc_dir` | the lumen call itself, for a supplementary QC panel |
