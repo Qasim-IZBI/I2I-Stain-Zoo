@@ -642,14 +642,33 @@ above half.
 
 #### Calibration — does the spread predict the error?
 
+Three stages, because two of them are measurements and only the third is cheap:
+
+| stage | reads | writes | cost |
+|---|---|---|---|
+| `compute_phi_uncertainty.py` | the 50 ensemble mask sets | `per_region.csv` (μ, σ) | hours |
+| `compute_phi_reference.py` | the real masks | `reference_phi.csv` (`real_*`) | hours |
+| `calibrate_phi.py` | **both CSVs** | ρ, E\|z\|, the figures | seconds |
+
 ```bash
 sbatch scripts/check_frame_alignment.sh   # Step 0: does the SR share the H&E frame?
 
+# measure the real tissue ONCE
+sbatch scripts/compute_phi_reference.sh
+#   or directly:
+python compute_phi_reference.py \
+    --phi_csv  ./phi_uncertainty/per_region.csv \
+    --real_psr /path/psr_masks/real/psr_masks_wsi_final --strip_prefix \
+    --he_masks /path/HE_tissue \
+    --outdir   ./calibration_phi/
+
+# then calibrate as often as you like
 python calibrate_phi.py \
-    --phi_csv    ./phi_uncertainty/per_region.csv \
-    --real_psr   /path/psr_masks/real/psr_masks_wsi_final --strip_prefix \
-    --he_masks   /path/HE_tissue \
-    --outdir     ./calibration_phi/
+    --phi_csv       ./phi_uncertainty/per_region.csv \
+    --reference_csv ./calibration_phi/reference_phi.csv \
+    --outdir        ./calibration_phi/
+python calibrate_phi.py --phi_csv ... --reference_csv ... \
+    --prediction fold --outdir ./calibration_phi_fold/
 ```
 
 Ensemble spread measures disagreement between members, not error. The BMVC 2026
@@ -657,14 +676,24 @@ result is that cycle error does not calibrate it; this asks the same question of
 external target. Per descriptor: Spearman ρ(σ, |error|), E|z| where z = |error|/σ,
 a reliability curve, and a normalised ECE.
 
-Two arms, independent, either omittable:
+**Why the reference is its own stage.** It loads a full-slide mask per WSI and runs
+`betti` plus a structure tensor over every region, and *nothing about it depends on
+the ensemble* — only on the real masks and the region boxes. Folding it into the
+calibration meant every change to `--n_bins`, `--n_boot`, `--prediction` or the
+figure re-measured tissue. `reference_phi.csv` also stands on its own: it is what
+the descriptors are on real liver, which the methods section needs regardless.
+
+Two arms, independent, either omittable — chosen when the **reference** is built,
+not at calibration time:
 
 - `--real_psr` scores the four collagen terms against the real SR. Region *r* is
   only the same tissue if the SR was resampled onto the H&E grid; the geometry is
   checked against `wsi_h`/`wsi_w` and a mismatch **exits** rather than scoring
   different tissue under the same region id. Being *larger* than the regions is
   not enough — one UC slide is 34794×27942 against the H&E's 32521×23201, which
-  covers every box while aligning with none of them.
+  covers every box while aligning with none of them. **On the UC liver cohort this
+  is the only available arm**, which makes that frame check the gate for the whole
+  calibration.
 
   **One excess is benign and expected:** φ is gridded on a reconstruction, which
   `utils.reconstruct_wsi` truncates to a whole number of tiles, so the original is
@@ -673,8 +702,7 @@ Two arms, independent, either omittable:
   index identical pixels. Truncation cannot lose a whole tile, so an excess below
   `--tile_size` (default 512) is accepted with a `[note]` and anything larger
   exits. **`--tile_size` is `tile.py --tile_size`, not `--resize_to`** —
-  reconstructions sit at source resolution. **On the UC liver cohort this is the only available arm**, which
-  makes that frame check the gate for the whole calibration.
+  reconstructions sit at source resolution.
 - `--real_lumen` scores the three H&E-referenced terms against the real H&E. Same
   physical section, so no floor and no frame question — but see why the lumen
   terms cannot be computed on this cohort at all.
@@ -687,42 +715,34 @@ the error message tests whether stripping would bridge the two and says so. Both
 sides are keyed the same way, so it does not break `--he_masks`, which already
 matched. Two files collapsing to one key is **fatal**, not last-one-wins.
 
-**Compute the real side once and reuse it.** Reference φ is nearly all the
-runtime — twenty full-slide masks, `betti` and a structure tensor over every
-region — and it does not depend on the ensemble at all, only on the real masks
-and the region boxes. So it is cached automatically:
-
-```bash
-# the slow half, as its own job
-python calibrate_phi.py --phi_csv .../per_region.csv \
-    --real_psr /path/psr_masks/real/psr_masks_wsi_final --strip_prefix \
-    --he_masks /path/HE_tissue --reference_only --outdir ./calibration_phi/
-
-# every later run: seconds, not hours
-python calibrate_phi.py --phi_csv .../per_region.csv \
-    --reference_csv ./calibration_phi/reference_phi.csv \
-    --real_psr ... --strip_prefix --he_masks ... --prediction fold \
-    --outdir ./calibration_phi_fold/
-```
-
-Reuse is **verified, not trusted**, by two independent checks — either alone
-leaves a hole. The `.json` beside the CSV records `--mpp`, `--min_object_px`,
-`--closing_px`, `--white_thresh`, the mask directories and `--strip_prefix`, and
-catches a reference *measured* differently on the same boxes. The **boxes
-themselves** catch a regrid: `--region_px 1024` against a cache built at 2048
-keeps every parameter identical while every region moves, and region 7 of slide 3
-exists in both — on different tissue. A mismatch exits.
-
 Regions come from `--phi_csv` verbatim rather than by rebuilding a grid, so the two
 sides cannot drift apart through a parameter that differs by one. **Pass the same
 `--he_masks` the φ run used** — a footprint built differently on the two sides means
 the comparison divides by different denominators.
 
+Two consistency checks run automatically, because a mismatch on either side is
+invisible in the output:
+
+- **Against the φ run.** `compute_phi_reference.py` reads `summary.json` beside
+  `--phi_csv` and refuses if `--mpp`, `--min_object_px` or `--closing_px` differ —
+  the error is a difference between two measurements, so a component size that
+  differs between them puts part of that difference into the parameters rather
+  than the tissue. `--allow_param_mismatch` overrides it deliberately.
+- **Against the grid.** The region boxes travel inside `reference_phi.csv`, so
+  `calibrate_phi.py` proves the reference belongs to the grid it is used on.
+  `--region_px 1024` against a reference built at 2048 keeps every parameter
+  identical while every region moves, and region 7 of slide 3 exists in both — on
+  different tissue. That exits too.
+
+`reference_phi.json` records the mask directories and thresholds behind the
+reference, and `calibrate_phi.py` copies it into `summary.json`, so a result
+carries a trace of how its target was measured.
+
 Outputs `per_region_calibration.csv`, `summary.json`, `calibration_phi.png` (the
 working panel) and, as the figure-quality pair, **`reliability_phi.png` plus
 `reliability_bins.csv`** — the diagram and the exact numbers behind every point,
-so it can be restyled for the manuscript without re-running the calibration. Per
-bin: `sd_lo`/`sd_hi`, `mean_sd`, `mean_error`, `expected_error` (= 0.80·σ),
+so it can be restyled for the manuscript without re-running anything. Per bin:
+`sd_lo`/`sd_hi`, `mean_sd`, `mean_error`, `expected_error` (= 0.80·σ),
 `ratio_obs_over_expected`, `se_error_by_case`, `n`, `n_wsi`.
 
 Three things the reliability figure does that the compact panel does not, each
@@ -753,6 +773,13 @@ Two conventions that must be stated wherever the numbers are:
   normalised ECE is reported for continuity but on synthetic data reads ~0.35
   whether the ensemble is calibrated, over-confident or useless — do not lead with
   it.
+
+**Quote the cluster-bootstrap CI, not the naive p.** `--n_boot` (default 2000)
+resamples whole *slides*: regions inside one are spatially correlated, so a p-value
+over ~2850 regions describes a cohort of twenty cases as if it held 2850. A slide
+drawn twice contributes its regions twice, which is the point. `rho_shuffled` is the
+negative control — mean |ρ| with the σ–error pairing broken — and must sit near zero
+for ρ to mean anything.
 
 `--prediction grand` pairs the mean of all 50 with the total spread (the deployed
 prediction); `--prediction fold` pairs each subset's mean with its procedural spread
@@ -1028,7 +1055,9 @@ sbatch scripts/compute_phi_uncertainty_grid_array.sh # 0-19   one WSI per task
 python aggregate_phi_uncertainty.py --indir .../per_wsi --outdir ... --expect 20
 
 # then the two consumers
-python calibrate_phi.py --phi_csv .../per_region.csv --real_lumen ... --he_masks ...
+sbatch scripts/compute_phi_reference.sh              # real tissue, once
+python calibrate_phi.py --phi_csv .../per_region.csv \
+    --reference_csv .../calibration_phi/reference_phi.csv --outdir ...
 python plot_uncertainty_heatmap.py --phi_csv .../per_region.csv --downsample 32
 ```
 

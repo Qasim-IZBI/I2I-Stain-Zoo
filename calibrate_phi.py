@@ -7,35 +7,30 @@ proxy — does not calibrate it. This asks the same question against an external
 task-relevant target: φ_struct of the generated stain versus φ_struct of the
 **real** tissue, per descriptor, per region.
 
+The two measurements are separate stages, and this is only the third:
+
+    compute_phi_uncertainty.py   ensemble masks -> per_region.csv     (mu, sd)
+    compute_phi_reference.py     real masks     -> reference_phi.csv  (real_*)
+    calibrate_phi.py             both CSVs      -> does sd predict the error?
+
     python calibrate_phi.py \\
-        --phi_csv    ./phi_uncertainty/per_region.csv \\
-        --real_psr   /path/psr_masks/real/psr_masks_wsi_final \\
-        --real_lumen /path/lumen_masks_real \\
-        --he_masks   /path/HE_tissue \\
-        --outdir     ./calibration_phi/
+        --phi_csv       ./phi_uncertainty/per_region.csv \\
+        --reference_csv ./calibration_phi/reference_phi.csv \\
+        --outdir        ./calibration_phi/
 
-The two reference arms are independent, and either may be omitted:
+So this reads no masks and takes seconds: changing `--prediction`, `--n_bins`,
+`--n_boot` or anything about the figure never re-measures tissue. Which arms are
+scored is decided when the reference is built — `--real_psr` gives the four
+collagen terms, `--real_lumen` the three H&E-referenced ones.
 
-* `--real_lumen` scores lumen_fraction and the two lumen Betti numbers against
-  the **real H&E** — the same physical section the model generated from, so
-  there is no level offset and no biological floor. Its regions are on the H&E
-  frame, the same frame the virtual run used, so pairing is exact.
-* `--real_psr` scores CPA and the collagen Betti/dispersion terms against the
-  real SR, which sits at a different section level. Pairing region *r* across
-  the two requires the SR to share the H&E's coordinate frame; the run checks
-  the geometry and refuses rather than measuring different tissue.
-
-Regions come from `--phi_csv` verbatim — the same y0/y1/x0/x1 boxes the virtual
-run used — rather than rebuilding a grid, so the two sides cannot drift apart
-through a parameter that differs by one.
+Both sides carry their region boxes, so a reference is proved to belong to this
+grid rather than trusted: same region ids on different boxes exits.
 
 Outputs
 -------
-reference_phi.csv            phi of the REAL tissue per region, + a .json parameter
-                             record. Reusable: --reference_csv skips recomputing it
 per_region_calibration.csv   mu, sd, reference, error and z per region x descriptor
 reliability_bins.csv         the reliability diagram's own data, one row per bin
-summary.json                 Spearman rho, E|z|, ECE and reliability bins
+summary.json                 Spearman rho, E|z|, ECE, reliability bins, provenance
 calibration_phi.png          working panel: reliability per descriptor + rho summary
 reliability_phi.png          the reliability diagram alone, at figure quality
 """
@@ -53,23 +48,8 @@ import pandas as pd
 from scipy.stats import spearmanr
 
 from uncertainty_calibration import expected_calibration_error, reliability_bins
-from uncertainty_phi.descriptors import (
-    PHI_NAMES,
-    PHI_REFERENCE,
-    WHITE_THRESH,
-    he_tissue_footprint,
-    lumen_descriptors,
-    phi_struct,
-    tissue_footprint_from_mask,
-)
-from uncertainty_phi.ensemble import (
-    _stem_index,
-    load_label_mask,
-    load_rgb,
-    load_roi_mask,
-)
-from uncertainty_phi.regions import SOURCE_MPP
-from apply_he_mask import normalize_stem
+from uncertainty_phi.descriptors import PHI_NAMES, PHI_REFERENCE
+from uncertainty_phi.reference import load_reference
 
 # For a Gaussian error of scale sigma, E|e| = sigma * sqrt(2/pi). A reliability
 # line of slope 1 would therefore call a perfectly calibrated ensemble 20%
@@ -81,318 +61,6 @@ LUMEN = [i for i, r in enumerate(PHI_REFERENCE) if r == "he"]
 
 C_SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7", "#e34948")
 C_INK, C_MUTED, C_GRID = "#0b0b0b", "#52514e", "#e3e3df"
-
-
-def _indexed(directory: Optional[Path], strip_prefix: bool, what: str) -> dict:
-    """stem -> path, optionally keyed on the stem minus its first token.
-
-    The real PSR masks are named after the SR slides while φ is gridded on the
-    H&E, so `SR_slide` has to reach `HE_slide` — the rule `apply_he_mask.py` and
-    `compare_psr.py` already carry. A collision is fatal rather than
-    last-one-wins: two files differing only in their prefix collapse to one key,
-    and picking either would score one slide's regions against another's tissue.
-    """
-    if directory is None:
-        return {}
-    raw = _stem_index(directory)
-    if not strip_prefix:
-        return raw
-    out: dict = {}
-    for stem, path in raw.items():
-        key = normalize_stem(stem, True)
-        if key in out:
-            raise SystemExit(
-                f"--strip_prefix collapses two files in {what} to the key "
-                f"'{key}': {out[key].name} and {path.name}. Scoring a region "
-                f"against the wrong slide's tissue is invisible in the output, "
-                f"so this is refused rather than resolved arbitrarily."
-            )
-        out[key] = path
-    return out
-
-
-# Everything that changes what a reference φ IS. A cached reference computed
-# under different values measures a different quantity, so reuse is refused
-# rather than silently mixing them.
-REFERENCE_PARAMS = ("mpp", "min_object_px", "closing_px", "white_thresh",
-                    "real_psr", "real_lumen", "he_masks", "he_dir",
-                    "strip_prefix")
-
-BOX_COLS = ["y0", "y1", "x0", "x1"]
-
-
-def save_reference(ref: pd.DataFrame, path: Path, args) -> None:
-    """Write the reference φ plus the parameter record that makes it reusable."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    ref.to_csv(path, index=False)
-    meta = {k: (str(getattr(args, k)) if isinstance(getattr(args, k), Path)
-                else getattr(args, k))
-            for k in REFERENCE_PARAMS}
-    with open(path.with_suffix(".json"), "w") as fh:
-        json.dump({"params": meta, "n_regions": int(len(ref)),
-                   "n_wsi": int(ref["wsi"].nunique()),
-                   "descriptors": [c for c in ref.columns
-                                   if c.startswith("real_")]}, fh, indent=2)
-
-
-def load_reference(path: Path, df: pd.DataFrame, args) -> pd.DataFrame:
-    """Reuse a cached reference φ, after proving it belongs to THIS grid.
-
-    Recomputing the reference is nearly all of this script's runtime — twenty
-    full-slide masks, `betti` and a structure tensor over every region — so a
-    cache turns a re-plot from hours into seconds. What it must never do is
-    quietly pair one grid's σ with another grid's reference.
-
-    Two independent checks, because either alone leaves a hole. The parameters
-    catch a reference measured differently (a different `--white_thresh`, a
-    different mask directory) on the same boxes. The **boxes themselves** catch a
-    regrid — `--region_px 1024` against a cache built at 2048 keeps every
-    parameter identical while every region moves.
-    """
-    ref = pd.read_csv(path)
-    meta_path = path.with_suffix(".json")
-    if meta_path.is_file():
-        with open(meta_path) as fh:
-            saved = json.load(fh).get("params", {})
-        now = {k: (str(getattr(args, k)) if isinstance(getattr(args, k), Path)
-                   else getattr(args, k)) for k in REFERENCE_PARAMS}
-        differ = {k: (saved.get(k), now[k]) for k in REFERENCE_PARAMS
-                  if k in saved and saved[k] != now[k]}
-        if differ:
-            raise SystemExit(
-                f"{path} was computed under different parameters, so it measures "
-                f"a different quantity:\n"
-                + "\n".join(f"  {k}: cached {a!r} vs now {b!r}"
-                            for k, (a, b) in differ.items())
-                + "\n  Drop --reference_csv to recompute, or pass the values it "
-                  "was built with."
-            )
-    else:
-        print(f"[WARN] no {meta_path.name} beside the cached reference, so the "
-              f"parameters it was built under cannot be checked. The region "
-              f"boxes still are.")
-
-    if not set(BOX_COLS) <= set(ref.columns):
-        raise SystemExit(
-            f"{path} carries no y0/y1/x0/x1 columns, so it cannot be checked "
-            f"against this grid. It predates --save_reference; recompute it."
-        )
-
-    key = ["wsi", "region_index"]
-    merged = df[key + BOX_COLS].merge(ref[key + BOX_COLS], on=key, how="inner",
-                                      suffixes=("_phi", "_ref"))
-    if len(merged) != len(df):
-        raise SystemExit(
-            f"{path} covers {len(merged)} of the {len(df)} regions in --phi_csv. "
-            f"It was built for a different grid — recompute it, or point "
-            f"--phi_csv at the run it came from."
-        )
-    moved = merged[[f"{c}_phi" for c in BOX_COLS]].to_numpy() != \
-        merged[[f"{c}_ref" for c in BOX_COLS]].to_numpy()
-    if moved.any():
-        bad = merged[moved.any(axis=1)].iloc[0]
-        # Print the WHOLE box. Two grids at different region sizes share the same
-        # top-left corner for region 0, so reporting only y0/x0 shows two
-        # identical pairs and reads as a spurious failure.
-        def _box(suffix):
-            return (f"y {bad['y0' + suffix]}-{bad['y1' + suffix]}  "
-                    f"x {bad['x0' + suffix]}-{bad['x1' + suffix]}")
-        raise SystemExit(
-            f"{path} has the same region ids on DIFFERENT boxes — e.g. "
-            f"{bad['wsi']} region {bad['region_index']}:\n"
-            f"  cache    {_box('_ref')}\n"
-            f"  phi_csv  {_box('_phi')}\n"
-            f"  Reusing it would score one grid's spread against another grid's "
-            f"tissue. Recompute the reference for this grid."
-        )
-    print(f"[cache] reference phi for {len(ref)} regions over "
-          f"{ref['wsi'].nunique()} WSI from {path} (boxes verified)")
-    return ref
-
-
-def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
-    """φ of the real tissue, on the exact region boxes the virtual run used."""
-    sp = args.strip_prefix
-    psr_index = _indexed(args.real_psr, sp, "--real_psr")
-    lum_index = _indexed(args.real_lumen, sp, "--real_lumen")
-    he_index = _indexed(args.he_dir, sp, "--he_dir")
-    he_mask_index = _indexed(args.he_masks, sp, "--he_masks")
-
-    rows: List[dict] = []
-    missing: List[str] = []
-    edge_noted: set = set()
-    for wsi, group in df.groupby("wsi", sort=False):
-        # The φ side is keyed the same way, so HE_x still reaches HE_x while
-        # SR_x also reaches it.
-        stem = normalize_stem(Path(str(wsi)).stem, sp)
-
-        labels = load_label_mask(psr_index[stem]) if stem in psr_index else None
-        lumen = (load_label_mask(lum_index[stem]) > 0) if stem in lum_index else None
-        # The footprint MUST be built the same way the virtual side built it,
-        # or the two sides of the comparison divide by different denominators.
-        # --he_masks is that way; thresholding is the fallback for a phi run
-        # that predates it.
-        footprint = None
-        if stem in he_mask_index:
-            shape = (labels.shape if labels is not None
-                     else lumen.shape if lumen is not None else None)
-            if shape is not None:
-                footprint = tissue_footprint_from_mask(
-                    load_roi_mask(he_mask_index[stem], shape))
-        elif stem in he_index:
-            footprint = he_tissue_footprint(load_rgb(he_index[stem]),
-                                            white_thresh=args.white_thresh)
-
-        if labels is None and lumen is None:
-            print(f"[skip] no reference for {stem!r}")
-            missing.append(stem)
-            continue
-
-        # The boxes were built on one frame. A reference of a different size is
-        # a different frame, and cropping it at these coordinates scores
-        # different tissue under the same region id.
-        #
-        # "Large enough" is NOT the test. A slide can exceed the region extent
-        # and still be a different crop — one UC case is 34794x27942 against the
-        # H&E's 32521x23201, which covers every box while aligning with none of
-        # them. So compare against the recorded frame where the phi run wrote
-        # one, and fall back to the extent bound only for older CSVs.
-        want = None
-        if {"wsi_h", "wsi_w"} <= set(group.columns):
-            h, w = group["wsi_h"].iloc[0], group["wsi_w"].iloc[0]
-            if pd.notna(h) and pd.notna(w):
-                want = (int(h), int(w))
-        need = (int(group["y1"].max()), int(group["x1"].max()))
-
-        for name, arr in (("--real_psr", labels), ("--real_lumen", lumen),
-                          ("--he_masks/--he_dir", footprint)):
-            if arr is None:
-                continue
-            got = (int(arr.shape[0]), int(arr.shape[1]))
-            if want is not None and got != want:
-                # One benign difference: the reference is the UNTRUNCATED
-                # original while phi was gridded on a reconstruction, which
-                # utils.reconstruct_wsi truncates to a whole number of tiles at
-                # the same origin and scale. Then the phi frame is a prefix of
-                # the reference in both axes and the boxes index identical
-                # pixels — the edge strip the reconstruction dropped is simply
-                # never addressed.
-                #
-                # The bound is what separates it from a genuinely different
-                # frame: truncation cannot lose a whole tile, so an excess below
-                # one tile means the reference truncates to exactly this frame,
-                # while the UC M3 case is over by 2273x4741 px and aligns with
-                # nothing. "Larger" alone is not the test.
-                slack = (got[0] - want[0], got[1] - want[1])
-                truncates_to_frame = (
-                    0 <= slack[0] < args.tile_size and 0 <= slack[1] < args.tile_size
-                )
-                if truncates_to_frame:
-                    if stem not in edge_noted:
-                        aligned = (want[0] % args.tile_size == 0
-                                   and want[1] % args.tile_size == 0)
-                        print(f"[note] {stem}: reference is {got[0]}x{got[1]}, phi "
-                              f"frame {want[0]}x{want[1]} (+{slack[0]}x{slack[1]} "
-                              f"px, under one {args.tile_size}px tile"
-                              f"{'' if aligned else '; phi frame is NOT tile-aligned'})"
-                              f" — the reference is the untruncated original, "
-                              f"cropped to the reconstruction's frame.")
-                        edge_noted.add(stem)
-                    continue
-                raise SystemExit(
-                    f"{stem}: {name} is {got[0]}x{got[1]} but the phi run was "
-                    f"gridded on {want[0]}x{want[1]} (off by "
-                    f"{slack[0]}x{slack[1]} px, at least one {args.tile_size}px "
-                    f"tile). Different frames — region r is different tissue on "
-                    f"each side. Note it is not enough to be larger than the "
-                    f"regions: this checks the frame, not the bound. Run "
-                    f"scripts/check_frame_alignment.sh; for the collagen arm the "
-                    f"SR must be RESAMPLED onto the H&E grid, not merely "
-                    f"registered to it. If the excess really is only tiling "
-                    f"truncation, --tile_size must match the tiling."
-                )
-            if want is None and (got[0] < need[0] or got[1] < need[1]):
-                raise SystemExit(
-                    f"{stem}: {name} is {got[0]}x{got[1]} but the regions run to "
-                    f"{need[0]}x{need[1]}. Different frames. (This CSV predates "
-                    f"the wsi_h/wsi_w columns, so only the bound could be "
-                    f"checked — re-run compute_phi_uncertainty for an exact "
-                    f"frame check.)"
-                )
-
-        for row in group.itertuples():
-            ys, xs = slice(row.y0, row.y1), slice(row.x0, row.x1)
-            # The boxes travel WITH the reference, so a cached reference can be
-            # checked against the grid it is being reused on rather than trusted.
-            out: Dict[str, float] = {
-                "wsi": wsi, "region_index": row.region_index,
-                "y0": row.y0, "y1": row.y1, "x0": row.x0, "x1": row.x1,
-            }
-            box = (row.y1 - row.y0, row.x1 - row.x0)
-
-            # Numpy slicing past an edge returns a SHORT array rather than
-            # raising, and every descriptor is a density — a short crop divides
-            # by the wrong area and comes back plausible. The frame checks above
-            # should make this unreachable; it is here because the failure is
-            # invisible if they ever do not.
-            for name, arr in (("--real_psr", labels), ("--real_lumen", lumen),
-                              ("--he_masks/--he_dir", footprint)):
-                if arr is None:
-                    continue
-                crop = arr[ys, xs]
-                if crop.shape[:2] != box:
-                    raise SystemExit(
-                        f"{stem} region {row.region_index}: {name} cropped to "
-                        f"{crop.shape[0]}x{crop.shape[1]} but the box is "
-                        f"{box[0]}x{box[1]}. The region runs past the reference's "
-                        f"edge, so every density would divide by the wrong area."
-                    )
-
-            if labels is not None:
-                v = phi_struct(labels[ys, xs], None, mpp=args.mpp,
-                               min_object_px=args.min_object_px,
-                               closing_px=args.closing_px)
-                for j in COLLAGEN:
-                    out[f"real_{PHI_NAMES[j]}"] = float(v[j])
-
-            if lumen is not None and footprint is not None:
-                frac, b0, b1 = lumen_descriptors(lumen[ys, xs], footprint[ys, xs],
-                                                 args.mpp)
-                out[f"real_{PHI_NAMES[LUMEN[0]]}"] = frac
-                out[f"real_{PHI_NAMES[LUMEN[1]]}"] = b0
-                out[f"real_{PHI_NAMES[LUMEN[2]]}"] = b1
-
-            rows.append(out)
-
-    if not rows:
-        # "check the stems match" is not enough to act on. Show both sides, and
-        # test whether dropping the first token would have bridged them — the
-        # SR_/HE_ case is the expected one on the collagen arm.
-        have = sorted(set(psr_index) | set(lum_index))
-        lines = ["no reference regions produced — no WSI in --phi_csv had a "
-                 "matching reference mask.",
-                 f"  phi_csv     ({len(missing)}): "
-                 f"{', '.join(repr(s) for s in missing[:3])}"
-                 f"{' ...' if len(missing) > 3 else ''}",
-                 f"  reference   ({len(have)}): "
-                 f"{', '.join(repr(s) for s in have[:3])}"
-                 f"{' ...' if len(have) > 3 else ''}"]
-        if not sp and have and missing:
-            bridged = ({normalize_stem(s, True) for s in missing}
-                       & {normalize_stem(s, True) for s in have})
-            if bridged:
-                lines.append(
-                    f"  => --strip_prefix would match {len(bridged)} of them "
-                    f"(e.g. {sorted(bridged)[0]!r}). The real PSR masks are "
-                    f"named after the SR slides while phi is gridded on the "
-                    f"H&E; add --strip_prefix, as apply_he_mask.py and "
-                    f"compare_psr.py do."
-                )
-        elif sp:
-            lines.append("  --strip_prefix is already on, so the two sides "
-                         "differ by more than a leading token.")
-        raise SystemExit("\n".join(lines))
-    return pd.DataFrame(rows)
 
 
 def pair(df: pd.DataFrame, ref: pd.DataFrame, mode: str, n_folds: int) -> pd.DataFrame:
@@ -788,49 +456,43 @@ def make_figure(t: pd.DataFrame, rows: List[dict], outpath: Path, title: str) ->
     print(f"wrote {outpath}")
 
 
+# Flags that moved to compute_phi_reference.py. argparse would reject them with
+# "unrecognized arguments", which does not say where they went.
+MOVED = ("--real_psr", "--real_lumen", "--he_masks", "--he_dir", "--strip_prefix",
+         "--white_thresh", "--min_object_px", "--closing_px", "--mpp",
+         "--tile_size", "--save_reference", "--reference_only")
+
+
+def _check_moved_flags() -> None:
+    import sys
+    used = [f for f in MOVED if any(a == f or a.startswith(f + "=")
+                                    for a in sys.argv[1:])]
+    if used:
+        raise SystemExit(
+            f"{', '.join(used)} moved to compute_phi_reference.py — measuring "
+            f"the real tissue is now its own stage, so it runs once and every "
+            f"calibration reuses it.\n\n"
+            f"  python compute_phi_reference.py --phi_csv <per_region.csv> \\\n"
+            f"      --real_psr <real masks> --strip_prefix --he_masks <tissue> \\\n"
+            f"      --outdir <dir>\n"
+            f"  python calibrate_phi.py --phi_csv <per_region.csv> \\\n"
+            f"      --reference_csv <dir>/reference_phi.csv --outdir <dir>"
+        )
+
+
 def main() -> None:
+    _check_moved_flags()
     ap = argparse.ArgumentParser("Calibrate phi_struct uncertainty against real tissue")
     ap.add_argument("--phi_csv", type=Path, required=True,
                     help="per_region.csv from compute_phi_uncertainty.py "
                          "(or the pooled one from aggregate_phi_uncertainty.py).")
-    ap.add_argument("--real_psr", type=Path, default=None,
-                    help="Real SR collagen masks. Scores the four PSR-referenced "
-                         "descriptors — needs the SR on the H&E frame.")
-    ap.add_argument("--real_lumen", type=Path, default=None,
-                    help="Lumen masks of the real H&E, from make_lumen_masks.py. "
-                         "Scores the three H&E-referenced descriptors. Same "
-                         "physical section, so no floor and no frame question.")
-    ap.add_argument("--he_masks", type=Path, default=None,
-                    help="H&E tissue masks, for the footprint the lumen "
-                         "densities are divided by. Use whatever the phi run "
-                         "used: a footprint built differently on the two sides "
-                         "means the comparison divides by different denominators.")
-    ap.add_argument("--he_dir", type=Path, default=None,
-                    help="Real H&E WSIs — the fallback footprint source, by "
-                         "thresholding, for a phi run that predates --he_masks.")
-    ap.add_argument("--strip_prefix", action="store_true",
-                    help="Drop the first '_'-delimited token from every stem "
-                         "before matching, so SR_slide reaches HE_slide. Needed "
-                         "with --real_psr, whose masks are named after the SR "
-                         "slides while phi is gridded on the H&E. Same rule as "
-                         "apply_he_mask.py and compare_psr.py.")
+    ap.add_argument("--reference_csv", type=Path, required=True,
+                    help="reference_phi.csv from compute_phi_reference.py — "
+                         "phi of the real tissue on this same grid. Verified "
+                         "against --phi_csv's region boxes; a mismatch exits "
+                         "rather than pairing one grid's spread with another "
+                         "grid's tissue.")
     ap.add_argument("--outdir", type=Path, default=Path("calibration_phi"))
-
-    # Reference phi is the expensive half and does not depend on the ensemble at
-    # all — only on the real masks and the region boxes. So it is computed once
-    # and reused, which is what makes a figure change cheap.
-    ap.add_argument("--reference_csv", type=Path, default=None,
-                    help="Reuse a reference phi from a previous run instead of "
-                         "recomputing it. Checked against this grid's region "
-                         "boxes and the parameters it was built under; a "
-                         "mismatch exits rather than pairing one grid's spread "
-                         "with another grid's tissue.")
-    ap.add_argument("--save_reference", type=Path, default=None,
-                    help="Where to write the reference phi. "
-                         "[<outdir>/reference_phi.csv]")
-    ap.add_argument("--reference_only", action="store_true",
-                    help="Compute and save the reference phi, then stop. Lets "
-                         "the slow half run as its own job.")
 
     ap.add_argument("--prediction", choices=("grand", "fold"), default="grand",
                     help="'grand' pairs the mean of all members with the total "
@@ -849,47 +511,11 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0,
                     help="Seed for the bootstrap and the shuffled control.")
 
-    # must match the run that produced --phi_csv
-    ap.add_argument("--mpp", type=float, default=SOURCE_MPP)
-    ap.add_argument("--min_object_px", type=int, default=16)
-    ap.add_argument("--closing_px", type=int, default=0)
-    ap.add_argument("--white_thresh", type=float, default=WHITE_THRESH)
-    ap.add_argument("--tile_size", type=int, default=512,
-                    help="Tile size the cohort was tiled at (tile.py "
-                         "--tile_size, NOT --resize_to: reconstructions sit at "
-                         "source resolution). A reconstruction is the original "
-                         "truncated to whole tiles, so a reference may exceed the "
-                         "phi frame by up to this much and still be the same "
-                         "frame. Above it, the two are genuinely different "
-                         "crops. [%(default)s]")
     args = ap.parse_args()
 
-    if args.real_lumen and not (args.he_masks or args.he_dir):
-        ap.error("--real_lumen needs --he_masks (or --he_dir): the lumen "
-                 "densities are per mm2 of the H&E footprint, and without it "
-                 "they are not comparable to the virtual side's")
-    if not args.real_psr and not args.real_lumen:
-        ap.error("give --real_psr, --real_lumen, or both — there is nothing to "
-                 "calibrate against otherwise")
-
     df = pd.read_csv(args.phi_csv)
-    print(f"[1/3] {len(df)} regions over {df['wsi'].nunique()} WSI from {args.phi_csv}")
-
-    if args.reference_csv:
-        ref = load_reference(args.reference_csv, df, args)
-    else:
-        ref = reference_phi(df, args)
-        print(f"[2/3] reference phi for {len(ref)} regions")
-        # Always cache it. It is the expensive half — twenty full-slide masks,
-        # betti and a structure tensor per region — and every later change to
-        # --prediction, --n_bins, --n_boot or the figure reuses it unchanged.
-        cache = args.save_reference or (args.outdir / "reference_phi.csv")
-        save_reference(ref, cache, args)
-        print(f"wrote {cache}  (reuse with --reference_csv, {len(ref)} regions)")
-
-    if args.reference_only:
-        print("--reference_only: stopping before the calibration.")
-        return
+    print(f"[1/2] {len(df)} regions over {df['wsi'].nunique()} WSI from {args.phi_csv}")
+    ref, provenance = load_reference(args.reference_csv, df)
 
     t = pair(df, ref, args.prediction, args.n_folds)
     with warnings.catch_warnings():
@@ -919,6 +545,10 @@ def main() -> None:
         "prediction": args.prediction,
         "n_regions": int(df.shape[0]),
         "per_descriptor": rows,
+        # How the reference was measured is not this script's decision, so it is
+        # recorded rather than re-derived — otherwise a result carries no trace
+        # of the thresholds and mask directories behind its target.
+        "reference": {"path": str(args.reference_csv), **provenance},
         "conventions": {
             "sigma": "predictive SD (spread of members), not the standard error "
                      "of the mean — sigma/sqrt(M) would be tiny and the test "
