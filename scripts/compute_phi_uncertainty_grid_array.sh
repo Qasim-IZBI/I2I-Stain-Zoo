@@ -59,15 +59,18 @@ PROJECT_ROOT=I2I-Stain-Zoo
 # -----------------------------
 # Paths — all overridable via --export
 # -----------------------------
-GRID_ROOT="${GRID_ROOT:-/work2/bz66izin-VSproject/ensemble_grid/cyclegan}"
+GRID_ROOT="${GRID_ROOT:-/work2/bz66izin-UC_project/ensemble/cyclegan}"
 MODEL_SIZE="${MODEL_SIZE:-model_small}"
-TEST_A="${TEST_A:-/work2/bz66izin-UC_project/ID/no_overlap/testA/tiles/testA}"
-# Reconstructed H&E, or the ORIGINAL H&E WSIs — both sit in the same pixel
-# frame. NOT the export_tissue binary masks. `none` accepts NaN for the two
-# H&E-referenced descriptors.
-HE_DIR="${HE_DIR:-/work2/bz66izin-UC_project/ID/no_overlap/testA/export_rgb/testA}"
+TEST_A="${TEST_A:-/work2/bz66izin-UC_project/ID_HE/no_overlap/testA/tiles/testA}"
+# PREFERRED footprint source: the H&E tissue masks apply_he_mask.py already
+# applies to the collagen. One definition of tissue across the study, and it
+# keeps the whitespace threshold out of every denominator.
+HE_MASKS="${HE_MASKS:-/work2/bz66izin-UC_project/ID_HE/no_overlap/testA/export_tissue/testA}"
+# Fallback only: derives the footprint by thresholding the H&E RGB. `none` to
+# skip. Unnecessary when HE_MASKS is set.
+HE_DIR="${HE_DIR:-none}"
 ROI_DIR="${ROI_DIR:-}"
-OUTDIR="${OUTDIR:-/work2/bz66izin-UC_project/ID/phi_uncertainty}"
+OUTDIR="${OUTDIR:-/work2/bz66izin-UC_project/ID_HE/phi_uncertainty}"
 
 REGION_MM="${REGION_MM:-1.5}"
 MIN_TISSUE_FRACTION="${MIN_TISSUE_FRACTION:-0.25}"
@@ -83,6 +86,13 @@ WHITE_THRESH="${WHITE_THRESH:-0.85}"
 # which a 1.5 mm H&E region is ~100 MB before compression.
 QC_DIR="${QC_DIR-}"
 QC_MAX_PX="${QC_MAX_PX:-0}"
+# Per-member lumen masks from make_lumen_masks.py. Empty = the three
+# H&E-referenced descriptors come back NaN, which is correct on any cohort whose
+# generated stain does not reproduce whitespace — see the note in CLAUDE.md.
+LUMEN_ROOT="${LUMEN_ROOT-}"
+# Region side in PIXELS, overriding REGION_MM. Set it when the heatmap has to
+# tile without a seam; leave empty to size in mm.
+REGION_PX="${REGION_PX-}"
 
 # Grid decomposition — identical to train_ensemble_cyclegan_grid.sh and the rest
 # of the chain. Change it here and it has to change in all of them.
@@ -146,6 +156,30 @@ if [ -n "${QC_DIR}" ]; then
     mkdir -p "${QC_DIR}"
     QC_ARGS=(--qc_dir "${QC_DIR}" --qc_max_px "${QC_MAX_PX}")
     echo "QC images: ${QC_DIR}"
+fi
+
+HE_MASK_ARGS=()
+if [ -n "${HE_MASKS}" ] && [ "${HE_MASKS}" != "none" ]; then
+    if [ ! -d "${HE_MASKS}" ]; then
+        echo "[ERROR] H&E tissue masks not found: ${HE_MASKS}"
+        exit 1
+    fi
+    HE_MASK_ARGS=(--he_masks "${HE_MASKS}")
+fi
+
+LUMEN_ARGS=()
+if [ -n "${LUMEN_ROOT}" ] && [ "${LUMEN_ROOT}" != "none" ]; then
+    if [ ! -d "${LUMEN_ROOT}" ]; then
+        echo "[ERROR] --lumen_root not found: ${LUMEN_ROOT}"
+        exit 1
+    fi
+    LUMEN_ARGS=(--lumen_root "${LUMEN_ROOT}")
+fi
+
+# --region_px overrides --region_mm; passing both would be ambiguous
+REGION_ARGS=(--region_mm "${REGION_MM}")
+if [ -n "${REGION_PX}" ] && [ "${REGION_PX}" != "none" ]; then
+    REGION_ARGS=(--region_px "${REGION_PX}")
 fi
 
 ROI_ARGS=()
@@ -236,8 +270,10 @@ run_cmd python "${PROJECT_ROOT}/compute_phi_uncertainty.py" \
     "${FOLD_ARGS[@]}" \
     --tiles_metadata "${META_CSV}" \
     "${HE_ARGS[@]}" \
+    "${HE_MASK_ARGS[@]}" \
+    "${LUMEN_ARGS[@]}" \
     "${ROI_ARGS[@]}" \
-    --region_mm "${REGION_MM}" \
+    "${REGION_ARGS[@]}" \
     --min_tissue_fraction "${MIN_TISSUE_FRACTION}" \
     --white_thresh "${WHITE_THRESH}" \
     "${QC_ARGS[@]}" \
