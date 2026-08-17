@@ -117,6 +117,7 @@ def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
 
     rows: List[dict] = []
     missing: List[str] = []
+    edge_noted: set = set()
     for wsi, group in df.groupby("wsi", sort=False):
         # The φ side is keyed the same way, so HE_x still reaches HE_x while
         # SR_x also reaches it.
@@ -166,14 +167,46 @@ def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
                 continue
             got = (int(arr.shape[0]), int(arr.shape[1]))
             if want is not None and got != want:
+                # One benign difference: the reference is the UNTRUNCATED
+                # original while phi was gridded on a reconstruction, which
+                # utils.reconstruct_wsi truncates to a whole number of tiles at
+                # the same origin and scale. Then the phi frame is a prefix of
+                # the reference in both axes and the boxes index identical
+                # pixels — the edge strip the reconstruction dropped is simply
+                # never addressed.
+                #
+                # The bound is what separates it from a genuinely different
+                # frame: truncation cannot lose a whole tile, so an excess below
+                # one tile means the reference truncates to exactly this frame,
+                # while the UC M3 case is over by 2273x4741 px and aligns with
+                # nothing. "Larger" alone is not the test.
+                slack = (got[0] - want[0], got[1] - want[1])
+                truncates_to_frame = (
+                    0 <= slack[0] < args.tile_size and 0 <= slack[1] < args.tile_size
+                )
+                if truncates_to_frame:
+                    if stem not in edge_noted:
+                        aligned = (want[0] % args.tile_size == 0
+                                   and want[1] % args.tile_size == 0)
+                        print(f"[note] {stem}: reference is {got[0]}x{got[1]}, phi "
+                              f"frame {want[0]}x{want[1]} (+{slack[0]}x{slack[1]} "
+                              f"px, under one {args.tile_size}px tile"
+                              f"{'' if aligned else '; phi frame is NOT tile-aligned'})"
+                              f" — the reference is the untruncated original, "
+                              f"cropped to the reconstruction's frame.")
+                        edge_noted.add(stem)
+                    continue
                 raise SystemExit(
                     f"{stem}: {name} is {got[0]}x{got[1]} but the phi run was "
-                    f"gridded on {want[0]}x{want[1]}. Different frames — region r "
-                    f"is different tissue on each side. Note it is not enough to "
-                    f"be larger than the regions: this checks the frame, not the "
-                    f"bound. Run scripts/check_frame_alignment.sh; for the "
-                    f"collagen arm the SR must be RESAMPLED onto the H&E grid, "
-                    f"not merely registered to it."
+                    f"gridded on {want[0]}x{want[1]} (off by "
+                    f"{slack[0]}x{slack[1]} px, at least one {args.tile_size}px "
+                    f"tile). Different frames — region r is different tissue on "
+                    f"each side. Note it is not enough to be larger than the "
+                    f"regions: this checks the frame, not the bound. Run "
+                    f"scripts/check_frame_alignment.sh; for the collagen arm the "
+                    f"SR must be RESAMPLED onto the H&E grid, not merely "
+                    f"registered to it. If the excess really is only tiling "
+                    f"truncation, --tile_size must match the tiling."
                 )
             if want is None and (got[0] < need[0] or got[1] < need[1]):
                 raise SystemExit(
@@ -187,6 +220,25 @@ def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
         for row in group.itertuples():
             ys, xs = slice(row.y0, row.y1), slice(row.x0, row.x1)
             out: Dict[str, float] = {"wsi": wsi, "region_index": row.region_index}
+            box = (row.y1 - row.y0, row.x1 - row.x0)
+
+            # Numpy slicing past an edge returns a SHORT array rather than
+            # raising, and every descriptor is a density — a short crop divides
+            # by the wrong area and comes back plausible. The frame checks above
+            # should make this unreachable; it is here because the failure is
+            # invisible if they ever do not.
+            for name, arr in (("--real_psr", labels), ("--real_lumen", lumen),
+                              ("--he_masks/--he_dir", footprint)):
+                if arr is None:
+                    continue
+                crop = arr[ys, xs]
+                if crop.shape[:2] != box:
+                    raise SystemExit(
+                        f"{stem} region {row.region_index}: {name} cropped to "
+                        f"{crop.shape[0]}x{crop.shape[1]} but the box is "
+                        f"{box[0]}x{box[1]}. The region runs past the reference's "
+                        f"edge, so every density would divide by the wrong area."
+                    )
 
             if labels is not None:
                 v = phi_struct(labels[ys, xs], None, mpp=args.mpp,
@@ -465,6 +517,14 @@ def main() -> None:
     ap.add_argument("--min_object_px", type=int, default=16)
     ap.add_argument("--closing_px", type=int, default=0)
     ap.add_argument("--white_thresh", type=float, default=WHITE_THRESH)
+    ap.add_argument("--tile_size", type=int, default=512,
+                    help="Tile size the cohort was tiled at (tile.py "
+                         "--tile_size, NOT --resize_to: reconstructions sit at "
+                         "source resolution). A reconstruction is the original "
+                         "truncated to whole tiles, so a reference may exceed the "
+                         "phi frame by up to this much and still be the same "
+                         "frame. Above it, the two are genuinely different "
+                         "crops. [%(default)s]")
     args = ap.parse_args()
 
     if args.real_lumen and not (args.he_masks or args.he_dir):

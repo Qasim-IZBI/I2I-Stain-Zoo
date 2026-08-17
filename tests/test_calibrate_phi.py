@@ -219,3 +219,83 @@ class TestUndefinedRho:
         r = score(self._table(sd, sd * 0.8), 4)[0]
         assert r["spearman_rho"] > 0.9
         assert r["undefined_because"] is None
+
+
+class TestFrameGuard:
+    """A reference on a different frame scores different tissue under the same
+    region id, so it must be refused. But one difference is benign and common:
+    `utils.reconstruct_wsi` truncates to a whole number of tiles, so the phi
+    frame is a PREFIX of the untruncated original at the same origin and scale,
+    and the boxes index identical pixels.
+
+    The bound separates the two. Truncation cannot lose a whole tile, so an
+    excess below one tile means the reference truncates to exactly this frame.
+    The UC M3 case is over by 2273x4741 px and aligns with nothing.
+    """
+
+    T, R = 512, 1024
+
+    def _run(self, tmp_path, ref_shape, phi_shape, extra=()):
+        import subprocess
+        import sys
+        from utils import write_label_mask
+
+        psr = tmp_path / "psr"; psr.mkdir()
+        he = tmp_path / "he"; he.mkdir()
+        rng = np.random.default_rng(1)
+        lab = np.ones(ref_shape, np.uint8)
+        lab[rng.random(ref_shape) < 0.05] = 2
+        write_label_mask(psr / "SR_slide.tif", lab)
+        write_label_mask(he / "HE_slide.tif", np.ones(ref_shape, np.uint8))
+
+        R = self.R
+        rows = []
+        for i, (y, x) in enumerate([(0, 0), (0, R), (R, 0), (R, R)]):
+            rows.append(dict(
+                wsi="HE_slide.tif", region_index=i, y0=y, y1=y + R, x0=x, x1=x + R,
+                area_mm2=0.2, wsi_h=phi_shape[0], wsi_w=phi_shape[1],
+                tissue_fraction=1.0,
+                mu_task_specific_value=0.05 + 0.01 * i,
+                sd_total_task_specific_value=0.004 + 0.003 * i,
+                sd_procedural_task_specific_value=0.008,
+                mu_beta0_per_mm2=500.0 + i, sd_total_beta0_per_mm2=50.0 + i,
+                sd_procedural_beta0_per_mm2=40.0,
+                mu_beta1_per_mm2=90.0 + i, sd_total_beta1_per_mm2=12.0 + i,
+                sd_procedural_beta1_per_mm2=9.0,
+                mu_regional_dispersion=0.4,
+                sd_total_regional_dispersion=0.05 + 0.01 * i,
+                sd_procedural_regional_dispersion=0.04))
+        csv = tmp_path / "pr.csv"
+        pd.DataFrame(rows).to_csv(csv, index=False)
+        return subprocess.run(
+            [sys.executable, "calibrate_phi.py", "--phi_csv", str(csv),
+             "--real_psr", str(psr), "--he_masks", str(he), "--strip_prefix",
+             "--outdir", str(tmp_path / "out")] + list(extra),
+            capture_output=True, text=True,
+        )
+
+    def test_truncated_reconstruction_frame_is_accepted(self, tmp_path):
+        """The real UC arithmetic: 24967 -> 48 whole 512px tiles -> 24576, an
+        excess of 391 px; 34757 -> 67 -> 34304, an excess of 453."""
+        r = self._run(tmp_path, (2048 + 391, 3072 + 453), (2048, 3072))
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "[note]" in r.stdout
+        assert "untruncated original" in r.stdout
+
+    def test_a_frame_off_by_a_whole_tile_is_refused(self, tmp_path):
+        r = self._run(tmp_path, (2048 + 2273, 3072 + 4741), (2048, 3072))
+        assert r.returncode != 0
+        assert "Different frames" in r.stdout + r.stderr
+
+    def test_exact_match_needs_no_note(self, tmp_path):
+        r = self._run(tmp_path, (2048, 3072), (2048, 3072))
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "[note]" not in r.stdout
+
+    def test_tile_size_must_match_the_tiling(self, tmp_path):
+        """The slack is only benign up to one tile, so an understated --tile_size
+        turns a fine run into a refusal rather than the reverse."""
+        r = self._run(tmp_path, (2048 + 391, 3072 + 453), (2048, 3072),
+                      extra=("--tile_size", "256"))
+        assert r.returncode != 0
+        assert "--tile_size must match the tiling" in r.stdout + r.stderr

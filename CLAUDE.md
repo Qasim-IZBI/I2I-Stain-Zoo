@@ -664,7 +664,16 @@ Two arms, independent, either omittable:
   checked against `wsi_h`/`wsi_w` and a mismatch **exits** rather than scoring
   different tissue under the same region id. Being *larger* than the regions is
   not enough — one UC slide is 34794×27942 against the H&E's 32521×23201, which
-  covers every box while aligning with none of them. **On the UC liver cohort this is the only available arm**, which
+  covers every box while aligning with none of them.
+
+  **One excess is benign and expected:** φ is gridded on a reconstruction, which
+  `utils.reconstruct_wsi` truncates to a whole number of tiles, so the original is
+  larger by up to one tile at the same origin and scale — 24967×34757 against a φ
+  frame of 24576×34304 (= 48×512 and 67×512) is the same frame, and the boxes
+  index identical pixels. Truncation cannot lose a whole tile, so an excess below
+  `--tile_size` (default 512) is accepted with a `[note]` and anything larger
+  exits. **`--tile_size` is `tile.py --tile_size`, not `--resize_to`** —
+  reconstructions sit at source resolution. **On the UC liver cohort this is the only available arm**, which
   makes that frame check the gate for the whole calibration.
 - `--real_lumen` scores the three H&E-referenced terms against the real H&E. Same
   physical section, so no floor and no frame question — but see why the lumen
