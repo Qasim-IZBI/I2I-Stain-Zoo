@@ -75,11 +75,16 @@ OUTDIR="${OUTDIR:-/work2/bz66izin-UC_project/ID_HE/phi_uncertainty}"
 REGION_MM="${REGION_MM:-1.5}"
 MIN_TISSUE_FRACTION="${MIN_TISSUE_FRACTION:-0.25}"
 MIN_ROI_FRACTION="${MIN_ROI_FRACTION:-0.5}"
-# Whitespace cut for lumen_fraction / tissue_fraction. EVERY channel must
-# clear it, so set it from the per-pixel channel MINIMUM, not from the grey
-# level an 8-bit conversion reports. A lumen_fraction near 1e-5 in
-# per_region.csv means this sits above the lumens.
-WHITE_THRESH="${WHITE_THRESH:-0.85}"
+# Whitespace cut, used ONLY by the lumen descriptors and by the fallback
+# footprint from HE_DIR. With HE_MASKS set and LUMEN_ROOT empty it is inert —
+# the output is bit-identical at 0.85, 0.65 and 0.50 — but it is still recorded
+# in summary.json and is pool-critical, and a later run that enables LUMEN_ROOT
+# would inherit it. 0.65 is the value measured on the UC cohort: the H&E is
+# stable over 0.500-0.675 and the SR over 0.600-0.700, neither with a plateau.
+# The library default stays 0.85; this is a per-cohort measurement, not a
+# constant. EVERY channel must clear it, so set it from the per-pixel channel
+# MINIMUM, not from the grey level an 8-bit conversion reports.
+WHITE_THRESH="${WHITE_THRESH:-0.65}"
 # Optional: one region per WSI written as a TIF pair (label mask + H&E
 # crop) for inspecting in Fiji, to see whether the threshold found lumens
 # or pale tissue. Empty = off. QC_MAX_PX caps the crop; 0 = full res, at
