@@ -88,11 +88,22 @@ def index(d):
 
 
 def geom(p):
-    """(h, w, resolution tag) from the header — no pixel data is read."""
+    """(h, w, resolution tag) from the header — no pixel data is read.
+
+    Picks the Y and X axes by name rather than by position, so a planar
+    (C,H,W) export does not report its channel count as a dimension. One SR
+    slide did exactly that before being re-saved: `3 x 34691` against an H&E of
+    `34691 x 24681`, the width matching the H&E's height being the tell.
+    """
     with tifffile.TiffFile(p) as tf:
         s = tf.series[0]
         res = tf.pages[0].tags.get("XResolution")
-        return s.shape[0], s.shape[1], (res.value if res is not None else None)
+        shape, axes = s.shape, (s.axes or "")
+        if "Y" in axes and "X" in axes:
+            h, w = shape[axes.index("Y")], shape[axes.index("X")]
+        else:
+            h, w = shape[0], shape[1]
+        return h, w, (res.value if res is not None else None)
 
 
 # The extent the region grid actually runs to, per WSI. A slide can be large
@@ -172,7 +183,15 @@ for k in common:
     # um/px. Only flag when both are set and disagree — a real difference in
     # scale confounds every CPA difference even on a shared frame.
     def _unset(r):
-        return r is None or tuple(r) == (1, 1)
+        # Compare the VALUE, not the rational. "Unset" arrives as (1, 1) from
+        # an untouched export and as (1000000, 1000000) from a re-save — both
+        # are 1.0. A real slide is ~4.5 px/um or ~45000 px/cm, never 1.
+        if r is None:
+            return True
+        try:
+            return abs(r[0] / r[1] - 1.0) < 1e-9
+        except (TypeError, ZeroDivisionError, IndexError):
+            return True
 
     if not _unset(hres) and not _unset(sres) and tuple(hres) != tuple(sres):
         print(f"{'':30s} {'':19s} {'':19s}  [!] XResolution {hres} vs {sres} "
