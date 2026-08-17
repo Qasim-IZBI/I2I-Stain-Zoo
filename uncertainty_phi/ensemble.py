@@ -101,7 +101,7 @@ def load_roi_mask(path: Path, shape: Tuple[int, int]) -> np.ndarray:
     so a size mismatch is the expected case, not an error. Nearest-neighbour
     keeps it binary — the same convention as `apply_he_mask.py`.
     """
-    arr = tifffile.imread(str(path))
+    arr = _imread_hwc(path)
     if arr.ndim > 2:
         arr = arr[..., 0]
     roi = arr != 0
@@ -315,9 +315,15 @@ def phi_over_ensemble(
     a reference can be checked for *matching* that frame rather than merely
     covering it.
 
-    The region grid is built once per WSI from the *first available* member's
-    mask, so all members are scored on identical boxes — a per-member grid would
-    make the variance meaningless.
+    The region grid is built once per WSI, so all members are scored on identical
+    boxes — a per-member grid would make the variance meaningless.
+
+    With `he_masks_dir` the tissue filter reads the **H&E** footprint, which is
+    the same on every fold. Without it the filter falls back to the first
+    available member's collagen mask, and then the grid depends on which
+    ensemble it was cut from: a region near `min_tissue_fraction` is kept by one
+    fold and dropped by another, and `compute_phi_uncertainty.py` rejects the
+    run for a fold-count mismatch. Pass the H&E masks for any crossed grid.
     """
     member_dirs = discover_ensemble_dirs(Path(ensemble_root))
     if not member_dirs:
@@ -343,6 +349,7 @@ def phi_over_ensemble(
     shapes: Dict[str, Tuple[int, int]] = {}
     all_regions: List[Region] = []
     roi_missing: List[str] = []
+    fold_dependent_grid: List[str] = []
 
     from uncertainty_phi.regions import iter_metadata_csvs
 
@@ -355,7 +362,8 @@ def phi_over_ensemble(
         if not grid:
             continue
 
-        # tissue filter uses the first member that has this WSI
+        # One member's mask, for the frame the regions are cut from. Also the
+        # fallback tissue reference — see below.
         reference = None
         for mdir in member_dirs:
             p = _stem_index(Path(mdir)).get(wsi_stem)
@@ -364,7 +372,22 @@ def phi_over_ensemble(
                 break
         if reference is None:
             continue
-        grid = filter_by_tissue(grid, reference, min_tissue_fraction=min_tissue_fraction)
+
+        # The tissue filter must not depend on WHICH ensemble it ran on, or two
+        # folds get different grids and the decomposition has nothing to
+        # decompose. A member's collagen mask is a model output, so a region
+        # near min_tissue_fraction falls on either side of it by fold. The H&E
+        # footprint is a property of the slide and identical everywhere — and is
+        # already the denominator for every density, so filtering on it is the
+        # same definition of tissue rather than a second one.
+        he_mask_path = he_mask_index.get(wsi_stem)
+        if he_mask_path is not None:
+            tissue_reference = load_roi_mask(he_mask_path, reference.shape)
+        else:
+            tissue_reference = reference
+            fold_dependent_grid.append(wsi_stem)
+        grid = filter_by_tissue(grid, tissue_reference,
+                                min_tissue_fraction=min_tissue_fraction)
         if not grid:
             continue
 
@@ -409,6 +432,14 @@ def phi_over_ensemble(
     if roi_missing:
         print(f"[WARN] {len(roi_missing)} WSI(s) excluded for a missing ROI mask: "
               f"{', '.join(roi_missing)}")
+    if fold_dependent_grid:
+        print(f"[WARN] {len(fold_dependent_grid)} WSI(s) had no H&E tissue mask, so "
+              f"the tissue filter used a member's collagen mask: "
+              f"{', '.join(fold_dependent_grid[:3])}"
+              f"{' ...' if len(fold_dependent_grid) > 3 else ''}\n"
+              f"       The resulting grid depends on which ensemble it was cut "
+              f"from. Fine for a single ensemble; for a crossed grid the folds "
+              f"will disagree on the region count. Pass --he_masks.")
 
     return (np.concatenate(all_phi, axis=1), all_regions, member_dirs,
             np.concatenate(all_tissue), shapes)

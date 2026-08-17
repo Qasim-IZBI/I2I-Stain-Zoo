@@ -112,7 +112,11 @@ Points the methods section has to make:
 
 **Regions.** Non-overlapping grid, 2048 px at 0.221 µm/px = 0.452 mm, sized in
 pixels so the heatmap tiles without a seam. Partial edge regions are dropped so
-every region has the same area. Regions below 25% tissue coverage are excluded.
+every region has the same area. Regions below 25% coverage **of the H&E tissue
+footprint** are excluded — the footprint, not a member's collagen mask, because a
+model output would make the region set depend on which subset produced it, and the
+five subsets would then no longer be measuring the same regions. Worth a clause:
+it is what makes the variance decomposition well defined.
 
 **The tissue footprint** comes from the H&E tissue masks the CPA pipeline already
 applies (`apply_he_mask.py`), with holes filled so internal lumens count as inside

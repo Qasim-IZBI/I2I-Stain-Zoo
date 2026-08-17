@@ -448,11 +448,12 @@ python compute_phi_uncertainty.py \
     --outdir ./phi_uncertainty/
 
 # Subset x seed grid -> procedural AND data-exposure (one --fold per subset, all 5)
+# --he_masks is REQUIRED here, not optional; see below.
 python compute_phi_uncertainty.py \
     --fold /path/ensemble_grid/cyclegan/data_001_007/model_small/wsi_masks_final \
     --fold /path/ensemble_grid/cyclegan/data_008_014/model_small/wsi_masks_final \
-    --tiles_metadata /path/tiles/testA --he_dir /path/real_he_wsis \
-    --white_thresh 0.70 --outdir ./phi_uncertainty/
+    --tiles_metadata /path/tiles/testA --he_masks /path/HE_tissue \
+    --region_px 2048 --outdir ./phi_uncertainty/
 
 # Kidney arm: cortex only
 python compute_phi_uncertainty.py \
@@ -460,6 +461,21 @@ python compute_phi_uncertainty.py \
     --tiles_metadata /path/tiles/testA_kidney --he_dir /path/reconstructed_he_kidney \
     --roi_dir /path/cortex_masks/ --outdir ./phi_uncertainty_kidney/
 ```
+
+**`--he_masks` is required with `--fold`.** The tissue filter needs a reference to
+measure coverage against, and with `--he_masks` it uses the H&E footprint — a
+property of the slide, so every fold filters to the same regions. Without it the
+filter falls back to the first member's collagen mask, which is a *model output*:
+a region near `--min_tissue_fraction` is then kept by one fold and dropped by
+another, and the run aborts with
+
+```
+fold .../data_008_014/... produced 119 regions but the first fold produced 118
+```
+
+That message is about the tissue filter, not about `--tiles_metadata` or
+`--region_mm`. A single `--ensemble` is unaffected — there is only one grid to be
+consistent with — but pass `--he_masks` there too, so the two runs are comparable.
 
 `--roi_dir` restricts the grid to an anatomical compartment, given per-WSI binary
 masks named `<stem>.tif` (resized nearest-neighbour if annotated at thumbnail

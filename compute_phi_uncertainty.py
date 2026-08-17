@@ -101,10 +101,21 @@ def _collect(roots: List[Path], args) -> tuple:
         if regions_ref is None:
             regions_ref, tissue_ref, shapes_ref = regions, tissue_frac, shapes
         elif len(regions) != len(regions_ref):
+            hint = (
+                "pass --he_masks: without it the tissue filter runs on a member's "
+                "collagen mask, which is a model output, so a region near "
+                f"--min_tissue_fraction {args.min_tissue_fraction} is kept by one "
+                "fold and dropped by another"
+                if not args.he_masks else
+                "the folds disagree despite --he_masks, so this is not the tissue "
+                "filter — check that every fold's masks share the H&E frame "
+                "(scripts/check_frame_alignment.sh) and that --region_mm / "
+                "--region_px did not change between them"
+            )
             raise SystemExit(
                 f"fold {root} produced {len(regions)} regions but the first fold "
                 f"produced {len(regions_ref)} — every fold must be scored on the "
-                f"same grid, so they must share --tiles_metadata and --region_mm"
+                f"same grid.\n  {hint}"
             )
         blocks.append(phi)
         members.append([str(m) for m in member_dirs])

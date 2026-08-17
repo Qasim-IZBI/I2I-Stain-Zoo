@@ -673,3 +673,82 @@ class TestPlanarTiffReading:
         np.testing.assert_array_equal(_to_channels_last(arr, "YXS").shape, (3, 4, 5))
         # axes say channels-first -> moved
         assert _to_channels_last(arr, "SYX").shape == (4, 5, 3)
+
+
+class TestFoldIndependentGrid:
+    """Every fold of a crossed grid must be scored on the SAME regions.
+
+    The bug this closes: `phi_over_ensemble` filtered the grid by tissue coverage
+    read off *the first member of whichever ensemble it was given*. A member's
+    collagen mask is a model output, so a region sitting near
+    `min_tissue_fraction` was kept by one fold and dropped by another, and
+    `compute_phi_uncertainty.py` rejected the run for a fold-count mismatch —
+    naming the wrong cause, since --tiles_metadata and --region_mm were shared.
+
+    The H&E footprint is a property of the slide, so filtering on it is identical
+    on every fold. It is also already the denominator for every density, so this
+    is one definition of tissue rather than a second.
+    """
+
+    H = W = 512
+    REGION = 256
+
+    @staticmethod
+    def _metadata(root: Path) -> Path:
+        import pandas as pd
+        rows = [{"source_file": "case1.tif", "x": x, "y": y, "tile_size": 256}
+                for y in (0, 256) for x in (0, 256)]
+        d = root / "tiles" / "001"
+        d.mkdir(parents=True)
+        pd.DataFrame(rows).to_csv(d / "tiles_metadata.csv", index=False)
+        return root / "tiles"
+
+    @classmethod
+    def _fold(cls, root: Path, name: str, tissue_rows: int) -> Path:
+        """A two-member fold whose top-right region holds `tissue_rows` of tissue."""
+        from utils import write_label_mask
+        for m in (1, 2):
+            d = root / name / f"model_{m:02d}"
+            d.mkdir(parents=True)
+            lab = np.zeros((cls.H, cls.W), np.uint8)
+            lab[:, :256] = 1
+            lab[:tissue_rows, 256:] = 1
+            lab[::7, ::7] = np.where(lab[::7, ::7] > 0, 2, 0)
+            write_label_mask(d / "case1.tif", lab)
+        return root / name
+
+    @classmethod
+    def _he_masks(cls, root: Path) -> Path:
+        from utils import write_label_mask
+        he = np.zeros((cls.H, cls.W), np.uint8)
+        he[:, :256] = 1
+        he[:80, 256:] = 1               # top-right region: 31% -> kept at 0.25
+        d = root / "he"
+        d.mkdir()
+        write_label_mask(d / "case1.tif", he)
+        return d
+
+    def _counts(self, tmp_path, he_masks):
+        from uncertainty_phi.ensemble import phi_over_ensemble
+        meta = self._metadata(tmp_path)
+        # 31% vs 23% of the top-right region: the two straddle 0.25
+        folds = [self._fold(tmp_path, "foldA", 80),
+                 self._fold(tmp_path, "foldB", 60)]
+        out = []
+        for f in folds:
+            _, regions, _, _, _ = phi_over_ensemble(
+                f, meta, he_masks_dir=he_masks, region_px=self.REGION,
+                mpp=0.221, min_tissue_fraction=0.25,
+            )
+            out.append(len(regions))
+        return out
+
+    def test_folds_agree_when_filtered_on_the_he_footprint(self, tmp_path):
+        a, b = self._counts(tmp_path, self._he_masks(tmp_path))
+        assert a == b == 3
+
+    def test_folds_disagree_when_filtered_on_a_member_mask(self, tmp_path):
+        """Pins the failure mode itself, so the fix cannot be silently undone by
+        restoring the member-mask reference."""
+        a, b = self._counts(tmp_path, None)
+        assert a != b

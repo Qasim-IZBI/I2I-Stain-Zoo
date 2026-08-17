@@ -152,8 +152,15 @@ def filter_by_tissue(
     Background-dominated regions produce meaningless densities (tiny denominator)
     and noisy dispersion, and they inflate the apparent n while contributing no
     information.
+
+    `labels` is either an nnU-Net label mask, where tissue is the union of
+    `label_tissue` and `label_psr`, or a **boolean** footprint taken as tissue
+    directly. The boolean path is what a crossed grid must use: an H&E footprint
+    is a property of the slide, so every fold filters to the same regions, where
+    a per-fold collagen mask would not.
     """
-    tissue = (labels == label_tissue) | (labels == label_psr)
+    tissue = (labels if labels.dtype == bool
+              else (labels == label_tissue) | (labels == label_psr))
     keep = []
     for r in regions:
         patch = r.crop(tissue)
