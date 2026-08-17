@@ -134,3 +134,88 @@ class TestHeatmapRaster:
         from plot_uncertainty_heatmap import raster_for
         r = raster_for(self._group(), "sd_total_absent", 10, (20, 20))
         assert np.isnan(r).all()
+
+
+class TestStemMatching:
+    """The real PSR masks are named after the SR slides; φ is gridded on the H&E.
+
+    So `SR_d31_BDL+A_M2` has to reach `HE_d31_BDL+A_M2` — the rule
+    `apply_he_mask.py` and `compare_psr.py` already carry, and the reason a
+    calibration run otherwise skips all twenty slides and exits with "no
+    reference regions produced".
+    """
+
+    NAMES = ("d31_BDL+A_M2", "w10_BDL+A_M3")
+
+    @staticmethod
+    def _dir(tmp_path, sub, prefix, names):
+        from utils import write_label_mask
+        d = tmp_path / sub
+        d.mkdir()
+        for n in names:
+            write_label_mask(d / f"{prefix}_{n}.tif", np.ones((8, 8), np.uint8))
+        return d
+
+    def test_strip_prefix_bridges_sr_to_he(self, tmp_path):
+        from calibrate_phi import _indexed
+        d = self._dir(tmp_path, "psr", "SR", self.NAMES)
+        assert set(_indexed(d, False, "x")) == {f"SR_{n}" for n in self.NAMES}
+        assert set(_indexed(d, True, "x")) == set(self.NAMES)
+
+    def test_he_still_matches_itself_when_stripping(self, tmp_path):
+        """Both sides are keyed the same way, so turning it on must not break the
+        arm that already matched."""
+        from calibrate_phi import _indexed
+        from apply_he_mask import normalize_stem
+        d = self._dir(tmp_path, "he", "HE", self.NAMES)
+        keys = set(_indexed(d, True, "x"))
+        assert keys == {normalize_stem(f"HE_{n}", True) for n in self.NAMES}
+        assert keys == set(self.NAMES)
+
+    def test_a_collision_is_fatal(self, tmp_path):
+        """SR_x and HE_x in one directory collapse to 'x'. Picking either scores
+        one slide's regions against another slide's tissue, which is invisible in
+        the output — so it is refused."""
+        from calibrate_phi import _indexed
+        d = tmp_path / "mixed"
+        d.mkdir()
+        from utils import write_label_mask
+        for p in ("SR", "HE"):
+            write_label_mask(d / f"{p}_slide.tif", np.ones((8, 8), np.uint8))
+        with pytest.raises(SystemExit, match="collapses two files"):
+            _indexed(d, True, "--real_psr")
+
+
+class TestUndefinedRho:
+    """rho is undefined when either side has no spread, and which side it was
+    means the opposite thing — a constant sigma is an ensemble that agrees
+    everywhere, a constant error is a reference that cannot tell regions apart.
+    """
+
+    @staticmethod
+    def _table(sd, err):
+        return pd.DataFrame({
+            "descriptor": ["task_specific_value"] * len(sd),
+            "wsi": ["a.tif"] * len(sd),
+            "region_index": range(len(sd)),
+            "sd": sd, "error": err, "z": np.asarray(err) / np.asarray(sd),
+        })
+
+    def test_constant_sigma_is_named(self):
+        from calibrate_phi import score
+        r = score(self._table([2.0] * 12, np.linspace(1, 5, 12)), 4)[0]
+        assert not np.isfinite(r["spearman_rho"])
+        assert r["undefined_because"] == "σ constant"
+
+    def test_constant_error_is_named(self):
+        from calibrate_phi import score
+        r = score(self._table(np.linspace(1, 5, 12), [2.0] * 12), 4)[0]
+        assert not np.isfinite(r["spearman_rho"])
+        assert r["undefined_because"] == "error constant"
+
+    def test_a_real_rho_carries_no_note(self):
+        from calibrate_phi import score
+        sd = np.linspace(1, 5, 40)
+        r = score(self._table(sd, sd * 0.8), 4)[0]
+        assert r["spearman_rho"] > 0.9
+        assert r["undefined_because"] is None

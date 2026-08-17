@@ -647,8 +647,8 @@ sbatch scripts/check_frame_alignment.sh   # Step 0: does the SR share the H&E fr
 
 python calibrate_phi.py \
     --phi_csv    ./phi_uncertainty/per_region.csv \
-    --real_lumen /path/lumen_masks_real --he_masks /path/HE_tissue \
-    --real_psr   /path/psr_masks/real/psr_masks_wsi_final \
+    --real_psr   /path/psr_masks/real/psr_masks_wsi_final --strip_prefix \
+    --he_masks   /path/HE_tissue \
     --outdir     ./calibration_phi/
 ```
 
@@ -669,6 +669,14 @@ Two arms, independent, either omittable:
 - `--real_lumen` scores the three H&E-referenced terms against the real H&E. Same
   physical section, so no floor and no frame question — but see why the lumen
   terms cannot be computed on this cohort at all.
+
+**`--strip_prefix` is required with `--real_psr`.** The real collagen masks are
+named after the SR slides (`SR_d31_BDL+A_M2`) while φ is gridded on the H&E
+(`HE_d31_BDL+A_M2`), so without it every WSI is skipped and the run ends with `no
+reference regions produced`. Same rule as `apply_he_mask.py` and `compare_psr.py`;
+the error message tests whether stripping would bridge the two and says so. Both
+sides are keyed the same way, so it does not break `--he_masks`, which already
+matched. Two files collapsing to one key is **fatal**, not last-one-wins.
 
 Regions come from `--phi_csv` verbatim rather than by rebuilding a grid, so the two
 sides cannot drift apart through a parameter that differs by one. **Pass the same

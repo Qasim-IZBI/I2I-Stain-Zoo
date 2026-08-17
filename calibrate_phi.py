@@ -65,6 +65,7 @@ from uncertainty_phi.ensemble import (
     load_roi_mask,
 )
 from uncertainty_phi.regions import SOURCE_MPP
+from apply_he_mask import normalize_stem
 
 # For a Gaussian error of scale sigma, E|e| = sigma * sqrt(2/pi). A reliability
 # line of slope 1 would therefore call a perfectly calibrated ensemble 20%
@@ -78,16 +79,48 @@ C_SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7", "#
 C_INK, C_MUTED, C_GRID = "#0b0b0b", "#52514e", "#e3e3df"
 
 
+def _indexed(directory: Optional[Path], strip_prefix: bool, what: str) -> dict:
+    """stem -> path, optionally keyed on the stem minus its first token.
+
+    The real PSR masks are named after the SR slides while φ is gridded on the
+    H&E, so `SR_slide` has to reach `HE_slide` — the rule `apply_he_mask.py` and
+    `compare_psr.py` already carry. A collision is fatal rather than
+    last-one-wins: two files differing only in their prefix collapse to one key,
+    and picking either would score one slide's regions against another's tissue.
+    """
+    if directory is None:
+        return {}
+    raw = _stem_index(directory)
+    if not strip_prefix:
+        return raw
+    out: dict = {}
+    for stem, path in raw.items():
+        key = normalize_stem(stem, True)
+        if key in out:
+            raise SystemExit(
+                f"--strip_prefix collapses two files in {what} to the key "
+                f"'{key}': {out[key].name} and {path.name}. Scoring a region "
+                f"against the wrong slide's tissue is invisible in the output, "
+                f"so this is refused rather than resolved arbitrarily."
+            )
+        out[key] = path
+    return out
+
+
 def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
     """φ of the real tissue, on the exact region boxes the virtual run used."""
-    psr_index = _stem_index(args.real_psr) if args.real_psr else {}
-    lum_index = _stem_index(args.real_lumen) if args.real_lumen else {}
-    he_index = _stem_index(args.he_dir) if args.he_dir else {}
-    he_mask_index = _stem_index(args.he_masks) if args.he_masks else {}
+    sp = args.strip_prefix
+    psr_index = _indexed(args.real_psr, sp, "--real_psr")
+    lum_index = _indexed(args.real_lumen, sp, "--real_lumen")
+    he_index = _indexed(args.he_dir, sp, "--he_dir")
+    he_mask_index = _indexed(args.he_masks, sp, "--he_masks")
 
     rows: List[dict] = []
+    missing: List[str] = []
     for wsi, group in df.groupby("wsi", sort=False):
-        stem = Path(str(wsi)).stem
+        # The φ side is keyed the same way, so HE_x still reaches HE_x while
+        # SR_x also reaches it.
+        stem = normalize_stem(Path(str(wsi)).stem, sp)
 
         labels = load_label_mask(psr_index[stem]) if stem in psr_index else None
         lumen = (load_label_mask(lum_index[stem]) > 0) if stem in lum_index else None
@@ -107,7 +140,8 @@ def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
                                             white_thresh=args.white_thresh)
 
         if labels is None and lumen is None:
-            print(f"[skip] no reference for {stem}")
+            print(f"[skip] no reference for {stem!r}")
+            missing.append(stem)
             continue
 
         # The boxes were built on one frame. A reference of a different size is
@@ -171,7 +205,33 @@ def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
             rows.append(out)
 
     if not rows:
-        raise SystemExit("no reference regions produced — check the stems match")
+        # "check the stems match" is not enough to act on. Show both sides, and
+        # test whether dropping the first token would have bridged them — the
+        # SR_/HE_ case is the expected one on the collagen arm.
+        have = sorted(set(psr_index) | set(lum_index))
+        lines = ["no reference regions produced — no WSI in --phi_csv had a "
+                 "matching reference mask.",
+                 f"  phi_csv     ({len(missing)}): "
+                 f"{', '.join(repr(s) for s in missing[:3])}"
+                 f"{' ...' if len(missing) > 3 else ''}",
+                 f"  reference   ({len(have)}): "
+                 f"{', '.join(repr(s) for s in have[:3])}"
+                 f"{' ...' if len(have) > 3 else ''}"]
+        if not sp and have and missing:
+            bridged = ({normalize_stem(s, True) for s in missing}
+                       & {normalize_stem(s, True) for s in have})
+            if bridged:
+                lines.append(
+                    f"  => --strip_prefix would match {len(bridged)} of them "
+                    f"(e.g. {sorted(bridged)[0]!r}). The real PSR masks are "
+                    f"named after the SR slides while phi is gridded on the "
+                    f"H&E; add --strip_prefix, as apply_he_mask.py and "
+                    f"compare_psr.py do."
+                )
+        elif sp:
+            lines.append("  --strip_prefix is already on, so the two sides "
+                         "differ by more than a leading token.")
+        raise SystemExit("\n".join(lines))
     return pd.DataFrame(rows)
 
 
@@ -255,6 +315,16 @@ def score(t: pd.DataFrame, n_bins: int) -> List[dict]:
             "n_wsi": int(g["wsi"].nunique()),
             "spearman_rho": float(rho),
             "spearman_p": float(p),
+            # Which side had no spread to rank, when rho is undefined. The two
+            # mean opposite things: a constant sigma is an ensemble that agrees
+            # everywhere, a constant error is a reference that does not
+            # discriminate between regions.
+            "undefined_because": (
+                None if np.isfinite(rho)
+                else "σ constant" if float(np.ptp(sd)) == 0.0
+                else "error constant" if float(np.ptp(err)) == 0.0
+                else "degenerate"
+            ),
             "mean_abs_z": float(np.nanmean(g["z"])),
             "calibration_ratio": float(np.nanmean(g["z"]) / HALF_NORMAL),
             "ece_normalised": float(expected_calibration_error(bu, be, bc)),
@@ -315,15 +385,25 @@ def make_figure(t: pd.DataFrame, rows: List[dict], outpath: Path, title: str) ->
     ax = axes[len(PHI_NAMES)]
     if scored:
         names = [r["descriptor"] for r in scored]
-        rhos = [r["spearman_rho"] for r in scored]
+        # rho is undefined when either side has no spread to rank. That is a
+        # finding, so it gets a bar of zero and a label naming WHICH side was
+        # constant — rather than being dropped, or drawn at a NaN position, which
+        # matplotlib turns into six "posx and posy should be finite" lines and an
+        # unlabelled gap. The two cases mean opposite things: a constant sigma is
+        # an ensemble that agrees everywhere, a constant error is a reference
+        # that does not discriminate between regions.
+        rhos = [r["spearman_rho"] if np.isfinite(r["spearman_rho"]) else 0.0
+                for r in scored]
         ys = np.arange(len(names))[::-1]
         ax.axvline(0, color=C_MUTED, linewidth=1, zorder=2)
         ax.barh(ys, rhos, color=[C_SERIES[PHI_NAMES.index(n) % len(C_SERIES)]
                                  for n in names], height=0.6, zorder=4)
-        for y, r in zip(ys, scored):
-            ax.text(r["spearman_rho"] + (0.02 if r["spearman_rho"] >= 0 else -0.02),
-                    y, f"p={r['spearman_p']:.1e}", va="center", fontsize=7.5,
-                    ha="left" if r["spearman_rho"] >= 0 else "right", color=C_MUTED)
+        for y, r, rho in zip(ys, scored, rhos):
+            note = (f"p={r['spearman_p']:.1e}" if np.isfinite(r["spearman_rho"])
+                    else r.get("undefined_because") or "ρ undefined")
+            ax.text(rho + (0.02 if rho >= 0 else -0.02), y, note, va="center",
+                    fontsize=7.5, ha="left" if rho >= 0 else "right",
+                    color=C_MUTED)
         ax.set_yticks(ys)
         ax.set_yticklabels(names, fontsize=8)
         ax.set_xlim(min(-0.1, min(rhos) * 1.3), max(0.6, max(rhos) * 1.45))
@@ -363,6 +443,12 @@ def main() -> None:
     ap.add_argument("--he_dir", type=Path, default=None,
                     help="Real H&E WSIs — the fallback footprint source, by "
                          "thresholding, for a phi run that predates --he_masks.")
+    ap.add_argument("--strip_prefix", action="store_true",
+                    help="Drop the first '_'-delimited token from every stem "
+                         "before matching, so SR_slide reaches HE_slide. Needed "
+                         "with --real_psr, whose masks are named after the SR "
+                         "slides while phi is gridded on the H&E. Same rule as "
+                         "apply_he_mask.py and compare_psr.py.")
     ap.add_argument("--outdir", type=Path, default=Path("calibration_phi"))
 
     ap.add_argument("--prediction", choices=("grand", "fold"), default="grand",
@@ -431,7 +517,9 @@ def main() -> None:
             continue
         print(f"{r['descriptor']:24s} {r['reference_class']:>5s} {r['n']:>6d} "
               f"{r['spearman_rho']:>7.3f} {r['spearman_p']:>9.2e} "
-              f"{r['calibration_ratio']:>10.2f}")
+              f"{r['calibration_ratio']:>10.2f}"
+              + (f"   [{r['undefined_because']}]"
+                 if r.get("undefined_because") else ""))
     print("\nrho > 0 means uncertain regions are the wrong ones. E|z|/0.80 > 1")
     print("means the ensemble is over-confident: errors exceed its own spread.")
     print(f"\nwrote {args.outdir / 'per_region_calibration.csv'}")
