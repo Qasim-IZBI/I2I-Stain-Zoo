@@ -328,7 +328,55 @@ def pair(df: pd.DataFrame, ref: pd.DataFrame, mode: str, n_folds: int) -> pd.Dat
     return t
 
 
-def score(t: pd.DataFrame, n_bins: int) -> List[dict]:
+def cluster_bootstrap_rho(g: pd.DataFrame, n_boot: int, seed: int) -> tuple:
+    """95% CI for Spearman rho, resampling WHOLE SLIDES rather than regions.
+
+    Regions inside a slide are spatially correlated and share one case's biology,
+    so 2850 regions are nowhere near 2850 independent observations and the naive
+    p-value is meaningless — it was 1e-31 on a cohort of twenty cases. The unit
+    of replication is the case, so that is what gets resampled.
+
+    A slide drawn twice contributes its regions twice, which is the point: the
+    interval then reflects how much the answer depends on which twenty slides
+    were collected.
+    """
+    wsis = g["wsi"].unique()
+    if len(wsis) < 3:
+        return float("nan"), float("nan"), 0
+    by_wsi = {w: sub[["sd", "error"]].to_numpy() for w, sub in g.groupby("wsi")}
+    rng = np.random.default_rng(seed)
+    draws = []
+    for _ in range(n_boot):
+        pick = rng.choice(wsis, size=len(wsis), replace=True)
+        block = np.concatenate([by_wsi[w] for w in pick])
+        if np.ptp(block[:, 0]) == 0 or np.ptp(block[:, 1]) == 0:
+            continue
+        r = spearmanr(block[:, 0], block[:, 1]).statistic
+        if np.isfinite(r):
+            draws.append(r)
+    if len(draws) < max(20, n_boot // 10):
+        return float("nan"), float("nan"), len(draws)
+    lo, hi = np.percentile(draws, [2.5, 97.5])
+    return float(lo), float(hi), len(draws)
+
+
+def shuffled_rho(g: pd.DataFrame, n_perm: int, seed: int) -> float:
+    """Negative control: break the sigma-error pairing, keep both marginals.
+
+    If rho survives this, it was never measuring a relationship between the two —
+    it was an artefact of their distributions or of the region ordering. A
+    calibrated result must collapse to ~0 here.
+    """
+    sd, err = g["sd"].to_numpy(), g["error"].to_numpy()
+    if np.ptp(sd) == 0 or np.ptp(err) == 0:
+        return float("nan")
+    rng = np.random.default_rng(seed)
+    draws = [spearmanr(rng.permutation(sd), err).statistic for _ in range(n_perm)]
+    draws = [d for d in draws if np.isfinite(d)]
+    return float(np.mean(np.abs(draws))) if draws else float("nan")
+
+
+def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[dict]:
     """Per descriptor: does sd rank error, and is its scale right?"""
     rows = []
     for name, g in t.groupby("descriptor", sort=False):
@@ -366,6 +414,9 @@ def score(t: pd.DataFrame, n_bins: int) -> List[dict]:
             "n": int(len(g)),
             "n_wsi": int(g["wsi"].nunique()),
             "spearman_rho": float(rho),
+            # Naive: it treats every region as independent. Kept for continuity,
+            # but the cluster bootstrap below is the one to quote.
+            "spearman_p_naive": float(p),
             "spearman_p": float(p),
             # Which side had no spread to rank, when rho is undefined. The two
             # mean opposite things: a constant sigma is an ensemble that agrees
@@ -379,6 +430,11 @@ def score(t: pd.DataFrame, n_bins: int) -> List[dict]:
             ),
             "mean_abs_z": float(np.nanmean(g["z"])),
             "calibration_ratio": float(np.nanmean(g["z"]) / HALF_NORMAL),
+            **(dict(zip(("rho_ci_lo", "rho_ci_hi", "n_boot_used"),
+                        cluster_bootstrap_rho(g, n_boot, seed)))
+               if n_boot else {}),
+            **({"rho_shuffled": shuffled_rho(g, min(200, n_boot), seed + 1)}
+               if n_boot else {}),
             "ece_normalised": float(expected_calibration_error(bu, be, bc)),
             "mean_sd": float(sd.mean()),
             "mean_error": float(err.mean()),
@@ -511,6 +567,14 @@ def main() -> None:
                          "[%(default)s]")
     ap.add_argument("--n_folds", type=int, default=5)
     ap.add_argument("--n_bins", type=int, default=10)
+    ap.add_argument("--n_boot", type=int, default=2000,
+                    help="Bootstrap resamples for the rho CI, drawing WHOLE "
+                         "SLIDES. Regions inside a slide are spatially "
+                         "correlated, so the naive p-value over ~2850 regions "
+                         "describes a cohort that does not exist. 0 disables "
+                         "both this and the shuffled control. [%(default)s]")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="Seed for the bootstrap and the shuffled control.")
 
     # must match the run that produced --phi_csv
     ap.add_argument("--mpp", type=float, default=SOURCE_MPP)
@@ -544,7 +608,7 @@ def main() -> None:
     t = pair(df, ref, args.prediction, args.n_folds)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        rows = score(t, args.n_bins)
+        rows = score(t, args.n_bins, args.n_boot, args.seed)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     t.to_csv(args.outdir / "per_region_calibration.csv", index=False)
@@ -569,19 +633,28 @@ def main() -> None:
         json.dump(payload, fh, indent=2)
 
     print("\n=== φ_struct calibration ===")
-    print(f"{'descriptor':24s} {'ref':>5s} {'n':>6s} {'rho':>7s} {'p':>9s} "
-          f"{'E|z|/0.80':>10s}")
+    print(f"{'descriptor':24s} {'ref':>5s} {'n':>6s} {'rho':>7s} "
+          f"{'95% CI (by case)':>18s} {'shuf':>6s} {'E|z|/0.80':>10s}")
     for r in rows:
         if "spearman_rho" not in r:
             print(f"{r['descriptor']:24s} {'':>5s} {r['n']:>6d}   {r.get('note', '')}")
             continue
+        ci = (f"[{r['rho_ci_lo']:+.3f}, {r['rho_ci_hi']:+.3f}]"
+              if np.isfinite(r.get("rho_ci_lo", np.nan)) else "naive p "
+              f"{r['spearman_p']:.0e}")
+        shuf = (f"{r['rho_shuffled']:.3f}"
+                if np.isfinite(r.get("rho_shuffled", np.nan)) else "-")
         print(f"{r['descriptor']:24s} {r['reference_class']:>5s} {r['n']:>6d} "
-              f"{r['spearman_rho']:>7.3f} {r['spearman_p']:>9.2e} "
+              f"{r['spearman_rho']:>7.3f} {ci:>18s} {shuf:>6s} "
               f"{r['calibration_ratio']:>10.2f}"
               + (f"   [{r['undefined_because']}]"
                  if r.get("undefined_because") else ""))
     print("\nrho > 0 means uncertain regions are the wrong ones. E|z|/0.80 > 1")
     print("means the ensemble is over-confident: errors exceed its own spread.")
+    print("The CI resamples SLIDES, not regions — quote it, not the naive p, "
+          "which\ntreats every region as independent. 'shuf' is the negative "
+          "control: mean\n|rho| with the pairing broken, which must sit near 0 "
+          "for rho to mean anything.")
     print(f"\nwrote {args.outdir / 'per_region_calibration.csv'}")
     print(f"wrote {args.outdir / 'summary.json'}")
 

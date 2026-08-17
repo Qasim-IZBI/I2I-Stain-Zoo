@@ -192,6 +192,37 @@ error against the real SR, then
    spatially correlated, and in `--prediction fold` the five subset predictions for
    a region share one target.
 
+### First run on real data (2026-08-17, liver, 2850 regions / 20 cases)
+
+`--prediction grand`, 2048 px regions, four collagen descriptors:
+
+| descriptor | ρ(σ, \|error\|) | E\|z\|/0.80 | reads as |
+|---|---|---|---|
+| `task_specific_value` (CPA) | **+0.217** | 0.71 | ranks its error; slightly under-confident |
+| `beta0_per_mm2` | −0.007 | 0.66 | no relationship |
+| `beta1_per_mm2` | −0.032 | 0.96 | no relationship |
+| `regional_dispersion` | −0.002 | 2.17 | no relationship, and over-confident |
+
+**CPA calibrates; the topological terms do not.** Two things make this coherent
+rather than disappointing:
+
+- CPA had the *best* floor-to-signal ratio of the four in the §2 sweep (0.87 at
+  1.5 mm against 0.97–1.19), and it is the one where ρ survives. The descriptor
+  with the most headroom is the one that shows signal.
+- Floor noise in the target attenuates ρ toward zero, so **+0.217 is a lower
+  bound** and the three nulls are *ambiguous*, not negative. At 2048 px
+  (0.45 mm) the floor is worse than anywhere in the §2 sweep. Do not write "β₀
+  uncertainty is uninformative"; write that it cannot be demonstrated against a
+  reference this noisy.
+
+Do **not** quote the naive p (1.3e-31 for CPA). It treats 2850 regions as
+independent when they come from 20 cases. `--n_boot` resamples whole slides;
+quote that CI. The shuffled control must sit near 0.
+
+**The three nulls are the reason to run `--prediction fold` next** — if
+data-exposure spread is what carries the signal, the fold comparison is where it
+shows.
+
 ### The secondary claim the crossed grid uniquely supports
 
 `--prediction grand` (mean of 50, total spread) versus `--prediction fold` (each
@@ -221,9 +252,9 @@ kind about it.
 
 ## 6. Still open before submission
 
-- [ ] **The calibration has not been run on real data.** Everything in §4 is
-      validated against injected synthetic ground truth only (calibrated → 1.01,
-      2.5× over-confident → 2.50, uninformative → ρ = 0.002).
+- [x] ~~**The calibration has not been run on real data.**~~ Run 2026-08-17 on
+      liver; see §4. Still to do: re-run with `--n_boot` for the CI, and
+      `--prediction fold` for the data-exposure claim.
 - [ ] **Step 0 — is the real SR on the H&E frame? THE gate.** With the lumen arm
       closed, this decides whether there is a region-level calibration (~6000
       points) or only a WSI-level one (n = 20) — for the entire study, not half of
@@ -232,11 +263,16 @@ kind about it.
       three runs predate two fixes (the inverted split-half bracket, the NaN-column
       crash). Neither changes the verdicts, but the manuscript should not cite
       figures produced by code that has since been corrected.
-- [ ] **Negative control**: shuffle σ across regions, confirm ρ collapses.
+- [x] ~~**Negative control**: shuffle σ across regions, confirm ρ collapses.~~
+      Implemented as `rho_shuffled` in `calibrate_phi.py`, on by default with
+      `--n_boot`. Report it beside every ρ.
 - [x] ~~**Confound test**: correlate σ_lumen against mean region brightness.~~
       Superseded — the threshold sweep on the generated SR settled it directly
       (§3a). The lumen arm is closed, so there is nothing left to confound.
-- [ ] **Cluster-robust intervals**, case as the unit. Not implemented anywhere yet.
+- [x] ~~**Cluster-robust intervals**, case as the unit.~~ `--n_boot 2000`
+      resamples whole slides. A slide drawn twice contributes its regions twice,
+      so the interval reflects how much the answer depends on which 20 slides
+      were collected. Quote this, never the naive p.
 - [ ] **Resolution parity**, if the collagen arm is used: the virtual arm's content
       was synthesised at 0.442 µm/px and upsampled, the real SR is genuinely 0.221.
       Same pixel size, different effective resolution, and the segmenter sees both.
