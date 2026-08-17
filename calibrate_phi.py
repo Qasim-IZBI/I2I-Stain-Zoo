@@ -31,6 +31,8 @@ through a parameter that differs by one.
 
 Outputs
 -------
+reference_phi.csv            phi of the REAL tissue per region, + a .json parameter
+                             record. Reusable: --reference_csv skips recomputing it
 per_region_calibration.csv   mu, sd, reference, error and z per region x descriptor
 reliability_bins.csv         the reliability diagram's own data, one row per bin
 summary.json                 Spearman rho, E|z|, ECE and reliability bins
@@ -107,6 +109,105 @@ def _indexed(directory: Optional[Path], strip_prefix: bool, what: str) -> dict:
             )
         out[key] = path
     return out
+
+
+# Everything that changes what a reference φ IS. A cached reference computed
+# under different values measures a different quantity, so reuse is refused
+# rather than silently mixing them.
+REFERENCE_PARAMS = ("mpp", "min_object_px", "closing_px", "white_thresh",
+                    "real_psr", "real_lumen", "he_masks", "he_dir",
+                    "strip_prefix")
+
+BOX_COLS = ["y0", "y1", "x0", "x1"]
+
+
+def save_reference(ref: pd.DataFrame, path: Path, args) -> None:
+    """Write the reference φ plus the parameter record that makes it reusable."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ref.to_csv(path, index=False)
+    meta = {k: (str(getattr(args, k)) if isinstance(getattr(args, k), Path)
+                else getattr(args, k))
+            for k in REFERENCE_PARAMS}
+    with open(path.with_suffix(".json"), "w") as fh:
+        json.dump({"params": meta, "n_regions": int(len(ref)),
+                   "n_wsi": int(ref["wsi"].nunique()),
+                   "descriptors": [c for c in ref.columns
+                                   if c.startswith("real_")]}, fh, indent=2)
+
+
+def load_reference(path: Path, df: pd.DataFrame, args) -> pd.DataFrame:
+    """Reuse a cached reference φ, after proving it belongs to THIS grid.
+
+    Recomputing the reference is nearly all of this script's runtime — twenty
+    full-slide masks, `betti` and a structure tensor over every region — so a
+    cache turns a re-plot from hours into seconds. What it must never do is
+    quietly pair one grid's σ with another grid's reference.
+
+    Two independent checks, because either alone leaves a hole. The parameters
+    catch a reference measured differently (a different `--white_thresh`, a
+    different mask directory) on the same boxes. The **boxes themselves** catch a
+    regrid — `--region_px 1024` against a cache built at 2048 keeps every
+    parameter identical while every region moves.
+    """
+    ref = pd.read_csv(path)
+    meta_path = path.with_suffix(".json")
+    if meta_path.is_file():
+        with open(meta_path) as fh:
+            saved = json.load(fh).get("params", {})
+        now = {k: (str(getattr(args, k)) if isinstance(getattr(args, k), Path)
+                   else getattr(args, k)) for k in REFERENCE_PARAMS}
+        differ = {k: (saved.get(k), now[k]) for k in REFERENCE_PARAMS
+                  if k in saved and saved[k] != now[k]}
+        if differ:
+            raise SystemExit(
+                f"{path} was computed under different parameters, so it measures "
+                f"a different quantity:\n"
+                + "\n".join(f"  {k}: cached {a!r} vs now {b!r}"
+                            for k, (a, b) in differ.items())
+                + "\n  Drop --reference_csv to recompute, or pass the values it "
+                  "was built with."
+            )
+    else:
+        print(f"[WARN] no {meta_path.name} beside the cached reference, so the "
+              f"parameters it was built under cannot be checked. The region "
+              f"boxes still are.")
+
+    if not set(BOX_COLS) <= set(ref.columns):
+        raise SystemExit(
+            f"{path} carries no y0/y1/x0/x1 columns, so it cannot be checked "
+            f"against this grid. It predates --save_reference; recompute it."
+        )
+
+    key = ["wsi", "region_index"]
+    merged = df[key + BOX_COLS].merge(ref[key + BOX_COLS], on=key, how="inner",
+                                      suffixes=("_phi", "_ref"))
+    if len(merged) != len(df):
+        raise SystemExit(
+            f"{path} covers {len(merged)} of the {len(df)} regions in --phi_csv. "
+            f"It was built for a different grid — recompute it, or point "
+            f"--phi_csv at the run it came from."
+        )
+    moved = merged[[f"{c}_phi" for c in BOX_COLS]].to_numpy() != \
+        merged[[f"{c}_ref" for c in BOX_COLS]].to_numpy()
+    if moved.any():
+        bad = merged[moved.any(axis=1)].iloc[0]
+        # Print the WHOLE box. Two grids at different region sizes share the same
+        # top-left corner for region 0, so reporting only y0/x0 shows two
+        # identical pairs and reads as a spurious failure.
+        def _box(suffix):
+            return (f"y {bad['y0' + suffix]}-{bad['y1' + suffix]}  "
+                    f"x {bad['x0' + suffix]}-{bad['x1' + suffix]}")
+        raise SystemExit(
+            f"{path} has the same region ids on DIFFERENT boxes — e.g. "
+            f"{bad['wsi']} region {bad['region_index']}:\n"
+            f"  cache    {_box('_ref')}\n"
+            f"  phi_csv  {_box('_phi')}\n"
+            f"  Reusing it would score one grid's spread against another grid's "
+            f"tissue. Recompute the reference for this grid."
+        )
+    print(f"[cache] reference phi for {len(ref)} regions over "
+          f"{ref['wsi'].nunique()} WSI from {path} (boxes verified)")
+    return ref
 
 
 def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
@@ -221,7 +322,12 @@ def reference_phi(df: pd.DataFrame, args) -> pd.DataFrame:
 
         for row in group.itertuples():
             ys, xs = slice(row.y0, row.y1), slice(row.x0, row.x1)
-            out: Dict[str, float] = {"wsi": wsi, "region_index": row.region_index}
+            # The boxes travel WITH the reference, so a cached reference can be
+            # checked against the grid it is being reused on rather than trusted.
+            out: Dict[str, float] = {
+                "wsi": wsi, "region_index": row.region_index,
+                "y0": row.y0, "y1": row.y1, "x0": row.x0, "x1": row.x1,
+            }
             box = (row.y1 - row.y0, row.x1 - row.x0)
 
             # Numpy slicing past an edge returns a SHORT array rather than
@@ -710,6 +816,22 @@ def main() -> None:
                          "apply_he_mask.py and compare_psr.py.")
     ap.add_argument("--outdir", type=Path, default=Path("calibration_phi"))
 
+    # Reference phi is the expensive half and does not depend on the ensemble at
+    # all — only on the real masks and the region boxes. So it is computed once
+    # and reused, which is what makes a figure change cheap.
+    ap.add_argument("--reference_csv", type=Path, default=None,
+                    help="Reuse a reference phi from a previous run instead of "
+                         "recomputing it. Checked against this grid's region "
+                         "boxes and the parameters it was built under; a "
+                         "mismatch exits rather than pairing one grid's spread "
+                         "with another grid's tissue.")
+    ap.add_argument("--save_reference", type=Path, default=None,
+                    help="Where to write the reference phi. "
+                         "[<outdir>/reference_phi.csv]")
+    ap.add_argument("--reference_only", action="store_true",
+                    help="Compute and save the reference phi, then stop. Lets "
+                         "the slow half run as its own job.")
+
     ap.add_argument("--prediction", choices=("grand", "fold"), default="grand",
                     help="'grand' pairs the mean of all members with the total "
                          "spread — the deployed prediction. 'fold' pairs each "
@@ -753,8 +875,21 @@ def main() -> None:
     df = pd.read_csv(args.phi_csv)
     print(f"[1/3] {len(df)} regions over {df['wsi'].nunique()} WSI from {args.phi_csv}")
 
-    ref = reference_phi(df, args)
-    print(f"[2/3] reference phi for {len(ref)} regions")
+    if args.reference_csv:
+        ref = load_reference(args.reference_csv, df, args)
+    else:
+        ref = reference_phi(df, args)
+        print(f"[2/3] reference phi for {len(ref)} regions")
+        # Always cache it. It is the expensive half — twenty full-slide masks,
+        # betti and a structure tensor per region — and every later change to
+        # --prediction, --n_bins, --n_boot or the figure reuses it unchanged.
+        cache = args.save_reference or (args.outdir / "reference_phi.csv")
+        save_reference(ref, cache, args)
+        print(f"wrote {cache}  (reuse with --reference_csv, {len(ref)} regions)")
+
+    if args.reference_only:
+        print("--reference_only: stopping before the calibration.")
+        return
 
     t = pair(df, ref, args.prediction, args.n_folds)
     with warnings.catch_warnings():

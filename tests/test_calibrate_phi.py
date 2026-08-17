@@ -358,3 +358,83 @@ class TestReliabilityBins:
         b = score(t, 4)[0]["bins"]
         assert all(np.isnan(d["se_error_by_case"]) for d in b)
         assert all(d["n_wsi"] == 1 for d in b)
+
+
+class TestReferenceCache:
+    """Reference φ is the expensive half and does not depend on the ensemble at
+    all — only on the real masks and the region boxes. Caching it turns a re-plot
+    from hours into seconds. The whole risk is staleness, so reuse is verified
+    rather than trusted.
+    """
+
+    @staticmethod
+    def _args(tmp_path, **over):
+        import argparse
+        d = dict(mpp=0.221, min_object_px=16, closing_px=0, white_thresh=0.85,
+                 real_psr=tmp_path / "psr", real_lumen=None,
+                 he_masks=tmp_path / "he", he_dir=None, strip_prefix=True)
+        d.update(over)
+        return argparse.Namespace(**d)
+
+    @staticmethod
+    def _grid(region=1024, n_wsi=2, per_side=2):
+        rows = []
+        for w in range(n_wsi):
+            for i, (y, x) in enumerate([(a * region, b * region)
+                                        for a in range(per_side)
+                                        for b in range(per_side)]):
+                rows.append({"wsi": f"HE_s{w}.tif", "region_index": i,
+                             "y0": y, "y1": y + region,
+                             "x0": x, "x1": x + region})
+        return pd.DataFrame(rows)
+
+    def _ref(self, df):
+        out = df.copy()
+        out["real_task_specific_value"] = np.linspace(0.02, 0.08, len(df))
+        return out
+
+    def test_round_trip(self, tmp_path):
+        from calibrate_phi import load_reference, save_reference
+        df = self._grid()
+        path = tmp_path / "reference_phi.csv"
+        save_reference(self._ref(df), path, self._args(tmp_path))
+        back = load_reference(path, df, self._args(tmp_path))
+        assert len(back) == len(df)
+        assert "real_task_specific_value" in back.columns
+
+    def test_a_changed_parameter_is_refused(self, tmp_path):
+        """Same boxes, different measurement — the cache is a different quantity
+        wearing the same region ids."""
+        from calibrate_phi import load_reference, save_reference
+        df = self._grid()
+        path = tmp_path / "reference_phi.csv"
+        save_reference(self._ref(df), path, self._args(tmp_path))
+        with pytest.raises(SystemExit, match="different parameters"):
+            load_reference(path, df, self._args(tmp_path, white_thresh=0.5))
+
+    def test_a_regrid_is_refused_even_though_ids_match(self, tmp_path):
+        """The hole a parameter check alone leaves: --region_px 2048 against a
+        cache built at 1024 keeps every parameter identical, and region 7 of
+        slide 3 exists in both — on different tissue."""
+        from calibrate_phi import load_reference, save_reference
+        path = tmp_path / "reference_phi.csv"
+        save_reference(self._ref(self._grid(region=1024)), path,
+                       self._args(tmp_path))
+        with pytest.raises(SystemExit, match="DIFFERENT boxes"):
+            load_reference(path, self._grid(region=2048), self._args(tmp_path))
+
+    def test_a_short_cache_is_refused(self, tmp_path):
+        from calibrate_phi import load_reference, save_reference
+        path = tmp_path / "reference_phi.csv"
+        save_reference(self._ref(self._grid(n_wsi=1)), path, self._args(tmp_path))
+        with pytest.raises(SystemExit, match="covers 4 of the 8 regions"):
+            load_reference(path, self._grid(n_wsi=2), self._args(tmp_path))
+
+    def test_a_cache_without_boxes_is_refused(self, tmp_path):
+        """Predates --save_reference, so nothing about it can be checked."""
+        from calibrate_phi import load_reference
+        df = self._grid()
+        path = tmp_path / "old.csv"
+        self._ref(df).drop(columns=["y0", "y1", "x0", "x1"]).to_csv(path, index=False)
+        with pytest.raises(SystemExit, match="no y0/y1/x0/x1"):
+            load_reference(path, df, self._args(tmp_path))

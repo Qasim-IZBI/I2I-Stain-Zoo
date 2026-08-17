@@ -687,6 +687,32 @@ the error message tests whether stripping would bridge the two and says so. Both
 sides are keyed the same way, so it does not break `--he_masks`, which already
 matched. Two files collapsing to one key is **fatal**, not last-one-wins.
 
+**Compute the real side once and reuse it.** Reference φ is nearly all the
+runtime — twenty full-slide masks, `betti` and a structure tensor over every
+region — and it does not depend on the ensemble at all, only on the real masks
+and the region boxes. So it is cached automatically:
+
+```bash
+# the slow half, as its own job
+python calibrate_phi.py --phi_csv .../per_region.csv \
+    --real_psr /path/psr_masks/real/psr_masks_wsi_final --strip_prefix \
+    --he_masks /path/HE_tissue --reference_only --outdir ./calibration_phi/
+
+# every later run: seconds, not hours
+python calibrate_phi.py --phi_csv .../per_region.csv \
+    --reference_csv ./calibration_phi/reference_phi.csv \
+    --real_psr ... --strip_prefix --he_masks ... --prediction fold \
+    --outdir ./calibration_phi_fold/
+```
+
+Reuse is **verified, not trusted**, by two independent checks — either alone
+leaves a hole. The `.json` beside the CSV records `--mpp`, `--min_object_px`,
+`--closing_px`, `--white_thresh`, the mask directories and `--strip_prefix`, and
+catches a reference *measured* differently on the same boxes. The **boxes
+themselves** catch a regrid: `--region_px 1024` against a cache built at 2048
+keeps every parameter identical while every region moves, and region 7 of slide 3
+exists in both — on different tissue. A mismatch exits.
+
 Regions come from `--phi_csv` verbatim rather than by rebuilding a grid, so the two
 sides cannot drift apart through a parameter that differs by one. **Pass the same
 `--he_masks` the φ run used** — a footprint built differently on the two sides means
