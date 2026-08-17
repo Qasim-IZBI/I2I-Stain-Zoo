@@ -745,6 +745,25 @@ so it can be restyled for the manuscript without re-running anything. Per bin:
 `sd_lo`/`sd_hi`, `mean_sd`, `mean_error`, `expected_error` (= 0.80·σ),
 `ratio_obs_over_expected`, `se_error_by_case`, `n`, `n_wsi`.
 
+**All three variance components are scored, in one figure.** `reliability_phi.png`
+draws one panel per descriptor with three curves — total σ, procedural σ (seed)
+and data-exposure σ (subset). The prediction is the mean of all 50 in every case,
+so the **error is identical across the three and only σ moves**; whichever gives
+the higher ρ is the component the calibration rests on. That is the comparison
+the crossed 5×10 grid exists to support, and a flat seed-only ensemble has no
+data-exposure term to put beside the other two.
+
+`reliability_bins.csv` carries a `component` column, so each curve's points are
+recoverable separately. Where the ANOVA left a negative variance component there
+is no SD, and those regions drop out of **that component only** — the count is
+reported as `n_dropped` and printed on the figure, because a component estimated
+as zero on half the regions is a finding about the ensemble rather than a missing
+measurement.
+
+`--prediction fold` is a different *prediction*, not a fourth component: it pairs
+each subset's mean with that subset's own procedural spread. Both are worth
+running.
+
 Three things the reliability figure does that the compact panel does not, each
 because the compact one can mislead:
 

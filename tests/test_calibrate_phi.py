@@ -228,3 +228,90 @@ class TestReliabilityBins:
         b = score(t, 4)[0]["bins"]
         assert all(np.isnan(d["se_error_by_case"]) for d in b)
         assert all(d["n_wsi"] == 1 for d in b)
+
+
+class TestVarianceComponents:
+    """Total, procedural and data-exposure sigma are all scored, against the SAME
+    error.
+
+    In `grand` mode the prediction is the mean of all fifty whichever spread is
+    paired with it, so the error is identical across the three and only sigma
+    moves. That is what makes them comparable on one axis, and it is the
+    comparison the crossed 5x10 grid exists to support: a flat seed-only ensemble
+    has no data-exposure term to compare against.
+    """
+
+    @staticmethod
+    def _frames(n_wsi=6, per=9, seed=0):
+        rng = np.random.default_rng(seed)
+        phi, ref = [], []
+        for w in range(n_wsi):
+            for i in range(per):
+                sp, sd = abs(rng.normal(6, 2)), abs(rng.normal(8, 3))
+                phi.append({"wsi": f"w{w}", "region_index": i,
+                            "mu_task_specific_value": 100.0,
+                            "sd_total_task_specific_value": float(np.hypot(sp, sd)),
+                            "sd_procedural_task_specific_value": sp,
+                            "sd_data_task_specific_value": sd})
+                ref.append({"wsi": f"w{w}", "region_index": i,
+                            "real_task_specific_value": 100.0 + rng.normal(0, sd)})
+        return pd.DataFrame(phi), pd.DataFrame(ref)
+
+    def test_all_three_components_are_scored(self):
+        from calibrate_phi import pair, score
+        phi, ref = self._frames()
+        rows = score(pair(phi, ref, "grand", 5), 4)
+        assert {r["component"] for r in rows} == {"total", "procedural",
+                                                  "data_exposure"}
+
+    def test_the_error_is_identical_across_components(self):
+        """The whole basis of the comparison. If the prediction changed with the
+        spread, a difference in rho would confound the two."""
+        from calibrate_phi import pair
+        phi, ref = self._frames()
+        t = pair(phi, ref, "grand", 5)
+        by = {c: g.sort_values("region_index")["error"].to_numpy()
+              for c, g in t.groupby("component")}
+        np.testing.assert_allclose(by["total"], by["procedural"])
+        np.testing.assert_allclose(by["total"], by["data_exposure"])
+
+    def test_sigma_differs_across_components(self):
+        from calibrate_phi import pair
+        phi, ref = self._frames()
+        t = pair(phi, ref, "grand", 5)
+        by = {c: g.sort_values("region_index")["sd"].to_numpy()
+              for c, g in t.groupby("component")}
+        assert not np.allclose(by["total"], by["procedural"])
+        # total is the quadrature sum of the two, so it exceeds each
+        assert (by["total"] >= by["procedural"] - 1e-9).all()
+        assert (by["total"] >= by["data_exposure"] - 1e-9).all()
+
+    def test_a_missing_component_is_counted_not_hidden(self):
+        """A negative ANOVA variance component is a real outcome near zero and
+        has no SD, so its column is empty. Those regions drop out of that
+        component only, and how many did is reported — a component estimated as
+        zero on half the regions is a finding, not a missing measurement."""
+        from calibrate_phi import pair, score
+        phi, ref = self._frames()
+        phi.loc[:9, "sd_data_task_specific_value"] = np.nan
+        rows = score(pair(phi, ref, "grand", 5), 4)
+        data = next(r for r in rows if r["component"] == "data_exposure")
+        total = next(r for r in rows if r["component"] == "total")
+        assert data["n_dropped"] == 10
+        assert data["n"] == total["n"] - 10
+
+    def test_rows_are_descriptor_major(self):
+        """pair() emits component-major; the table has to read descriptor-major
+        or the one comparison this exists for is scattered down the page."""
+        from calibrate_phi import pair, score
+        phi, ref = self._frames()
+        phi["mu_beta0_per_mm2"] = 500.0
+        phi["sd_total_beta0_per_mm2"] = 30.0
+        phi["sd_procedural_beta0_per_mm2"] = 24.0
+        phi["sd_data_beta0_per_mm2"] = 18.0
+        ref["real_beta0_per_mm2"] = 505.0
+        rows = score(pair(phi, ref, "grand", 5), 4)
+        names = [r["descriptor"] for r in rows]
+        assert names == sorted(names, key=names.index)      # contiguous blocks
+        assert [r["component"] for r in rows[:3]] == ["total", "procedural",
+                                                      "data_exposure"]

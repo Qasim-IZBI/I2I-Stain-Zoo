@@ -29,10 +29,11 @@ grid rather than trusted: same region ids on different boxes exits.
 Outputs
 -------
 per_region_calibration.csv   mu, sd, reference, error and z per region x descriptor
-reliability_bins.csv         the reliability diagram's own data, one row per bin
+reliability_bins.csv         the reliability diagram's own data, per bin x component
 summary.json                 Spearman rho, E|z|, ECE, reliability bins, provenance
 calibration_phi.png          working panel: reliability per descriptor + rho summary
-reliability_phi.png          the reliability diagram alone, at figure quality
+reliability_phi.png          reliability per descriptor, total / procedural /
+                             data-exposure sigma overlaid
 """
 
 from __future__ import annotations
@@ -63,24 +64,50 @@ C_SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7", "#
 C_INK, C_MUTED, C_GRID = "#0b0b0b", "#52514e", "#e3e3df"
 
 
+# The three spreads `compute_phi_uncertainty.py` writes per descriptor. In
+# `grand` mode all three are scored against the SAME error — the prediction is
+# the mean of all fifty either way — so the comparison isolates which variance
+# component carries the predictive signal, rather than confounding it with a
+# change of prediction.
+COMPONENTS = (("total", "sd_total_{n}"),
+              ("procedural", "sd_procedural_{n}"),
+              ("data_exposure", "sd_data_{n}"))
+
+COMPONENT_LABEL = {
+    "total": "total σ",
+    "procedural": "procedural σ (seed)",
+    "data_exposure": "data-exposure σ (subset)",
+    "procedural_within_fold": "procedural σ, per subset",
+}
+
+
 def pair(df: pd.DataFrame, ref: pd.DataFrame, mode: str, n_folds: int) -> pd.DataFrame:
     """Long table of (prediction, uncertainty, reference) per region x descriptor.
 
-    `grand` pairs the mean over all members with the total spread — the
-    deployed prediction. `fold` pairs each subset's mean with that subset's
-    procedural spread alone, giving one row per subset and asking whether
-    procedural uncertainty suffices without the data-exposure term.
+    `grand` pairs the mean over all members with **each** variance component in
+    turn — total, procedural and data-exposure. The prediction, and therefore the
+    error, is identical across the three; only sigma changes. So the three
+    reliability curves for a descriptor differ only in how far along the sigma
+    axis each point sits, and comparing them answers directly which component
+    the calibration rests on.
+
+    `fold` pairs each subset's mean with that subset's procedural spread alone,
+    giving one row per subset. That is a different *prediction*, not a different
+    spread, which is why it is a separate mode rather than a fourth component.
     """
     merged = df.merge(ref, on=["wsi", "region_index"], how="inner")
     if merged.empty:
         raise SystemExit("no regions matched between --phi_csv and the reference")
 
     out = []
-    sources = ([("grand", "mu_{n}", "sd_total_{n}")] if mode == "grand"
-               else [(f"fold{f}", f"fold{f}_mu_{{n}}", f"fold{f}_sd_{{n}}")
-                     for f in range(1, n_folds + 1)])
+    if mode == "grand":
+        sources = [("grand", comp, "mu_{n}", key) for comp, key in COMPONENTS]
+    else:
+        sources = [(f"fold{f}", "procedural_within_fold",
+                    f"fold{f}_mu_{{n}}", f"fold{f}_sd_{{n}}")
+                   for f in range(1, n_folds + 1)]
 
-    for label, mu_key, sd_key in sources:
+    for label, component, mu_key, sd_key in sources:
         for name in PHI_NAMES:
             mu_col, sd_col, real_col = (mu_key.format(n=name),
                                         sd_key.format(n=name), f"real_{name}")
@@ -90,6 +117,7 @@ def pair(df: pd.DataFrame, ref: pd.DataFrame, mode: str, n_folds: int) -> pd.Dat
             block.columns = ["wsi", "region_index", "mu", "sd", "real"]
             block["descriptor"] = name
             block["prediction"] = label
+            block["component"] = component
             out.append(block)
 
     if not out:
@@ -153,13 +181,29 @@ def shuffled_rho(g: pd.DataFrame, n_perm: int, seed: int) -> float:
 
 
 def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[dict]:
-    """Per descriptor: does sd rank error, and is its scale right?"""
+    """Per descriptor x variance component: does sd rank error, and is its scale
+    right?"""
     rows = []
-    for name, g in t.groupby("descriptor", sort=False):
+    keys = (["descriptor", "component"] if "component" in t.columns
+            else ["descriptor"])
+    for key, g in t.groupby(keys, sort=False):
+        # groupby on a LIST of keys yields a tuple even when the list holds one
+        # element, so this cannot unpack a fixed pair.
+        key = key if isinstance(key, tuple) else (key,)
+        name = key[0]
+        component = key[1] if len(key) > 1 else "total"
+        n_raw = int(len(g))
         g = g.dropna(subset=["sd", "error"])
         g = g[np.isfinite(g["sd"]) & np.isfinite(g["error"]) & (g["sd"] > 0)]
+        # A negative ANOVA variance component is a real outcome near zero and is
+        # reported rather than clipped, so it has no SD and its column is empty.
+        # Those regions drop out here, and how many did is part of reading the
+        # data-exposure panel: a component estimated as zero on half the regions
+        # is a finding about the ensemble, not a missing measurement.
+        dropped = n_raw - int(len(g))
         if len(g) < 3:
-            rows.append({"descriptor": name, "n": int(len(g)),
+            rows.append({"descriptor": name, "component": component,
+                         "n": int(len(g)), "n_dropped": dropped,
                          "note": "too few finite regions to score"})
             continue
 
@@ -210,9 +254,12 @@ def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[
                                       err.min(), err.max())
         rows.append({
             "descriptor": name,
+            "component": component,
             "reference_class": (PHI_REFERENCE[PHI_NAMES.index(name)]
                                 if name in PHI_NAMES else None),
             "n": int(len(g)),
+            # regions with no SD for this component — see above
+            "n_dropped": dropped,
             "n_wsi": int(g["wsi"].nunique()),
             "spearman_rho": float(rho),
             # Naive: it treats every region as independent. Kept for continuity,
@@ -241,14 +288,45 @@ def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[
             "mean_error": float(err.mean()),
             "bins": bins,
         })
+
+    # Descriptor-major, components in their fixed order. `pair` emits
+    # component-major, which would print each descriptor's three components
+    # scattered down the table and make the one comparison this exists for
+    # something the reader has to reassemble by eye.
+    comp_order = [c for c, _ in COMPONENTS] + ["procedural_within_fold"]
+    rows.sort(key=lambda r: (
+        PHI_NAMES.index(r["descriptor"]) if r["descriptor"] in PHI_NAMES else 99,
+        comp_order.index(r.get("component", "total"))
+        if r.get("component", "total") in comp_order else 99,
+    ))
     return rows
 
 
-def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None:
-    """The reliability diagram on its own, at figure quality.
+# One colour per variance component, held fixed across every panel and every
+# run — the component is the entity, so its colour must not depend on which
+# descriptors happened to be scored.
+C_COMPONENT = {
+    "total": "#2a78d6",
+    "procedural": "#eb6834",
+    "data_exposure": "#1baf7a",
+    "procedural_within_fold": "#4a3aa7",
+}
+M_COMPONENT = {"total": "o", "procedural": "s", "data_exposure": "^",
+               "procedural_within_fold": "D"}
 
-    Separate from `calibration_phi.png`, which is a working panel. Three things
-    it adds, each because the compact version can mislead:
+
+def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None:
+    """Reliability per descriptor, with the variance components overlaid.
+
+    One panel per descriptor, one curve per component (total, procedural,
+    data-exposure). The prediction is the same in all three, so the **error is
+    identical** and only sigma moves — which is exactly what makes them
+    comparable on one axis. Reading down a panel answers the question the crossed
+    5x10 grid exists to pose: is it the seed spread or the data-exposure spread
+    that tracks the error?
+
+    Three things it does that the compact working panel does not, each because
+    the compact one can mislead:
 
     * **Error bars clustered on the case.** Without them a bin mean over ~285
       regions looks precise, when those regions come from twenty slides.
@@ -273,50 +351,77 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
         print("[note] no binned descriptor to plot — reliability figure skipped")
         return
 
-    ncol = len(scored)
-    fig = plt.figure(figsize=(4.0 * ncol + 0.6, 5.4))
-    gs = GridSpec(2, ncol, height_ratios=[3.4, 1.0], hspace=0.32, wspace=0.28,
+    # descriptor -> its components, in the fixed order, so panels line up
+    order = [n for n in PHI_NAMES if any(r["descriptor"] == n for r in scored)]
+    by_desc = {n: [r for r in scored if r["descriptor"] == n] for n in order}
+    comp_order = [c for c, _ in COMPONENTS] + ["procedural_within_fold"]
+    for n in by_desc:
+        by_desc[n].sort(key=lambda r: (comp_order.index(r.get("component", "total"))
+                                       if r.get("component") in comp_order else 99))
+
+    ncol = len(order)
+    fig = plt.figure(figsize=(4.6 * ncol + 0.8, 6.8))
+    gs = GridSpec(2, ncol, height_ratios=[3.6, 1.0], hspace=0.34, wspace=0.30,
                   figure=fig)
 
-    for k, r in enumerate(scored):
-        b = r["bins"]
-        x = np.array([d["mean_sd"] for d in b])
-        y = np.array([d["mean_error"] for d in b])
-        se = np.array([d.get("se_error_by_case", np.nan) for d in b], float)
-        n = np.array([d["n"] for d in b])
-        nw = np.array([d.get("n_wsi", 0) for d in b])
-        colour = C_SERIES[PHI_NAMES.index(r["descriptor"]) % len(C_SERIES)]
-
+    for k, name in enumerate(order):
+        group = by_desc[name]
         ax = fig.add_subplot(gs[0, k])
+
         # Axes are scaled to their OWN data, not forced equal. A shared scale is
         # the textbook reliability diagram, but it only works while sigma and
-        # error are comparable: on an over-confident descriptor (beta0 here has
+        # error are comparable: on an over-confident descriptor (beta0 sits at
         # sigma ~40 against an error ~500) equal limits crush every point into a
         # corner and the panel shows nothing. The calibration line carries the
         # comparison instead — read the points against the line, not against 45
         # degrees, which is why the diagonal is not drawn at all.
-        xhi = float(x.max()) * 1.15
-        yhi = float(max(np.nanmax(y + np.nan_to_num(se)), xhi * HALF_NORMAL)) * 1.12
+        xs = [d["mean_sd"] for r in group for d in r["bins"]]
+        ys = [d["mean_error"] + (d.get("se_error_by_case") or 0.0)
+              for r in group for d in r["bins"]]
+        xhi = float(max(xs)) * 1.15
+        yhi = float(max(max(ys), xhi * HALF_NORMAL)) * 1.12
+
         ax.plot([0, xhi], [0, xhi * HALF_NORMAL], color=C_MUTED, linewidth=1.4,
-                linestyle="--", zorder=3, label="calibrated   E|e| = 0.80 σ")
-        ax.errorbar(x, y, yerr=se, color=colour, linewidth=2, marker="o",
-                    markersize=6, capsize=3, elinewidth=1.2, zorder=5,
-                    markeredgecolor="white", markeredgewidth=0.8)
+                linestyle="--", zorder=3, label="calibrated  E|e| = 0.80σ")
+
+        for r in group:
+            comp = r.get("component", "total")
+            b = r["bins"]
+            x = np.array([d["mean_sd"] for d in b])
+            y = np.array([d["mean_error"] for d in b])
+            se = np.array([d.get("se_error_by_case", np.nan) for d in b], float)
+            ax.errorbar(x, y, yerr=se, color=C_COMPONENT.get(comp, C_MUTED),
+                        linewidth=1.9, marker=M_COMPONENT.get(comp, "o"),
+                        markersize=5.5, capsize=3, elinewidth=1.1, zorder=5,
+                        markeredgecolor="white", markeredgewidth=0.8,
+                        label=COMPONENT_LABEL.get(comp, comp))
+
         ax.set_xlim(0, xhi)
         ax.set_ylim(0, yhi)
         ax.set_xlabel("ensemble σ", color=C_MUTED, fontsize=9)
         if k == 0:
             ax.set_ylabel("|error| vs real tissue", color=C_MUTED, fontsize=9)
-        ratio = r["calibration_ratio"]
-        verdict = ("over-confident" if ratio > 1.1
-                   else "under-confident" if ratio < 0.9 else "calibrated")
-        rho_txt = (f"ρ = {r['spearman_rho']:+.3f}"
-                   if np.isfinite(r["spearman_rho"]) else "ρ undefined")
-        if np.isfinite(r.get("rho_ci_lo", np.nan)):
-            rho_txt += f" [{r['rho_ci_lo']:+.2f}, {r['rho_ci_hi']:+.2f}]"
-        ax.set_title(f"{r['descriptor']}\n{rho_txt}\n"
-                     f"E|z|/0.80 = {ratio:.2f}  ({verdict})",
-                     color=C_INK, fontsize=9.5, loc="left", pad=8)
+        # The per-component numbers go ABOVE the axes, colour-coded, rather than
+        # into the legend. Four legend entries carrying a rho and a CI each is a
+        # box large enough to cover the curves it labels, and where it lands
+        # depends on the data — so on some runs it hides them and on others it
+        # does not.
+        ax.set_title(name, color=C_INK, fontsize=10, loc="left",
+                     pad=10 + 10.5 * len(group))
+        for gi, r in enumerate(group):
+            comp = r.get("component", "total")
+            rho = r["spearman_rho"]
+            txt = f"{COMPONENT_LABEL.get(comp, comp).split(' σ')[0]:<14s}"
+            if np.isfinite(rho):
+                txt += f" ρ={rho:+.3f}"
+                if np.isfinite(r.get("rho_ci_lo", np.nan)):
+                    txt += f" [{r['rho_ci_lo']:+.2f},{r['rho_ci_hi']:+.2f}]"
+            else:
+                txt += f" ρ {r.get('undefined_because') or 'undefined'}"
+            txt += f"   E|z|/0.80={r['calibration_ratio']:.2f}"
+            ax.text(0.0, 1.005 + 0.042 * (len(group) - 1 - gi), txt,
+                    transform=ax.transAxes, fontsize=7,
+                    color=C_COMPONENT.get(comp, C_MUTED), family="monospace")
         ax.grid(True, color=C_GRID, linewidth=0.8, zorder=0)
         ax.set_axisbelow(True)
         for s in ("top", "right"):
@@ -324,25 +429,35 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
         for s in ("left", "bottom"):
             ax.spines[s].set_color(C_GRID)
         ax.tick_params(colors=C_MUTED, labelsize=8.5)
-        if k == 0:
-            leg = ax.legend(frameon=False, fontsize=7.5, loc="upper left")
-            for txt in leg.get_texts():
-                txt.set_color(C_MUTED)
 
-        # bin population: equal region counts by construction, but NOT equal
-        # numbers of slides, which is what the interval actually rests on
+        # bin population, from the first component — the binning is per
+        # component, but the region set behind it is the same except where a
+        # negative variance component left no SD
         axb = fig.add_subplot(gs[1, k])
-        axb.bar(np.arange(len(n)), n, color=colour, alpha=0.32, zorder=3,
-                edgecolor="white", linewidth=0.6)
-        for i, (cnt, cases) in enumerate(zip(n, nw)):
-            axb.text(i, cnt, f"{cases}", ha="center", va="bottom", fontsize=6.5,
-                     color=C_MUTED)
+        width = 0.8 / max(1, len(group))
+        for gi, r in enumerate(group):
+            comp = r.get("component", "total")
+            n = np.array([d["n"] for d in r["bins"]])
+            pos = np.arange(len(n)) + (gi - (len(group) - 1) / 2) * width
+            axb.bar(pos, n, width=width, color=C_COMPONENT.get(comp, C_MUTED),
+                    alpha=0.42, zorder=3, edgecolor="white", linewidth=0.5)
+            if gi == 0:
+                for i, (cnt, cases) in enumerate(
+                        zip(n, [d.get("n_wsi", 0) for d in r["bins"]])):
+                    axb.text(i, cnt, f"{cases}", ha="center", va="bottom",
+                             fontsize=6.2, color=C_MUTED)
+            if r.get("n_dropped"):
+                axb.text(0.99, 0.86 - 0.16 * gi,
+                         f"{COMPONENT_LABEL.get(comp, comp).split()[0]}: "
+                         f"{r['n_dropped']} region(s) had no σ",
+                         transform=axb.transAxes, ha="right", fontsize=6,
+                         color=C_COMPONENT.get(comp, C_MUTED))
         axb.set_xlabel("σ bin (low → high)", color=C_MUTED, fontsize=8.5)
         if k == 0:
             axb.set_ylabel("regions", color=C_MUTED, fontsize=8.5)
-        axb.set_xticks(np.arange(len(n)))
-        axb.set_xticklabels([str(i + 1) for i in range(len(n))], fontsize=7)
-        axb.set_ylim(0, n.max() * 1.28)
+        nb = max(len(r["bins"]) for r in group)
+        axb.set_xticks(np.arange(nb))
+        axb.set_xticklabels([str(i + 1) for i in range(nb)], fontsize=7)
         axb.grid(True, axis="y", color=C_GRID, linewidth=0.8, zorder=0)
         axb.set_axisbelow(True)
         for s in ("top", "right"):
@@ -351,18 +466,25 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
             axb.spines[s].set_color(C_GRID)
         axb.tick_params(colors=C_MUTED, labelsize=7.5)
 
-    fig.suptitle(title, color=C_INK, fontsize=13, x=0.006, ha="left", y=0.985)
-    fig.text(0.006, 0.005,
-             "Points are bin means in raw descriptor units; error bars are ±1 SE "
-             "clustered on the case, not on the region. Dashed line = calibration "
-             "(E|e| = 0.80σ for Gaussian error); points above it are\n"
-             "over-confident. Axes are scaled per panel, so the line's slope "
-             "differs between them — read each panel against its own line. Bars "
-             "below give each bin's region count, annotated with its slide count.",
+    fig.suptitle(title, color=C_INK, fontsize=13, x=0.006, ha="left", y=0.992)
+    # One legend for the whole figure: the components are the same everywhere,
+    # so repeating it per panel spends space on nothing.
+    handles, labels = fig.axes[0].get_legend_handles_labels()
+    leg = fig.legend(handles, labels, frameon=False, fontsize=8, ncol=len(labels),
+                     loc="upper left", bbox_to_anchor=(0.005, 0.955))
+    for txt in leg.get_texts():
+        txt.set_color(C_MUTED)
+    fig.text(0.006, 0.007,
+             "One curve per variance component. The prediction is the same in all "
+             "three, so the ERROR is identical and only σ moves — which component\n"
+             "tracks the error is the question the crossed grid poses. Points are "
+             "bin means in raw units; error bars are ±1 SE clustered on the case.\n"
+             "Dashed line = calibration (E|e| = 0.80σ); points above it are "
+             "over-confident. Axes are scaled per panel. Bars give each bin's\n"
+             "region count, the first component annotated with its slide count.",
              fontsize=7.5, color=C_MUTED, linespacing=1.5)
-    # Not tight_layout: the reliability axes are set_aspect("equal"), which it
-    # cannot solve for, and it says so on every run.
-    fig.subplots_adjust(left=0.06, right=0.985, top=0.80, bottom=0.155)
+    # Not tight_layout: it cannot solve for these, and says so on every run.
+    fig.subplots_adjust(left=0.085, right=0.985, top=0.80, bottom=0.185)
     fig.savefig(outpath, dpi=200, facecolor="white")
     plt.close(fig)
     print(f"wrote {outpath}")
@@ -373,7 +495,10 @@ def make_figure(t: pd.DataFrame, rows: List[dict], outpath: Path, title: str) ->
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    scored = [r for r in rows if "spearman_rho" in r]
+    # Total only. This panel is one axes per descriptor and cannot carry three
+    # curves; the component comparison lives in reliability_phi.png.
+    scored = [r for r in rows if "spearman_rho" in r
+              and r.get("component", "total") in ("total", "procedural_within_fold")]
     fig, axes = plt.subplots(2, 4, figsize=(19, 8.6))
     axes = axes.ravel()
     for ax in axes:
@@ -529,6 +654,7 @@ def main() -> None:
     # restyled for the manuscript without re-running the calibration — and so
     # the numbers behind each point are quotable rather than only plotted.
     bin_rows = [{"descriptor": r["descriptor"],
+                 "component": r.get("component", "total"),
                  "reference_class": r["reference_class"],
                  "prediction": args.prediction, **b}
                 for r in rows if r.get("bins") for b in r["bins"]]
@@ -563,28 +689,41 @@ def main() -> None:
         json.dump(payload, fh, indent=2)
 
     print("\n=== φ_struct calibration ===")
-    print(f"{'descriptor':24s} {'ref':>5s} {'n':>6s} {'rho':>7s} "
+    print(f"{'descriptor':24s} {'component':>14s} {'n':>6s} {'rho':>7s} "
           f"{'95% CI (by case)':>18s} {'shuf':>6s} {'E|z|/0.80':>10s}")
+    last = None
     for r in rows:
+        comp = r.get("component", "total")
+        # group by descriptor so the three components read as one block
+        if last is not None and r["descriptor"] != last:
+            print()
+        last = r["descriptor"]
+        shown = r["descriptor"] if comp in ("total", "procedural_within_fold") else ""
         if "spearman_rho" not in r:
-            print(f"{r['descriptor']:24s} {'':>5s} {r['n']:>6d}   {r.get('note', '')}")
+            print(f"{shown:24s} {comp:>14s} {r['n']:>6d}   {r.get('note', '')}")
             continue
         ci = (f"[{r['rho_ci_lo']:+.3f}, {r['rho_ci_hi']:+.3f}]"
               if np.isfinite(r.get("rho_ci_lo", np.nan)) else "naive p "
               f"{r['spearman_p']:.0e}")
         shuf = (f"{r['rho_shuffled']:.3f}"
                 if np.isfinite(r.get("rho_shuffled", np.nan)) else "-")
-        print(f"{r['descriptor']:24s} {r['reference_class']:>5s} {r['n']:>6d} "
+        print(f"{shown:24s} {comp:>14s} {r['n']:>6d} "
               f"{r['spearman_rho']:>7.3f} {ci:>18s} {shuf:>6s} "
               f"{r['calibration_ratio']:>10.2f}"
               + (f"   [{r['undefined_because']}]"
-                 if r.get("undefined_because") else ""))
+                 if r.get("undefined_because") else "")
+              + (f"   ({r['n_dropped']} without σ)" if r.get("n_dropped") else ""))
     print("\nrho > 0 means uncertain regions are the wrong ones. E|z|/0.80 > 1")
     print("means the ensemble is over-confident: errors exceed its own spread.")
     print("The CI resamples SLIDES, not regions — quote it, not the naive p, "
           "which\ntreats every region as independent. 'shuf' is the negative "
           "control: mean\n|rho| with the pairing broken, which must sit near 0 "
           "for rho to mean anything.")
+    if any(r.get("component") in ("procedural", "data_exposure") for r in rows):
+        print("\nThe three components share ONE prediction, so the error is "
+              "identical across\nthem and only sigma changes. Whichever gives "
+              "the higher rho is the component\nthe calibration rests on — the "
+              "question the crossed 5x10 grid exists to pose.")
     print(f"\nwrote {args.outdir / 'per_region_calibration.csv'}")
     if bin_rows:
         print(f"wrote {args.outdir / 'reliability_bins.csv'}  "
