@@ -935,6 +935,22 @@ sbatch scripts/calibrate_pixel_components.sh   # --array=0-19, decompose
 sbatch scripts/plot_pixel_reliability.sh       # one job, all slides
 ```
 
+**It reads the `uncertainty/` output, not `inference/`.**
+`compute_ensemble_uncertainty.sh` already wrote per subset exactly what the ANOVA
+needs — `raw_npy` **squared** is the within-subset variance (it is
+√(Σ per-channel var), ddof=1), and `mean_rgb` is the subset mean whose spread is
+the between term — so this is **ten arrays per tile instead of fifty RGBs**, and
+24 GB instead of 64. `--fold_uncertainty` takes those directories;
+`SOURCE=inference` forces the direct route.
+
+The two agree: procedural is **exact** either way (max \|diff\| 0.0000 on a
+synthetic grid), and the data term differs by ~0.1% because `mean_rgb` is uint8.
+That rounding is in the **under-stating** direction where it matters: when
+subsets differ by less than half an intensity unit every mean rounds to the same
+integer, the between term collapses to zero and the data component goes
+negative — it cannot invent data exposure that is not there. Use
+`SOURCE=inference` when the exact data term matters.
+
 Both statistics that make the figure defensible are *between*-slide: the
 bootstrap resamples slides, and `within_slide` computes ρ inside each and
 summarises over them. Both need at least three slides, so run per WSI they

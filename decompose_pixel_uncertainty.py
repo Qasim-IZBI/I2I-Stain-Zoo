@@ -106,6 +106,43 @@ def decompose_stack(folds: List[np.ndarray]) -> dict:
     }
 
 
+def decompose_from_uncertainty(sigmas: List[np.ndarray],
+                               means: List[np.ndarray],
+                               n0: float) -> dict:
+    """The same decomposition from `uncertainty.py` output, not from the members.
+
+    `uncertainty.py` already wrote, per subset, exactly the two things the ANOVA
+    needs — so reading `inference/` again is 50 RGB arrays where this is 10.
+
+        raw_npy   sqrt(sum over channels of the ddof=1 within-subset variance)
+                  -> squaring recovers that variance EXACTLY
+        mean_rgb  the subset mean -> their spread is the between term
+
+    One approximation, in the data term only. `mean_rgb` is uint8, so each
+    subset mean carries a rounding error of variance 1/12 per channel, which
+    inflates the between term by up to 3/12 = 0.25 in these units. Two things
+    keep that acceptable: it is ~0.2% when the subsets genuinely differ, and
+    where they differ by less than half an intensity unit every mean rounds to
+    the SAME integer, so the between term collapses to zero and the data
+    component goes negative — it under-states rather than manufactures data
+    exposure, which is the safe direction for the one question this is asked to
+    settle. Use `--fold` for the exact value.
+
+    `procedural` is exact either way.
+    """
+    procedural = np.mean([s.astype(np.float64) ** 2 for s in sigmas], axis=0)
+    stack = np.stack([m.astype(np.float64) for m in means], axis=0)
+    between = stack.var(axis=0, ddof=1).sum(axis=2)
+    data = between - procedural / n0
+    return {
+        "procedural": procedural,
+        "data_exposure": data,
+        "total": procedural + data,
+        "grand_mean": stack.mean(axis=0),
+        "n0": float(n0),
+    }
+
+
 def to_sd(var_map: np.ndarray) -> np.ndarray:
     """Variance -> SD, leaving NaN where the component came out negative.
 
@@ -118,13 +155,129 @@ def to_sd(var_map: np.ndarray) -> np.ndarray:
     return out
 
 
+def _members_from_summary(root: Path) -> Optional[int]:
+    """`n_ensemble_members` from whichever summary uncertainty.py left."""
+    for s in sorted(root.glob("summary*.json")):
+        try:
+            with open(s) as fh:
+                n = json.load(fh).get("n_ensemble_members")
+            if n:
+                return int(n)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _run_from_uncertainty(args, rng) -> None:
+    """Decompose from compute_ensemble_uncertainty.sh output."""
+    roots = [Path(f) for f in args.fold_uncertainty]
+    if len(roots) < 2:
+        raise SystemExit("at least two --fold_uncertainty directories are needed")
+
+    members = []
+    for r in roots:
+        n = args.members_per_fold or _members_from_summary(r)
+        if not n:
+            raise SystemExit(
+                f"no n_ensemble_members in {r}/summary*.json — pass "
+                f"--members_per_fold. n0 cannot be guessed: it sets how much "
+                f"procedural noise is subtracted from the between-subset term, "
+                f"and getting it wrong moves the data component directly."
+            )
+        members.append(int(n))
+    n0 = float(np.mean(members))
+    if len(set(members)) > 1:
+        print(f"[WARN] unbalanced: members per subset {members}; using n0={n0:.2f}")
+    print(f"[1/3] {len(roots)} subsets from uncertainty output, "
+          f"members per subset: {members}")
+
+    # Tiles present in EVERY subset. uncertainty.py tissue-filters, so a tile
+    # missing from one subset is missing from the decomposition too.
+    sets = []
+    for r in roots:
+        rp = r / "raw_npy"
+        if not rp.is_dir():
+            raise SystemExit(f"{rp} does not exist — is {r} an uncertainty/"
+                             f"{{MODEL}}/ directory?")
+        sets.append({p.relative_to(rp).with_suffix("") for p in rp.rglob("*.npy")})
+    rel_paths = sorted(set.intersection(*sets))
+    if args.data_range:
+        lo, hi = rng
+        keep = {f"{i:03d}" for i in range(lo, hi + 1)}
+        rel_paths = [p for p in rel_paths if p.parts and p.parts[0] in keep]
+    if not rel_paths:
+        raise SystemExit("no tile is present in every subset's raw_npy/")
+    print(f"[2/3] {len(rel_paths)} tile(s) common to all {len(roots)} subsets")
+
+    out_dirs = {c: args.output / c / "raw_npy" for c in COMPONENTS}
+    for d in out_dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+    mean_dir = args.output / "mean_rgb"
+    if args.save_mean_rgb:
+        mean_dir.mkdir(parents=True, exist_ok=True)
+
+    import tifffile
+    neg_px = tot_px = 0
+    for i, rel in enumerate(rel_paths, 1):
+        sigmas = [np.load(r / "raw_npy" / rel.with_suffix(".npy")) for r in roots]
+        means = [tifffile.imread(str(r / "mean_rgb" / rel.with_suffix(".tif")))
+                 for r in roots]
+        res = decompose_from_uncertainty(sigmas, means, n0)
+        for c in COMPONENTS:
+            path = out_dirs[c] / rel.with_suffix(".npy")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(str(path), to_sd(res[c]))
+        neg_px += int((res["data_exposure"] < 0).sum())
+        tot_px += int(res["data_exposure"].size)
+        if args.save_mean_rgb:
+            path = mean_dir / rel.with_suffix(".tif")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tifffile.imwrite(str(path),
+                             np.clip(res["grand_mean"], 0, 255).astype(np.uint8))
+        if i % 200 == 0:
+            print(f"   {i}/{len(rel_paths)}")
+
+    name = (f"summary_wsi{rng[0]:03d}.json"
+            if rng and rng[0] == rng[1] else "summary.json")
+    with open(args.output / name, "w") as fh:
+        json.dump({
+            "n_tiles": len(rel_paths), "n_subsets": len(roots),
+            "members_per_subset": members, "n0": n0,
+            "data_range": args.data_range,
+            "negative_data_pixels": neg_px,
+            "negative_data_fraction": (neg_px / tot_px) if tot_px else None,
+            "source": "uncertainty (raw_npy + mean_rgb)",
+            "approximation": "procedural exact; the data term uses uint8 subset "
+                             "means, inflating the between term by <0.25 in "
+                             "summed-channel variance and collapsing it to zero "
+                             "where subsets differ by under half an intensity "
+                             "unit — it under-states rather than manufactures",
+            "folds": [str(r) for r in roots],
+        }, fh, indent=2)
+    print(f"[3/3] wrote {len(rel_paths)} tile(s) x {len(COMPONENTS)} components")
+    if neg_px:
+        print(f"\n[note] data_exposure negative at {neg_px / tot_px:.1%} of pixels")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         "Per-pixel procedural / data-exposure uncertainty over a crossed grid")
-    ap.add_argument("--fold", type=Path, action="append", required=True,
-                    help="One inference directory per training subset, each "
-                         "holding model_NN/ member dirs. Repeat once per subset; "
-                         "at least two are needed for a data-exposure term.")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--fold", type=Path, action="append",
+                     help="One inference directory per training subset, each "
+                          "holding model_NN/ member dirs. Reads every member, so "
+                          "the data term is exact. At least two subsets.")
+    src.add_argument("--fold_uncertainty", type=Path, action="append",
+                     help="One uncertainty/{MODEL}/ directory per subset, each "
+                          "holding raw_npy/ and mean_rgb/ from "
+                          "compute_ensemble_uncertainty.sh. Ten arrays instead "
+                          "of fifty; procedural is exact, the data term is "
+                          "approximate to <0.25 because mean_rgb is uint8, in "
+                          "the under-stating direction.")
+    ap.add_argument("--members_per_fold", type=int, default=None,
+                    help="Members behind each subset, for n0. Read from each "
+                         "subset's summary*.json when present; required with "
+                         "--fold_uncertainty if it is not.")
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--data_range", type=str, default=None,
                     help="START,END WSI folders, as uncertainty.py takes it. "
@@ -138,6 +291,9 @@ def main() -> None:
     if args.data_range:
         a, b = args.data_range.split(",")
         rng = (int(a), int(b))
+
+    if args.fold_uncertainty:
+        return _run_from_uncertainty(args, rng)
 
     fold_dirs = [discover_ensemble_dirs(f) for f in args.fold]
     for f, dirs in zip(args.fold, fold_dirs):

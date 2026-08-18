@@ -5,7 +5,7 @@
 
 #SBATCH --time=4:00:00
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=24G
 #SBATCH --partition=paula
 #SBATCH --ntasks=1
 #SBATCH --array=0-19   # 20 jobs = 1 per test WSI
@@ -21,9 +21,16 @@
 #      regen error, so only the uncertainty source differs.
 #
 # ONE JOB PER WSI, not per (block, WSI): the decomposition needs every subset
-# together, so the block axis is consumed rather than parallelised over. That is
-# also why this asks for more memory than its neighbours — fifty 256x256x3 tiles
-# are live at once, plus the fold stacks.
+# together, so the block axis is consumed rather than parallelised over.
+#
+# By default it reads the UNCERTAINTY output rather than inference/. compute_-
+# ensemble_uncertainty.sh already wrote, per subset, the two things the ANOVA
+# needs: raw_npy squared is the within-subset variance exactly, and mean_rgb is
+# the subset mean whose spread is the between term. That is ten arrays per tile
+# instead of fifty RGBs — hence 24G here rather than 64G. Set SOURCE=inference
+# to read the members directly, which makes the data term exact: mean_rgb is
+# uint8, so the between term carries a rounding inflation under 0.25 in
+# summed-channel variance, in the under-stating direction.
 #
 # The regen error is per block, each computed from that block's mean A'. All
 # THREE sigmas are computed over all 50 members, so the matching target is the
@@ -101,24 +108,51 @@ echo "Output      : ${OUTDIR}"
 echo "Regen error : ${#ERROR_DIRS[@]} block(s), averaged per pixel"
 
 # -----------------------------
-# Pre-flight
+# Pre-flight — pick the source
 # -----------------------------
+# Default to the uncertainty output; fall back to inference/ only if asked or if
+# the uncertainty stage has not run for every subset.
+SOURCE="${SOURCE:-uncertainty}"
 FOLD_ARGS=()
-for i in "${!RANGE_STARTS[@]}"; do
-    TAG=$(printf "data_%03d_%03d" "${RANGE_STARTS[$i]}" "${RANGE_ENDS[$i]}")
-    D="${UGAC_ROOT}/${TAG}/${MODEL_SIZE}/inference"
-    if [ ! -d "${D}/model_01/${WSI_FOLDER}/images" ]; then
-        echo "[ERROR] ${D}/model_01/${WSI_FOLDER}/images missing."
-        echo "        Every subset must cover this WSI — the decomposition is"
-        echo "        over all five, and a missing one is not a smaller sample"
-        echo "        but a different quantity. Widen DATA_RANGE in"
-        echo "        infer_ensemble_cyclegan_ugac.sh and re-run its array."
-        exit 1
+
+if [ "${SOURCE}" = "uncertainty" ]; then
+    OK=1
+    for i in "${!RANGE_STARTS[@]}"; do
+        TAG=$(printf "data_%03d_%03d" "${RANGE_STARTS[$i]}" "${RANGE_ENDS[$i]}")
+        U="${UGAC_ROOT}/${TAG}/${MODEL_SIZE}/uncertainty/${MODEL}"
+        if [ ! -d "${U}/raw_npy/${WSI_FOLDER}" ] || [ ! -d "${U}/mean_rgb/${WSI_FOLDER}" ]; then
+            echo "[note] ${U} has no raw_npy+mean_rgb for WSI ${WSI_FOLDER}"
+            OK=0
+            break
+        fi
+        FOLD_ARGS+=(--fold_uncertainty "${U}")
+    done
+    if [ "${OK}" -eq 0 ]; then
+        echo "       falling back to SOURCE=inference — run"
+        echo "       compute_ensemble_uncertainty.sh first for the cheaper route."
+        SOURCE=inference
+        FOLD_ARGS=()
     fi
-    N=$(ls -d "${D}"/model_* 2>/dev/null | wc -l)
-    echo "  ${TAG}: ${N} members"
-    FOLD_ARGS+=(--fold "${D}")
-done
+fi
+
+if [ "${SOURCE}" = "inference" ]; then
+    for i in "${!RANGE_STARTS[@]}"; do
+        TAG=$(printf "data_%03d_%03d" "${RANGE_STARTS[$i]}" "${RANGE_ENDS[$i]}")
+        D="${UGAC_ROOT}/${TAG}/${MODEL_SIZE}/inference"
+        if [ ! -d "${D}/model_01/${WSI_FOLDER}/images" ]; then
+            echo "[ERROR] ${D}/model_01/${WSI_FOLDER}/images missing."
+            echo "        Every subset must cover this WSI — the decomposition is"
+            echo "        over all five, and a missing one is not a smaller sample"
+            echo "        but a different quantity. Widen DATA_RANGE in"
+            echo "        infer_ensemble_cyclegan_ugac.sh and re-run its array."
+            exit 1
+        fi
+        N=$(ls -d "${D}"/model_* 2>/dev/null | wc -l)
+        echo "  ${TAG}: ${N} members"
+        FOLD_ARGS+=(--fold "${D}")
+    done
+fi
+echo "Source     : ${SOURCE}"
 
 if [ ! -d "${MASK_DIR}" ]; then
     echo "[ERROR] Mask directory not found: ${MASK_DIR}"

@@ -91,3 +91,67 @@ class TestSdConversion:
         res = decompose_stack(_grid(3.0, 0.001, seed=7))
         assert float(np.nanmean(to_sd(res["procedural"]))) == pytest.approx(
             np.sqrt(3) * 3.0, rel=0.05)
+
+
+class TestFromUncertainty:
+    """The same decomposition from compute_ensemble_uncertainty.sh output.
+
+    That stage already wrote, per subset, the two things the ANOVA needs, so
+    reading inference/ again is fifty RGB arrays where this is ten.
+    """
+
+    @staticmethod
+    def _from_folds(folds):
+        """What uncertainty.py would have written for each subset."""
+        sigmas = [np.sqrt(f.var(axis=0, ddof=1).sum(axis=2)) for f in folds]
+        means = [np.clip(f.mean(axis=0), 0, 255).astype(np.uint8) for f in folds]
+        return sigmas, means
+
+    def test_procedural_is_exact(self):
+        """raw_npy is sqrt(sum of the ddof=1 within-subset variance), so squaring
+        recovers that variance with no loss at all."""
+        from decompose_pixel_uncertainty import (decompose_from_uncertainty,
+                                                 decompose_stack)
+        folds = _grid(3.0, 5.0, seed=1)
+        direct = decompose_stack(folds)
+        sigmas, means = self._from_folds(folds)
+        via = decompose_from_uncertainty(sigmas, means, n0=10.0)
+        np.testing.assert_allclose(via["procedural"], direct["procedural"],
+                                   rtol=1e-10)
+
+    def test_data_term_agrees_within_the_quantisation_bound(self):
+        """mean_rgb is uint8, so each subset mean carries a rounding error of
+        variance 1/12 per channel — under 0.25 summed over three."""
+        from decompose_pixel_uncertainty import (decompose_from_uncertainty,
+                                                 decompose_stack)
+        folds = _grid(3.0, 5.0, seed=2)
+        direct = decompose_stack(folds)
+        sigmas, means = self._from_folds(folds)
+        via = decompose_from_uncertainty(sigmas, means, n0=10.0)
+        gap = float(np.mean(via["data_exposure"] - direct["data_exposure"]))
+        assert abs(gap) < 0.4
+        # relative to a real signal it is negligible
+        assert abs(gap) / float(np.mean(direct["data_exposure"])) < 0.02
+
+    def test_quantisation_understates_rather_than_manufactures(self):
+        """The direction that matters. Where subsets differ by less than half an
+        intensity unit every mean rounds to the SAME integer, so the between term
+        collapses to zero and the data component goes negative — it cannot invent
+        data exposure that is not there."""
+        from decompose_pixel_uncertainty import decompose_from_uncertainty
+        rng = np.random.default_rng(4)
+        H = W = 32
+        # five subsets whose means are within a fraction of one intensity unit
+        means = [np.full((H, W, 3), 128, np.uint8) for _ in range(5)]
+        sigmas = [np.abs(rng.normal(5.0, 0.1, (H, W))) for _ in range(5)]
+        res = decompose_from_uncertainty(means=means, sigmas=sigmas, n0=10.0)
+        assert float(np.mean(res["data_exposure"])) < 0
+        assert float(np.mean(res["procedural"])) > 0
+
+    def test_additivity_still_holds(self):
+        from decompose_pixel_uncertainty import decompose_from_uncertainty
+        folds = _grid(3.0, 5.0, seed=3)
+        sigmas, means = self._from_folds(folds)
+        res = decompose_from_uncertainty(sigmas, means, n0=10.0)
+        np.testing.assert_allclose(
+            res["total"], res["procedural"] + res["data_exposure"], rtol=1e-10)
