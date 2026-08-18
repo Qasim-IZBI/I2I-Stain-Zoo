@@ -248,6 +248,30 @@ its uncertainty means anything — and the 50-member ensemble is better calibrat
 than any 10-member subset within it. That is an argument for the full crossed
 grid, and it is the claim a flat seed-only ensemble cannot make.
 
+### Lead with risk-coverage, not with rho (2026-08-18)
+
+rho = 0.22 is real but modest, and a reviewer can fairly ask what it buys. The
+same data answers that directly — rank regions by sigma, discard the least
+certain, measure CPA error on what remains:
+
+| coverage | CPA MAE | vs keeping all | random baseline |
+|---|---|---|---|
+| 100% | 0.0397 | — | 0.0397 |
+| 90% | 0.0381 | −4.2% | 0.0398 |
+| **80%** | **0.0366** | **−7.8%** | 0.0398 |
+| 70% | 0.0346 | −13.0% | 0.0397 |
+| 50% | 0.0298 | **−25.0%** | 0.0398 |
+
+At 80% coverage the reduction is **−8.1%, 95% CI [−15.1%, −1.4%]** clustered on
+case. Random discarding is flat at 0.0398 — the control that makes the claim.
+The oracle (rank by true error) reaches −41.2%, so the ensemble captures ~20% of
+what a perfect uncertainty would; **report that gap**, it is the honest measure of
+how far this is from solved.
+
+The deployable sentence: *the ensemble identifies which regions to trust for
+fibrosis quantification.* Use it as the headline; keep rho and the reliability
+diagram as the evidence behind it.
+
 ### The secondary claim the crossed grid uniquely supports
 
 `--prediction grand` (mean of 50, total spread) versus `--prediction fold` (each
