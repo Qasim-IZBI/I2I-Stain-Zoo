@@ -419,8 +419,12 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
             else:
                 txt += f" ρ {r.get('undefined_because') or 'undefined'}"
             txt += f"   E|z|/0.80={r['calibration_ratio']:.2f}"
+            # Belongs beside that component's own numbers, not on the bar strip
+            # below, where it lands on top of the bars it is describing.
+            if r.get("n_dropped"):
+                txt += f"   ({r['n_dropped']} of {r['n'] + r['n_dropped']} no σ)"
             ax.text(0.0, 1.005 + 0.042 * (len(group) - 1 - gi), txt,
-                    transform=ax.transAxes, fontsize=7,
+                    transform=ax.transAxes, fontsize=6.6,
                     color=C_COMPONENT.get(comp, C_MUTED), family="monospace")
         ax.grid(True, color=C_GRID, linewidth=0.8, zorder=0)
         ax.set_axisbelow(True)
@@ -446,12 +450,6 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
                         zip(n, [d.get("n_wsi", 0) for d in r["bins"]])):
                     axb.text(i, cnt, f"{cases}", ha="center", va="bottom",
                              fontsize=6.2, color=C_MUTED)
-            if r.get("n_dropped"):
-                axb.text(0.99, 0.86 - 0.16 * gi,
-                         f"{COMPONENT_LABEL.get(comp, comp).split()[0]}: "
-                         f"{r['n_dropped']} region(s) had no σ",
-                         transform=axb.transAxes, ha="right", fontsize=6,
-                         color=C_COMPONENT.get(comp, C_MUTED))
         axb.set_xlabel("σ bin (low → high)", color=C_MUTED, fontsize=8.5)
         if k == 0:
             axb.set_ylabel("regions", color=C_MUTED, fontsize=8.5)
