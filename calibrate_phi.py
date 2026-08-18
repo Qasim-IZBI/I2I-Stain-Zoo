@@ -62,6 +62,13 @@ from uncertainty_phi.reference import load_reference
 # over-confident.
 HALF_NORMAL = float(np.sqrt(2.0 / np.pi))
 
+# The same constant for a PIXEL map, where the two sides are built differently:
+# uncertainty.py's sigma is sqrt(sum of per-channel variances) = sqrt(3)*sigma_c,
+# while evaluation.py's regen error is the MEAN over channels of |delta|. So
+# E|e| = sigma_c*sqrt(2/pi) = sigma_map*sqrt(2/pi)/sqrt(3). Using 0.80 there
+# would call a perfectly calibrated ensemble 74% over-confident.
+HALF_NORMAL_PIXEL = float(np.sqrt(2.0 / np.pi) / np.sqrt(3.0))
+
 COLLAGEN = [i for i, r in enumerate(PHI_REFERENCE) if r == "psr"]
 LUMEN = [i for i, r in enumerate(PHI_REFERENCE) if r == "he"]
 
@@ -189,7 +196,8 @@ def shuffled_rho(g: pd.DataFrame, n_perm: int, seed: int) -> float:
     return float(np.mean(np.abs(draws))) if draws else float("nan")
 
 
-def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[dict]:
+def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0,
+          half_normal: float = HALF_NORMAL) -> List[dict]:
     """Per descriptor x variance component: does sd rank error, and is its scale
     right?"""
     rows = []
@@ -260,8 +268,8 @@ def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[
                 "mean_error": m_err,
                 "median_error": float(np.median(err[sel])),
                 # what a calibrated ensemble would show in this bin
-                "expected_error": HALF_NORMAL * m_sd,
-                "ratio_obs_over_expected": (m_err / (HALF_NORMAL * m_sd)
+                "expected_error": half_normal * m_sd,
+                "ratio_obs_over_expected": (m_err / (half_normal * m_sd)
                                             if m_sd > 0 else float("nan")),
                 "se_error_by_case": se,
                 "n": int(sel.sum()),
@@ -297,7 +305,7 @@ def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[
                 else "degenerate"
             ),
             "mean_abs_z": float(np.nanmean(g["z"])),
-            "calibration_ratio": float(np.nanmean(g["z"]) / HALF_NORMAL),
+            "calibration_ratio": float(np.nanmean(g["z"]) / half_normal),
             **(dict(zip(("rho_ci_lo", "rho_ci_hi", "n_boot_used"),
                         cluster_bootstrap_rho(g, n_boot, seed)))
                if n_boot else {}),
@@ -644,7 +652,10 @@ def make_risk_coverage_figure(rc: List[dict], outpath: Path, title: str) -> None
     print(f"wrote {outpath}")
 
 
-def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None:
+def make_reliability_figure(rows: List[dict], outpath: Path, title: str,
+                            half_normal: float = HALF_NORMAL,
+                            y_label: str = "|error| vs real tissue",
+                            unit_label: str = "regions") -> None:
     """Reliability per descriptor, with the variance components overlaid.
 
     One panel per descriptor, one curve per component (total, procedural,
@@ -681,7 +692,12 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
         return
 
     # descriptor -> its components, in the fixed order, so panels line up
-    order = [n for n in PHI_NAMES if any(r["descriptor"] == n for r in scored)]
+    # PHI_NAMES first for a stable column order, then anything else present.
+    # Without the fallback a descriptor outside that tuple — the pixel maps, for
+    # one — is silently dropped and the figure comes back empty.
+    present = list(dict.fromkeys(r["descriptor"] for r in scored))
+    order = ([n for n in PHI_NAMES if n in present]
+             + [n for n in present if n not in PHI_NAMES])
     by_desc = {n: [r for r in scored if r["descriptor"] == n] for n in order}
     comp_order = ([c for c, _ in COMPONENTS]
                   + ["regen_error", "procedural_within_fold"])
@@ -691,7 +707,7 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
                                        str(r.get("prediction", ""))))
 
     ncol = len(order)
-    fig = plt.figure(figsize=(4.6 * ncol + 0.8, 6.8))
+    fig = plt.figure(figsize=(max(4.6 * ncol + 0.8, 7.2), 6.8))
     gs = GridSpec(2, ncol, height_ratios=[3.6, 1.0], hspace=0.34, wspace=0.30,
                   figure=fig)
 
@@ -710,10 +726,11 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
         ys = [d["mean_error"] + (d.get("se_error_by_case") or 0.0)
               for r in group for d in r["bins"]]
         xhi = float(max(xs)) * 1.15
-        yhi = float(max(max(ys), xhi * HALF_NORMAL)) * 1.12
+        yhi = float(max(max(ys), xhi * half_normal)) * 1.12
 
-        ax.plot([0, xhi], [0, xhi * HALF_NORMAL], color=C_MUTED, linewidth=1.4,
-                linestyle="--", zorder=3, label="calibrated  E|e| = 0.80σ")
+        ax.plot([0, xhi], [0, xhi * half_normal], color=C_MUTED, linewidth=1.4,
+                linestyle="--", zorder=3,
+                label=f"calibrated  E|e| = {half_normal:.2f}σ")
 
         for gi, r in enumerate(group):
             comp = series_of(r)
@@ -731,7 +748,7 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
         ax.set_ylim(0, yhi)
         ax.set_xlabel("ensemble σ", color=C_MUTED, fontsize=9)
         if k == 0:
-            ax.set_ylabel("|error| vs real tissue", color=C_MUTED, fontsize=9)
+            ax.set_ylabel(y_label, color=C_MUTED, fontsize=9)
         # The per-component numbers go ABOVE the axes, colour-coded, rather than
         # into the legend. Four legend entries carrying a rho and a CI each is a
         # box large enough to cover the curves it labels, and where it lands
@@ -750,7 +767,7 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
                     txt += f" [{r['rho_ci_lo']:+.2f},{r['rho_ci_hi']:+.2f}]"
             else:
                 txt += f" ρ {r.get('undefined_because') or 'undefined'}"
-            txt += f"   E|z|/0.80={r['calibration_ratio']:.2f}"
+            txt += f"   E|z|/{half_normal:.2f}={r['calibration_ratio']:.2f}"
             # Belongs beside that component's own numbers, not on the bar strip
             # below, where it lands on top of the bars it is describing.
             if r.get("n_dropped"):
@@ -784,7 +801,7 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
                              fontsize=6.2, color=C_MUTED)
         axb.set_xlabel("σ bin (low → high)", color=C_MUTED, fontsize=8.5)
         if k == 0:
-            axb.set_ylabel("regions", color=C_MUTED, fontsize=8.5)
+            axb.set_ylabel(unit_label, color=C_MUTED, fontsize=8.5)
         nb = max(len(r["bins"]) for r in group)
         axb.set_xticks(np.arange(nb))
         axb.set_xticklabels([str(i + 1) for i in range(nb)], fontsize=7)
@@ -800,18 +817,22 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
     # One legend for the whole figure: the components are the same everywhere,
     # so repeating it per panel spends space on nothing.
     handles, labels = fig.axes[0].get_legend_handles_labels()
-    leg = fig.legend(handles, labels, frameon=False, fontsize=8, ncol=len(labels),
-                     loc="upper left", bbox_to_anchor=(0.005, 0.955))
+    # ncol scaled to the figure width: four entries in one row need roughly the
+    # width of two panels, and on a single-panel figure they run off the edge.
+    leg = fig.legend(handles, labels, frameon=False, fontsize=8,
+                     ncol=max(1, min(len(labels), 2 * ncol)),
+                     loc="upper left", bbox_to_anchor=(0.005, 0.965))
     for txt in leg.get_texts():
         txt.set_color(C_MUTED)
     fig.text(0.006, 0.007,
-             "One curve per variance component. The prediction is the same in all "
-             "three, so the ERROR is identical and only σ moves — which component\n"
-             "tracks the error is the question the crossed grid poses. Points are "
-             "bin means in raw units; error bars are ±1 SE clustered on the case.\n"
-             "Dashed line = calibration (E|e| = 0.80σ); points above it are "
-             "over-confident. Axes are scaled per panel. Bars give each bin's\n"
-             "region count, the first component annotated with its slide count.",
+             "One curve per variance component. The prediction is the same in "
+             "all three, so the ERROR is identical and only σ moves —\n"
+             "which component tracks it is the question the crossed grid poses. "
+             "Points are bin means in raw units; error bars\n"
+             "are ±1 SE clustered on the case. Dashed line = calibration "
+             f"(E|e| = {half_normal:.2f}σ); points above it are over-confident.\n"
+             f"Axes are scaled per panel. Bars give each bin's {unit_label[:-1]} "
+             f"count, the first component annotated with its slide count.",
              fontsize=7.5, color=C_MUTED, linespacing=1.5)
     # Not tight_layout: it cannot solve for these, and says so on every run.
     fig.subplots_adjust(left=0.085, right=0.985, top=0.80, bottom=0.185)

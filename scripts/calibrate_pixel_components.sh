@@ -25,11 +25,12 @@
 # also why this asks for more memory than its neighbours — fifty 256x256x3 tiles
 # are live at once, plus the fold stacks.
 #
-# The regen error is per block (each from that block's mean A'), so ONE is
-# chosen as the target. Cycle error is a property of a model's forward/inverse
-# pair; it is not decomposable into these components, and averaging it across
-# blocks would pair a grand-mean error with a within-subset sigma. Set
-# REGEN_BLOCK to compare against a different subset's error.
+# The regen error is per block, each computed from that block's mean A'. All
+# THREE sigmas are computed over all 50 members, so the matching target is the
+# error over all 50 too: every block's error_npy is passed and
+# uncertainty_calibration.py averages them per pixel. Pinning one block would
+# have made the answer depend on which block, for no reason — sigma is not
+# block-specific here. Set REGEN_BLOCKS to a subset to check the dependence.
 #
 # > RETIRED CHAIN. Kept for provenance beside the rest of scripts/*_ugac.sh.
 # > Do NOT mix its outputs with ensemble_grid/.
@@ -66,18 +67,38 @@ UGAC_ROOT="${UGAC_ROOT:-/work2/bz66izin-VSproject/ensemble_ugac/cyclegan}"
 MODEL_SIZE="${MODEL_SIZE:-model_small}"
 MODEL="${MODEL:-cyclegan}"
 TEST_A="${TEST_A:-/work2/bz66izin-VSproject/VS_Data/eval_imgs/no_overlap/testA/tiles/testA}"
-# Which block's regen error to score against — see the note above.
-REGEN_BLOCK="${REGEN_BLOCK:-data_001_007}"
+# Blocks whose regen error is averaged into the target. Empty = all five, which
+# is the pairing that matches an all-50 sigma.
+REGEN_BLOCKS="${REGEN_BLOCKS:-}"
 OUTROOT="${OUTROOT:-${UGAC_ROOT}/pixel_components}"
 MIN_TISSUE_PIXELS="${MIN_TISSUE_PIXELS:-256}"
 
 OUTDIR="${OUTROOT}/wsi${WSI_FOLDER}"
-ERROR_DIR="${UGAC_ROOT}/${REGEN_BLOCK}/${MODEL_SIZE}/regen_error/wsi${WSI_FOLDER}/error_npy"
 MASK_DIR="${TEST_A}/${WSI_FOLDER}/masks"
+
+if [ -z "${REGEN_BLOCKS}" ]; then
+    REGEN_BLOCKS=""
+    for i in "${!RANGE_STARTS[@]}"; do
+        REGEN_BLOCKS="${REGEN_BLOCKS} $(printf 'data_%03d_%03d' \
+            "${RANGE_STARTS[$i]}" "${RANGE_ENDS[$i]}")"
+    done
+fi
+
+ERROR_DIRS=()
+for B in ${REGEN_BLOCKS}; do
+    E="${UGAC_ROOT}/${B}/${MODEL_SIZE}/regen_error/wsi${WSI_FOLDER}/error_npy"
+    if [ ! -d "${E}" ] || [ -z "$(ls -A "${E}" 2>/dev/null)" ]; then
+        echo "[ERROR] Regen-error dir missing or empty: ${E}"
+        echo "        Run compute_ensemble_regen_error.sh for block ${B}, or set"
+        echo "        REGEN_BLOCKS to the blocks that are finished."
+        exit 1
+    fi
+    ERROR_DIRS+=("${E}")
+done
 
 echo "TASK_ID=${SLURM_ARRAY_TASK_ID}  WSI=${WSI_FOLDER}"
 echo "Output      : ${OUTDIR}"
-echo "Regen error : ${ERROR_DIR}   (block ${REGEN_BLOCK})"
+echo "Regen error : ${#ERROR_DIRS[@]} block(s), averaged per pixel"
 
 # -----------------------------
 # Pre-flight
@@ -99,12 +120,6 @@ for i in "${!RANGE_STARTS[@]}"; do
     FOLD_ARGS+=(--fold "${D}")
 done
 
-if [ ! -d "${ERROR_DIR}" ] || [ -z "$(ls -A "${ERROR_DIR}" 2>/dev/null)" ]; then
-    echo "[ERROR] Regen-error dir missing or empty: ${ERROR_DIR}"
-    echo "        Run compute_ensemble_regen_error.sh for block ${REGEN_BLOCK}."
-    exit 1
-fi
-
 if [ ! -d "${MASK_DIR}" ]; then
     echo "[ERROR] Mask directory not found: ${MASK_DIR}"
     exit 1
@@ -125,10 +140,11 @@ run_cmd() { echo "Running command:"; printf ' %q' "$@"; echo; "$@"; }
 run_cmd python "${PROJECT_ROOT}/decompose_pixel_uncertainty.py" \
     "${FOLD_ARGS[@]}" \
     --data_range "${WSI_NUM},${WSI_NUM}" \
-    --output     "${OUTDIR}"
+    --output     "${OUTDIR}" \
+    --save_mean_rgb
 
 # -----------------------------
-# 2. calibrate each component against the same error
+# 2. per-component calibration, one output each
 # -----------------------------
 for COMP in total procedural data_exposure; do
     U_DIR="${OUTDIR}/${COMP}/raw_npy/${WSI_FOLDER}/images"
@@ -142,13 +158,30 @@ for COMP in total procedural data_exposure; do
     mkdir -p "${C_OUT}"
     run_cmd python "${PROJECT_ROOT}/uncertainty_calibration.py" \
         --uncertainty_dir   "${U_DIR}" \
-        --error_dirs        "${ERROR_DIR}" \
+        --error_dirs        "${ERROR_DIRS[@]}" \
         --mask_dir          "${MASK_DIR}" \
         --tiles_metadata    "${TEST_A}" \
         --outdir            "${C_OUT}" \
         --min_tissue_pixels "${MIN_TISSUE_PIXELS}" \
         --title             "${COMP} WSI ${WSI_FOLDER}"
 done
+
+# -----------------------------
+# 3. the three on one reliability figure
+# -----------------------------
+# Per WSI here; pool the slides into one figure afterwards by repeating
+# --components / --error_dirs / --mask_dir, which is what makes the
+# slide-clustered interval mean anything.
+echo
+echo "--- reliability figure ---"
+ERR_CSV=$(IFS=,; echo "${ERROR_DIRS[*]}")
+run_cmd python "${PROJECT_ROOT}/plot_pixel_reliability.py" \
+    --components        "${OUTDIR}" \
+    --error_dirs        "${ERR_CSV}" \
+    --mask_dir          "${MASK_DIR}" \
+    --tiles_metadata    "${TEST_A}" \
+    --min_tissue_pixels "${MIN_TISSUE_PIXELS}" \
+    --outdir            "${OUTDIR}/reliability"
 
 echo
 echo "Done. WSI ${WSI_FOLDER} -> ${OUTDIR}/calibration_{total,procedural,data_exposure}/"

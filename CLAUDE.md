@@ -922,6 +922,23 @@ cycle error — a difference in ρ is then a difference between the spreads, not
 between the errors. The SLURM wrapper does the decomposition and all three
 calibrations in one job per WSI.
 
+`plot_pixel_reliability.py` then puts all three on **one reliability figure**,
+the pixel counterpart of `calibrate_phi.py`'s — same slide-clustered bootstrap,
+same μ partial, same risk-coverage curve. The wrapper runs it per WSI; pool
+slides into a single figure by repeating `--components` / `--error_dirs` /
+`--mask_dir`, which is what makes the clustered interval mean anything.
+
+**The calibration line is E|e| = 0.461σ, not 0.80σ.** `uncertainty.py`'s σ is
+√(Σ per-channel variance) = √3·σ_c while the regen error is the **mean** over
+channels of |Δ|, so the Gaussian line is √(2/π)/√3. Using the descriptor-space
+0.80 would call a perfectly calibrated ensemble 74% over-confident.
+
+**The error target averages every block**, not one. All three σ are computed
+over all 50 members, so the matching target is the error over all 50 —
+`uncertainty_calibration.py` averages the `--error_dirs` per pixel. Pinning one
+block would make the answer depend on which, for no reason. `REGEN_BLOCKS`
+narrows it if you want to check that dependence.
+
 Three things that will otherwise surprise:
 
 - **The estimator matches `uncertainty_phi/decompose.py` exactly**, including
