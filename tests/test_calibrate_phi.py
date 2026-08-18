@@ -464,3 +464,113 @@ class TestRiskCoverage:
         err = sd * np.abs(rng.normal(0, 1, 600))
         r = risk_coverage(self._table(sd, err, n_wsi=8), [0.8], 500, 0)[0]
         assert r["rel_ci_lo"] <= r["rel_change"] <= r["rel_ci_hi"]
+
+
+class TestWithinSlide:
+    """Per-slide rho, and rho with the point prediction partialled out.
+
+    Two problems a pooled correlation has. The unit of replication is the slide,
+    not the region — 2850 regions come from twenty cases. And sigma tracks how
+    much structure a region holds while absolute error does too, so a raw rho is
+    largely the two sharing that dependence. On the UC liver cohort
+    rho(sigma, mu_CPA) = +0.76, and partialling drops rho from +0.28 to +0.15.
+    """
+
+    @staticmethod
+    def _table(sd, err, mu, wsi):
+        return pd.DataFrame({
+            "descriptor": "task_specific_value", "component": "total",
+            "prediction": "grand", "wsi": wsi,
+            "region_index": np.arange(len(sd)), "sd": sd, "error": err, "mu": mu,
+            "z": np.asarray(err) / np.asarray(sd)})
+
+    def test_the_slide_is_the_unit(self):
+        from calibrate_phi import within_slide
+        rng = np.random.default_rng(0)
+        n_wsi, per = 9, 40
+        wsi = np.repeat([f"w{i}" for i in range(n_wsi)], per)
+        sd = np.abs(rng.normal(2, 0.5, n_wsi * per))
+        err = sd * np.abs(rng.normal(0, 1, n_wsi * per))
+        r = within_slide(self._table(sd, err, sd.copy(), wsi), 15, 500, 0)[0]
+        assert r["n_slides"] == n_wsi
+        assert len(r["per_slide_raw"]) == n_wsi
+        assert 0 <= r["n_positive_raw"] <= n_wsi
+
+    def test_short_slides_are_dropped(self):
+        """A rho over a handful of regions is noise, and the per-slide mean would
+        weight it equally with a well-estimated one."""
+        from calibrate_phi import within_slide
+        rng = np.random.default_rng(1)
+        # three long slides, so the >=3 slides the bootstrap needs survive, plus
+        # one short slide that must not
+        wsi = np.array(["big"] * 60 + ["small"] * 5 + ["ok"] * 30 + ["also"] * 25)
+        sd = np.abs(rng.normal(2, 0.5, len(wsi)))
+        err = sd * np.abs(rng.normal(0, 1, len(wsi)))
+        r = within_slide(self._table(sd, err, sd.copy(), wsi), 15, 500, 0)[0]
+        assert r["n_slides"] == 3
+        assert r["regions_per_slide_min"] == 25
+
+    def test_too_few_slides_yields_nothing(self):
+        """Under three slides there is no bootstrap over cases to speak of, so
+        the analysis is withheld rather than reported from two numbers."""
+        from calibrate_phi import within_slide
+        rng = np.random.default_rng(9)
+        wsi = np.repeat(["a", "b"], 40)
+        sd = np.abs(rng.normal(2, 0.5, 80))
+        err = sd * np.abs(rng.normal(0, 1, 80))
+        assert within_slide(self._table(sd, err, sd.copy(), wsi), 15, 200, 0) == []
+
+    def test_a_pure_level_confound_is_removed(self):
+        """The failure the partial exists to catch: sigma and error both driven
+        by the region's level and by nothing else. The raw rho is large and means
+        nothing; the partial must collapse."""
+        from calibrate_phi import within_slide
+        rng = np.random.default_rng(2)
+        n_wsi, per = 8, 60
+        wsi = np.repeat([f"w{i}" for i in range(n_wsi)], per)
+        level = np.abs(rng.normal(1.0, 0.35, n_wsi * per))
+        sd = level * 0.5 * np.exp(rng.normal(0, 0.05, n_wsi * per))
+        err = level * 0.4 * np.exp(rng.normal(0, 0.05, n_wsi * per))
+        r = within_slide(self._table(sd, err, level, wsi), 15, 1000, 0)[0]
+        assert r["rho_raw_mean"] > 0.7
+        assert abs(r["rho_partial_mu_mean"]) < 0.2
+
+    def test_genuine_signal_survives_the_partial(self):
+        """The complement: sigma predicts error for reasons unrelated to the
+        level, so partialling must leave it standing."""
+        from calibrate_phi import within_slide
+        rng = np.random.default_rng(3)
+        n_wsi, per = 8, 60
+        wsi = np.repeat([f"w{i}" for i in range(n_wsi)], per)
+        level = np.abs(rng.normal(1.0, 0.3, n_wsi * per))
+        sd = np.abs(rng.normal(2, 0.7, n_wsi * per))     # independent of level
+        err = sd * np.abs(rng.normal(0, 1, n_wsi * per))
+        r = within_slide(self._table(sd, err, level, wsi), 15, 1000, 0)[0]
+        assert r["rho_partial_mu_mean"] > 0.3
+        assert r["rho_partial_mu_ci_lo"] > 0
+
+    def test_partial_uses_mu_not_the_reference(self):
+        """mu is available at inference; `real` is not. Partialling on the
+        reference would remove the signal being tested, so the function must not
+        even accept it — it reads `mu` by name."""
+        from calibrate_phi import within_slide
+        rng = np.random.default_rng(4)
+        wsi = np.repeat([f"w{i}" for i in range(6)], 40)
+        sd = np.abs(rng.normal(2, 0.5, len(wsi)))
+        err = sd * np.abs(rng.normal(0, 1, len(wsi)))
+        t = self._table(sd, err, sd.copy(), wsi)
+        assert within_slide(t.drop(columns=["mu"]), 15, 200, 0) == []
+
+    def test_partial_spearman_matches_a_direct_computation(self):
+        from calibrate_phi import _partial_spearman
+        from scipy.stats import rankdata, spearmanr
+        rng = np.random.default_rng(5)
+        z = rng.normal(size=300)
+        a, b = z + rng.normal(size=300), z + rng.normal(size=300)
+        got = _partial_spearman(a, b, z)
+        ra, rb, rz = rankdata(a), rankdata(b), rankdata(z)
+        A = np.c_[np.ones_like(rz, dtype=float), rz]
+        want = spearmanr(ra - A @ np.linalg.lstsq(A, ra, rcond=None)[0],
+                         rb - A @ np.linalg.lstsq(A, rb, rcond=None)[0]).statistic
+        assert got == pytest.approx(want)
+        assert got < spearmanr(a, b).statistic      # z drove part of it

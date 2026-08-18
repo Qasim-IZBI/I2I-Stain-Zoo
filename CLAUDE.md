@@ -803,7 +803,43 @@ Two conventions that must be stated wherever the numbers are:
   whether the ensemble is calibrated, over-confident or useless — do not lead with
   it.
 
-**`risk_coverage.csv` / `risk_coverage.png` are the headline pair.** ρ answers
+**`within_slide.csv` is the confound-controlled result, and on this cohort it is
+the one to report.** ρ is computed *inside* each slide and summarised over
+slides, so the **slide is the unit of replication** — pooling ~2850 regions from
+20 cases and correlating once treats them as 2850 observations. `n_positive` out
+of `n_slides` is a sign test anyone can read without trusting a bootstrap.
+
+It also carries `rho_partial_mu_*`, which removes the point prediction `mu`. This
+matters more than anything else in the output: **σ tracks how much structure a
+region holds** — on the UC liver cohort ρ(σ, μ_CPA) = **+0.76** — and absolute
+error grows with the same thing, so a raw ρ is largely the two sharing that
+dependence rather than the ensemble knowing where it is wrong. The partial asks
+the question that survives review: *does the spread say anything the point
+prediction does not already imply?* It partials on `μ` and never on `real`,
+because μ is available at inference and the reference is not.
+
+Measured (CPA, slide as unit, n = 20):
+
+| σ | raw ρ | partialled on μ |
+|---|---|---|
+| total | +0.278 [+0.200, +0.355], 19/20 | **+0.150** [+0.065, +0.241], 14/20, p = 0.006 |
+| procedural | +0.246 [+0.169, +0.322], 18/20 | +0.094 [+0.012, +0.181], 12/20, p = 0.105 |
+| data-exposure | +0.245 [+0.170, +0.317], 19/20 | **+0.143** [+0.060, +0.229], 16/20, p = 0.006 |
+
+So the ranking claim survives the control, at about half the raw size — and the
+component that survives is the **data-exposure** one, which only a crossed grid
+can measure. Procedural alone does not.
+
+**A raw ρ that collapses under the partial is a structure-content map wearing an
+uncertainty label. Report both, always.**
+
+**`risk_coverage.csv` / `risk_coverage.png` — read the μ baseline before quoting
+these.** Ranking by the point prediction alone requires no ensemble and on this
+cohort **beats σ** for triage: at 80% coverage μ gives −15.1% against σ's −7.8%
+(within-slide: −15.9% vs −11.5%). Absolute error grows with the amount of
+collagen, so "discard the regions with most predicted collagen" is a strong
+heuristic. Do not present selective prediction as a headline without that
+comparison — it is the first check a reader will run. ρ answers
 whether σ ranks the error; this answers what that buys. Regions are sorted by σ,
 the least certain are discarded, and the error is measured on what remains, at
 each `--coverages` fraction (default 1.0 0.9 0.8 0.7 0.5).

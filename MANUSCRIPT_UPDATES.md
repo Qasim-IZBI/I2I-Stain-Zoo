@@ -248,7 +248,43 @@ its uncertainty means anything — and the 50-member ensemble is better calibrat
 than any 10-member subset within it. That is an argument for the full crossed
 grid, and it is the claim a flat seed-only ensemble cannot make.
 
-### Lead with risk-coverage, not with rho (2026-08-18)
+### THE CONFOUND, and what the claim must become (2026-08-18)
+
+σ is strongly a proxy for how much collagen a region holds: **ρ(σ, μ_CPA) =
++0.76**, and absolute error grows with the same thing. Pooled across regions,
+partialling μ out drops ρ from +0.274 to +0.109 with a CI spanning zero. Ranking
+on μ alone — no ensemble at all — **beats** σ for triage (−15.1% vs −7.8% MAE at
+80% coverage; within-slide −15.9% vs −11.5%).
+
+**So do not lead with selective prediction.** The μ baseline is the first thing a
+reader will try, and it wins.
+
+**What survives, and is the paper:** computed *within* each slide with the slide
+as the unit (n = 20),
+
+| σ | raw ρ | partialled on μ |
+|---|---|---|
+| total | +0.278, 19/20 slides | **+0.150** [+0.065, +0.241], p = 0.006 |
+| data-exposure | +0.245, 19/20 | **+0.143** [+0.060, +0.229], p = 0.006 |
+| procedural | +0.246, 18/20 | +0.094, p = 0.105 (n.s.) |
+
+The ranking claim holds at about half its raw size after the control, and the
+component carrying it is **data exposure** — measurable only with a crossed grid.
+Procedural spread alone does not survive.
+
+Three claims to make, all confound-controlled:
+
+1. Within a slide, ensemble spread ranks CPA error, and it is not merely a
+   collagen-density map (partial ρ = 0.15, p = 0.006, 14/20 slides).
+2. The spread is correctly **sized**: E|z|/0.80 = 1.01. A magnitude claim, which
+   the level confound does not touch at all.
+3. ~Half the region-level variance is data exposure (50.8%), and that is the
+   component that survives (1).
+
+State ρ(σ, μ) = +0.76 yourself. Volunteering it and then showing the residual is
+far stronger than having a reviewer find it.
+
+### Risk-coverage — keep only WITH the baseline (2026-08-18)
 
 rho = 0.22 is real but modest, and a reviewer can fairly ask what it buys. The
 same data answers that directly — rank regions by sigma, discard the least

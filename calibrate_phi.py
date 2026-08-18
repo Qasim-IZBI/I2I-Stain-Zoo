@@ -30,6 +30,8 @@ Outputs
 -------
 per_region_calibration.csv   mu, sd, reference, error and z per region x descriptor
 reliability_bins.csv         the reliability diagram's own data, per bin x component
+within_slide.csv             per-slide rho, raw and with the point prediction
+                             partialled out — the confound-controlled result
 risk_coverage.csv            error vs coverage: what discarding the least certain
                              regions buys, with the oracle ceiling
 summary.json                 Spearman rho, E|z|, ECE, reliability bins, provenance
@@ -49,7 +51,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
+from scipy.stats import rankdata, spearmanr, wilcoxon
 
 from uncertainty_calibration import expected_calibration_error, reliability_bins
 from uncertainty_phi.descriptors import PHI_NAMES, PHI_REFERENCE
@@ -384,6 +386,103 @@ def series_style(label: str, idx: int) -> tuple:
     if label in C_COMPONENT:
         return C_COMPONENT[label], M_COMPONENT.get(label, "o")
     return C_FOLD[idx % len(C_FOLD)], M_FOLD[idx % len(M_FOLD)]
+
+
+def _partial_spearman(a: np.ndarray, b: np.ndarray, z: np.ndarray) -> float:
+    """Spearman of a and b with z partialled out, on ranks.
+
+    Rank-transform all three, regress the first two on the third, correlate the
+    residuals. Rank-based so it inherits Spearman's robustness to the skew in
+    CPA, and linear in ranks so it removes a monotone dependence on z rather
+    than only a linear one.
+    """
+    ra, rb, rz = rankdata(a), rankdata(b), rankdata(z)
+    if np.ptp(rz) == 0 or np.ptp(ra) == 0 or np.ptp(rb) == 0:
+        return float("nan")
+    A = np.c_[np.ones_like(rz, dtype=float), rz]
+    ra = ra - A @ np.linalg.lstsq(A, ra, rcond=None)[0]
+    rb = rb - A @ np.linalg.lstsq(A, rb, rcond=None)[0]
+    if np.ptp(ra) == 0 or np.ptp(rb) == 0:
+        return float("nan")
+    return float(spearmanr(ra, rb).statistic)
+
+
+def within_slide(t: pd.DataFrame, min_regions: int, n_boot: int,
+                 seed: int) -> List[dict]:
+    """Per-slide rho, and per-slide rho with the point prediction partialled out.
+
+    Two things this fixes that a pooled correlation cannot.
+
+    **The unit of replication.** Pooling ~2850 regions from twenty cases and
+    correlating once treats them as 2850 observations. Computing rho inside each
+    slide and summarising the twenty values makes the slide the unit, which is
+    what it is. `n_positive` out of `n_slides` is then a sign test anyone can
+    read without trusting a bootstrap.
+
+    **The level confound, which is the serious one.** sigma tracks how much
+    structure a region holds — on the UC liver cohort rho(sigma, mu_CPA) = +0.76
+    — and absolute error grows with the same thing. So a raw rho is mostly the
+    two sharing a dependence on the amount of collagen, not the ensemble knowing
+    where it is wrong. Partialling on `mu` asks the question that survives
+    review: does the spread say anything the POINT PREDICTION does not already
+    imply? `mu` and not `real`, because mu is available at inference and real is
+    not — partialling on the reference would remove the very signal being
+    tested.
+
+    A raw rho that collapses under this is a structure-content map wearing an
+    uncertainty label. Report both.
+    """
+    out = []
+    keys = [k for k in ("descriptor", "component", "prediction") if k in t.columns]
+    if "mu" not in t.columns:
+        return out
+    for key, g in t.groupby(keys, sort=False):
+        key = key if isinstance(key, tuple) else (key,)
+        meta = dict(zip(keys, key))
+        g = g.dropna(subset=["sd", "error", "mu"])
+        g = g[np.isfinite(g["sd"]) & np.isfinite(g["error"]) & (g["sd"] > 0)]
+        raw, par, sizes = [], [], []
+        for _, sub in g.groupby("wsi"):
+            if len(sub) < min_regions:
+                continue
+            a, b, m = (sub["sd"].to_numpy(), sub["error"].to_numpy(),
+                       sub["mu"].to_numpy())
+            if np.ptp(a) == 0 or np.ptp(b) == 0:
+                continue
+            raw.append(float(spearmanr(a, b).statistic))
+            par.append(_partial_spearman(a, b, m))
+            sizes.append(len(sub))
+        raw = np.array([v for v in raw if np.isfinite(v)], float)
+        par = np.array([v for v in par if np.isfinite(v)], float)
+        if raw.size < 3:
+            continue
+        row = {**meta, "n_slides": int(raw.size),
+               "regions_per_slide_min": int(min(sizes)),
+               "regions_per_slide_max": int(max(sizes))}
+        rng = np.random.default_rng(seed)
+        for tag, v in (("raw", raw), ("partial_mu", par)):
+            if v.size < 3:
+                continue
+            # resampling the SLIDES themselves: twenty values, one per case
+            bs = [float(np.mean(rng.choice(v, v.size, replace=True)))
+                  for _ in range(max(n_boot, 1000))]
+            lo, hi = np.percentile(bs, [2.5, 97.5])
+            row.update({
+                f"rho_{tag}_mean": float(v.mean()),
+                f"rho_{tag}_median": float(np.median(v)),
+                f"rho_{tag}_ci_lo": float(lo),
+                f"rho_{tag}_ci_hi": float(hi),
+                f"n_positive_{tag}": int((v > 0).sum()),
+            })
+            if v.size > 5:
+                try:
+                    row[f"wilcoxon_p_{tag}"] = float(wilcoxon(v).pvalue)
+                except ValueError:      # all-zero differences
+                    row[f"wilcoxon_p_{tag}"] = float("nan")
+        row["per_slide_raw"] = [float(v) for v in raw]
+        row["per_slide_partial_mu"] = [float(v) for v in par]
+        out.append(row)
+    return out
 
 
 def risk_coverage(t: pd.DataFrame, coverages, n_boot: int, seed: int) -> List[dict]:
@@ -860,6 +959,11 @@ def main() -> None:
                          "both this and the shuffled control. [%(default)s]")
     ap.add_argument("--seed", type=int, default=0,
                     help="Seed for the bootstrap and the shuffled control.")
+    ap.add_argument("--min_regions_per_slide", type=int, default=15,
+                    help="Slides with fewer regions are dropped from the "
+                         "within-slide analysis: a rho over a handful of regions "
+                         "is noise that the per-slide mean would weight equally "
+                         "with a well-estimated one. [%(default)s]")
     ap.add_argument("--coverages", type=float, nargs="*",
                     default=[1.0, 0.9, 0.8, 0.7, 0.5],
                     help="Fractions of regions to KEEP, most certain first, for "
@@ -887,6 +991,7 @@ def main() -> None:
     agreement = fold_agreement(rows)
     rc = risk_coverage(t, sorted(args.coverages, reverse=True), args.n_boot,
                        args.seed)
+    ws = within_slide(t, args.min_regions_per_slide, args.n_boot, args.seed)
 
     bin_rows = [{"descriptor": r["descriptor"],
                  "component": r.get("component", "total"),
@@ -900,6 +1005,10 @@ def main() -> None:
 
     make_figure(t, rows, args.outdir / "calibration_phi.png",
                 f"φ_struct calibration — {args.prediction} prediction")
+    if ws:
+        flat = [{k: v for k, v in r.items() if not k.startswith("per_slide_")}
+                for r in ws]
+        pd.DataFrame(flat).to_csv(args.outdir / "within_slide.csv", index=False)
     if rc:
         pd.DataFrame(rc).to_csv(args.outdir / "risk_coverage.csv", index=False)
         make_risk_coverage_figure(
@@ -918,6 +1027,7 @@ def main() -> None:
         "reference": {"path": str(args.reference_csv), **provenance},
         "fold_agreement": agreement,
         "risk_coverage": rc,
+        "within_slide": ws,
         "conventions": {
             "sigma": "predictive SD (spread of members), not the standard error "
                      "of the mean — sigma/sqrt(M) would be tiny and the test "
@@ -967,6 +1077,36 @@ def main() -> None:
           "which\ntreats every region as independent. 'shuf' is the negative "
           "control: mean\n|rho| with the pairing broken, which must sit near 0 "
           "for rho to mean anything.")
+    if ws:
+        print("\n--- within slide, and is it just a structure-content map? ---")
+        print("rho computed INSIDE each slide, then summarised over slides — the "
+              "slide is the\nunit of replication, not the region. 'partial' "
+              "additionally removes the point\nprediction mu: sigma tracks how "
+              "much structure a region holds, and absolute error\ndoes too, so a "
+              "raw rho is largely the two sharing that. The partial asks whether "
+              "the\nspread says anything mu does not already imply. Report "
+              "both.\n")
+        print(f"{'descriptor':22s} {'comp':>12s} {'rho':>7s} {'95% CI':>17s} "
+              f"{'+ve':>6s} {'partial':>8s} {'95% CI':>17s} {'+ve':>6s} {'p':>8s}")
+        for r in ws:
+            if r.get("component") not in ("total", "procedural", "data_exposure",
+                                          "procedural_within_fold"):
+                continue
+            ci = f"[{r['rho_raw_ci_lo']:+.3f},{r['rho_raw_ci_hi']:+.3f}]"
+            pci = (f"[{r['rho_partial_mu_ci_lo']:+.3f},"
+                   f"{r['rho_partial_mu_ci_hi']:+.3f}]"
+                   if "rho_partial_mu_ci_lo" in r else "")
+            pm = (f"{r['rho_partial_mu_mean']:+.3f}"
+                  if "rho_partial_mu_mean" in r else "")
+            pp = (f"{r['wilcoxon_p_partial_mu']:.4f}"
+                  if r.get("wilcoxon_p_partial_mu") == r.get("wilcoxon_p_partial_mu")
+                  and "wilcoxon_p_partial_mu" in r else "")
+            print(f"{r['descriptor'][:22]:22s} {str(r.get('component',''))[:12]:>12s} "
+                  f"{r['rho_raw_mean']:>+7.3f} {ci:>17s} "
+                  f"{r['n_positive_raw']:>3d}/{r['n_slides']:<2d} {pm:>8s} "
+                  f"{pci:>17s} "
+                  f"{r.get('n_positive_partial_mu', 0):>3d}/{r['n_slides']:<2d} {pp:>8s}")
+
     if rc:
         print("\n--- what does the uncertainty buy? (selective prediction) ---")
         print("Discard the least certain regions, measure the error on what "
