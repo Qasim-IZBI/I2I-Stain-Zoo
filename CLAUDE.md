@@ -1321,10 +1321,17 @@ python aggregate_calibration.py --base /path/to/ensemble --outdir ./calibration_
 sbatch scripts/aggregate_calibration.sh
 ```
 
-Outputs `{outdir}/{model}/summary.json`, `{outdir}/{model}/calibration.png`, and
-`{outdir}/all_models.csv`. `--n_bins` sets the quantile bin count (default 10).
-Expects `per_tile.csv` at
-`ensemble/{MODEL}/data_large/{MODEL_SIZE}/calibration/{MODEL}/wsi{NNN}/`.
+Outputs `{outdir}/{group}/summary.json`, `{outdir}/{group}/*.png`,
+`{outdir}/all_models.csv` and three `combined_*.png` panels. `--n_bins` sets the
+quantile bin count (default 10); `--n_wsis` how many WSIs a group should have.
+
+By default it expects `per_tile.csv` at
+`ensemble/{MODEL}/data_large/{MODEL_SIZE}/calibration/{MODEL}/wsi{NNN}/`, and it
+also accepts the older `calibration_nolog/` name there rather than reporting an
+empty tree. **`--group LABEL=PATH`** takes the directory holding
+`wsi{NNN}/per_tile.csv` directly and preserves the order given, for any layout
+without that tree — the UGAC and grid chains group by **training subset**, so
+the figure grid is derived from the group count rather than fixed at 2×3.
 
 ### PSR Positive Area Segmentation
 

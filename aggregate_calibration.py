@@ -107,6 +107,51 @@ LAYOUT = [
     ["dclgan",   "uvcgan", "cyclediffusion"],
 ]
 
+# Where per-WSI results sit under the ensemble root. run_calibration_all.sh
+# writes `calibration/`; some earlier runs went to `calibration_nolog/` while
+# the logging behaviour was being decided, so that name is still accepted rather
+# than silently reporting "no per_tile.csv found" on an old tree.
+CALIB_SUBDIRS = ("calibration", "calibration_nolog")
+
+# label -> directory holding wsi{NNN}/per_tile.csv. Empty means the default
+# six-family layout; --group fills it and bypasses the path construction.
+GROUP_ROOTS: dict = {}
+
+
+def grid_layout(names: list[str], ncol: int = 3) -> list[list[str]]:
+    """Row-major grid over however many groups there are.
+
+    The hardcoded 2x3 above is the six model families. Any other grouping — the
+    UGAC and grid chains compare one family across five training subsets — needs
+    a shape derived from the count, or the last group falls off the figure.
+    """
+    return [names[i:i + ncol] for i in range(0, len(names), ncol)] or [[]]
+
+
+def parse_groups(specs: list[str]) -> tuple[list[str], dict[str, Path]]:
+    """Parse `LABEL=/path/to/calibration/{model}` pairs, order preserved.
+
+    PATH is the directory that holds `wsi{NNN}/per_tile.csv`, so the caller
+    supplies the layout and this module needs to know none of it.
+    """
+    order: list[str] = []
+    roots: dict[str, Path] = {}
+    for spec in specs:
+        if "=" not in spec:
+            raise SystemExit(
+                f"--group expects LABEL=PATH, got {spec!r}. PATH is the "
+                f"directory holding wsi{{NNN}}/per_tile.csv."
+            )
+        label, path = spec.split("=", 1)
+        label, path = label.strip(), path.strip()
+        if not label or not path:
+            raise SystemExit(f"--group has an empty label or path: {spec!r}")
+        if label in roots:
+            raise SystemExit(f"--group label {label!r} given twice")
+        order.append(label)
+        roots[label] = Path(path)
+    return order, roots
+
 
 def aggregate_model(
     model: str,
@@ -114,9 +159,17 @@ def aggregate_model(
     outdir: Path,
     n_bins: int = 10,
 ) -> Optional[dict]:
-    model_size = MODEL_SIZES[model]
-    ensemble_root = base / model / "data_large" / model_size
-    calib_root = ensemble_root / "calibration_nolog" / model
+    if GROUP_ROOTS:
+        model_size = ""
+        calib_root = GROUP_ROOTS[model]
+    else:
+        model_size = MODEL_SIZES[model]
+        ensemble_root = base / model / "data_large" / model_size
+        calib_root = next(
+            (ensemble_root / sub / model for sub in CALIB_SUBDIRS
+             if (ensemble_root / sub / model).is_dir()),
+            ensemble_root / CALIB_SUBDIRS[0] / model,
+        )
 
     # Collect per_tile.csv from all WSIs
     dfs = []
@@ -241,7 +294,7 @@ def make_combined_reliability(all_plot_data: dict, outdir: Path) -> None:
             ax.plot(d["bin_u"], d["bin_e"], "o-", color="C0")
             ax.set_xlim(0, 1)
             ax.set_ylim(0, 1)
-            ax.set_title(f"{DISPLAY_NAMES[model]}   ECE = {d['ece']:.4f}")
+            ax.set_title(f"{DISPLAY_NAMES.get(model, model)}   ECE = {d['ece']:.4f}")
             ax.set_xlabel("Mean uncertainty per tile (bin, normalised)")
             ax.set_ylabel("Mean error per tile (bin, normalised)")
             ax.grid(alpha=0.3)
@@ -281,7 +334,7 @@ def make_combined_spearman_hist(all_plot_data: dict, outdir: Path) -> None:
             ax.axvline(0, color="gray", linewidth=0.7)
             ax.set_xlim(x_lim)
             ax.set_ylim(y_lim)
-            ax.set_title(f"{DISPLAY_NAMES[model]}   N = {len(valid)}   mean $\\rho$ = {d['rho_within_mean']:.3f}")
+            ax.set_title(f"{DISPLAY_NAMES.get(model, model)}   N = {len(valid)}   mean $\\rho$ = {d['rho_within_mean']:.3f}")
             ax.set_xlabel("Within-tile Spearman $\\rho$ (uncertainty vs error)")
             ax.set_ylabel("Tile count")
             ax.grid(alpha=0.3)
@@ -315,7 +368,7 @@ def make_combined_across_tile(all_plot_data: dict, outdir: Path) -> None:
                        edgecolors="black", linewidths=0.3, color="C3")
             ax.set_xlim(u_lim)
             ax.set_ylim(e_lim)
-            ax.set_title(f"{DISPLAY_NAMES[model]}   $\\rho$ = {d['pearson_across']:.3f}   $r_s$ = {d['spearman_across']:.3f}")
+            ax.set_title(f"{DISPLAY_NAMES.get(model, model)}   $\\rho$ = {d['pearson_across']:.3f}   $r_s$ = {d['spearman_across']:.3f}")
             ax.set_xlabel("Mean uncertainty per tile")
             ax.set_ylabel("Mean error per tile")
             ax.grid(alpha=0.3)
@@ -328,11 +381,28 @@ def make_combined_across_tile(all_plot_data: dict, outdir: Path) -> None:
 
 
 def main() -> None:
+    # Declared up front: N_WSIS is read below as an argparse default, and Python
+    # rejects a `global` that follows any use of the name in the same scope.
+    global MODELS, MODEL_SIZES, LAYOUT, N_WSIS, GROUP_ROOTS
+
     ap = argparse.ArgumentParser(
         description="Aggregate per-WSI calibration CSVs into per-model summaries."
     )
     ap.add_argument(
-        "--base", type=Path, required=True,
+        "--group", action="append", default=None, metavar="LABEL=PATH",
+        help="Aggregate explicitly named groups instead of the six model "
+             "families. PATH is the directory holding wsi{NNN}/per_tile.csv. "
+             "Repeat once per group; order is preserved. Use this for any "
+             "layout without the scaling study's {model}/data_large/{size}/ "
+             "tree — the UGAC and grid chains group by training subset.",
+    )
+    ap.add_argument(
+        "--n_wsis", type=int, default=N_WSIS,
+        help=f"WSIs expected per group; a missing one is warned about rather "
+             f"than passed over silently (default: {N_WSIS}).",
+    )
+    ap.add_argument(
+        "--base", type=Path, required=False, default=None,
         help="Ensemble base directory containing cyclegan/, unit/, etc. subdirectories.",
     )
     ap.add_argument(
@@ -344,6 +414,16 @@ def main() -> None:
         help="Number of quantile bins for the reliability diagram and ECE (default: 10).",
     )
     args = ap.parse_args()
+
+    N_WSIS = args.n_wsis
+    if args.group:
+        # The group list IS these constants, so redefining the groups means
+        # rebinding them — every helper below reads them at call time.
+        MODELS, GROUP_ROOTS = parse_groups(args.group)
+        MODEL_SIZES = {m: "" for m in MODELS}
+        LAYOUT = grid_layout(MODELS)
+    elif args.base is None:
+        ap.error("give --base for the six-family layout, or --group LABEL=PATH")
 
     args.outdir.mkdir(parents=True, exist_ok=True)
 
