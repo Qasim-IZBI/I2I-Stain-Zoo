@@ -8,7 +8,7 @@
 #SBATCH --mem=32G
 #SBATCH --partition=paula
 #SBATCH --ntasks=1
-#SBATCH --array=0-24   # 25 jobs = 5 data blocks x 5 test WSIs
+#SBATCH --array=0-99   # 100 jobs = 5 data blocks x 20 test WSIs
 
 # Per-pixel EPISTEMIC uncertainty over the UGAC CycleGAN ensemble.
 #
@@ -32,13 +32,13 @@
 # Decomposition — one job per (data block, test WSI), so it is the inference
 # array with the member axis collapsed, since every member of a block is read
 # together:
-#   tasks  0– 4  ->  folders 001–007   WSI 1–5
-#   tasks  5– 9  ->  folders 008–014   WSI 1–5
-#   tasks 10–14  ->  folders 015–021   WSI 1–5
-#   tasks 15–19  ->  folders 022–028   WSI 1–5
-#   tasks 20–24  ->  folders 029–035   WSI 1–5
+#   tasks  0– 19  ->  folders 001–007   WSI 1–20
+#   tasks 20– 39  ->  folders 008–014   WSI 1–20
+#   tasks 40– 59  ->  folders 015–021   WSI 1–20
+#   tasks 60– 79  ->  folders 022–028   WSI 1–20
+#   tasks 80– 99  ->  folders 029–035   WSI 1–20
 #
-# Per WSI rather than all five at once because uncertainty.py holds every
+# Per WSI rather than all twenty at once because uncertainty.py holds every
 # member's tile for a filename in memory at once, and because the summary is
 # tagged per WSI so the jobs cannot race each other writing it.
 #
@@ -49,7 +49,9 @@
 # Submit from the parent directory of the repository:
 #   sbatch I2I-Stain-Zoo/scripts/compute_ensemble_uncertainty.sh
 # Single block only (e.g. folders 008–014):
-#   sbatch --array=5-9 I2I-Stain-Zoo/scripts/compute_ensemble_uncertainty.sh
+#   sbatch --array=20-39 I2I-Stain-Zoo/scripts/compute_ensemble_uncertainty.sh
+# Cap concurrency (100 jobs each reading ten members is heavy on the filesystem):
+#   sbatch --array=0-99%20 I2I-Stain-Zoo/scripts/compute_ensemble_uncertainty.sh
 
 # -eo, not -euo: the Anaconda module runs activate.d hooks that read unset
 # variables, so -u there kills the job before the first echo and the log comes
@@ -74,13 +76,16 @@ mkdir -p logs_ensemble_ugac
 PROJECT_ROOT=I2I-Stain-Zoo
 
 # -----------------------------
-# 2D decomposition: 5 data blocks x 5 test WSIs
+# 2D decomposition: 5 data blocks x 20 test WSIs
+#
+# N_WSIS must match --array above: the two are one decomposition, and changing
+# either alone silently remaps every task to the wrong block.
 # -----------------------------
-N_WSIS=5
+N_WSIS=20
 N_MEMBERS=10          # members per block, as written by the inference array
 
 RANGE_ID=$(( SLURM_ARRAY_TASK_ID / N_WSIS ))    # 0 … 4
-WSI_IDX=$(( SLURM_ARRAY_TASK_ID % N_WSIS ))     # 0 … 4
+WSI_IDX=$(( SLURM_ARRAY_TASK_ID % N_WSIS ))     # 0 … 19
 
 RANGE_STARTS=(1  8  15 22 29)
 RANGE_ENDS=(  7  14 21 28 35)
@@ -89,7 +94,7 @@ RANGE_START=${RANGE_STARTS[$RANGE_ID]}
 RANGE_END=${RANGE_ENDS[$RANGE_ID]}
 RANGE_TAG=$(printf "data_%03d_%03d" "${RANGE_START}" "${RANGE_END}")
 
-WSI_NUM=$(( WSI_IDX + 1 ))                      # 1 … 5
+WSI_NUM=$(( WSI_IDX + 1 ))                      # 1 … 20
 WSI_FOLDER=$(printf "%03d" "${WSI_NUM}")
 DATA_RANGE="${WSI_NUM},${WSI_NUM}"
 
@@ -142,14 +147,32 @@ if [ "${FOUND}" -ne "${N_MEMBERS}" ]; then
 fi
 
 if [ ! -d "${TEST_A}/${WSI_FOLDER}" ]; then
+    N_FOUND=$(ls -d "${TEST_A}"/[0-9][0-9][0-9] 2>/dev/null | wc -l)
     echo "[ERROR] Test WSI folder not found: ${TEST_A}/${WSI_FOLDER}"
-    echo "        Is the test set smaller than N_WSIS=${N_WSIS}?"
+    echo "        ${TEST_A} holds ${N_FOUND} numbered folder(s) but N_WSIS=${N_WSIS}."
+    echo "        Repoint TEST_A at the 20-case cohort, or set N_WSIS and --array"
+    echo "        together — they are one decomposition."
+    exit 1
+fi
+
+# The member dirs must actually contain this WSI. discover_common_filenames
+# intersects across members, so a folder the inference never produced yields an
+# EMPTY intersection rather than an error, and the job would write a summary
+# describing nothing. This is the likely failure if inference ran with a
+# narrower --data_range than the test set now has.
+if [ ! -d "${IN_DIR}/model_01/${WSI_FOLDER}/images" ]; then
+    echo "[ERROR] ${IN_DIR}/model_01/${WSI_FOLDER}/images does not exist."
+    echo "        The inference for this block did not cover WSI ${WSI_FOLDER}."
+    echo "        infer_ensemble_cyclegan_ugac.sh pins DATA_RANGE=\"1,5\"; widen it"
+    echo "        to the full test set and re-run that array for this block."
+    echo "        Present in model_01:"
+    ls -d "${IN_DIR}/model_01"/[0-9][0-9][0-9] 2>/dev/null | sed 's/^/          /' | head
     exit 1
 fi
 
 # Per-WSI skip guard: the summary JSON this specific job writes. uncertainty.py
 # tags it with the WSI when --data_range names a single folder, which is what
-# keeps the five jobs of a block from racing on one filename.
+# keeps the twenty jobs of a block from racing on one filename.
 SUMMARY_FILE="${OUT_DIR}/${MODEL}/summary_wsi${WSI_FOLDER}.json"
 if [ -f "${SUMMARY_FILE}" ]; then
     echo "[SKIP] Already completed: ${SUMMARY_FILE}"
