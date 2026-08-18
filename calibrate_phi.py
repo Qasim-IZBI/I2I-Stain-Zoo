@@ -83,6 +83,9 @@ COMPONENT_LABEL = {
     "procedural": "procedural σ (seed)",
     "data_exposure": "data-exposure σ (subset)",
     "procedural_within_fold": "procedural σ, per subset",
+    # cycle-reconstruction error, entering as a component so it is one more
+    # curve on the same axes rather than a special case
+    "regen_error": "cycle error (regen)",
     **{f"fold{i}": f"subset {i}" for i in range(1, 21)},
 }
 
@@ -310,7 +313,8 @@ def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[
     # component-major, which would print each descriptor's three components
     # scattered down the table and make the one comparison this exists for
     # something the reader has to reassemble by eye.
-    comp_order = [c for c, _ in COMPONENTS] + ["procedural_within_fold"]
+    comp_order = ([c for c, _ in COMPONENTS]
+                  + ["regen_error", "procedural_within_fold"])
     rows.sort(key=lambda r: (
         PHI_NAMES.index(r["descriptor"]) if r["descriptor"] in PHI_NAMES else 99,
         comp_order.index(r.get("component", "total"))
@@ -365,9 +369,10 @@ C_COMPONENT = {
     "procedural": "#eb6834",
     "data_exposure": "#1baf7a",
     "procedural_within_fold": "#4a3aa7",
+    "regen_error": "#e34948",
 }
 M_COMPONENT = {"total": "o", "procedural": "s", "data_exposure": "^",
-               "procedural_within_fold": "D"}
+               "procedural_within_fold": "D", "regen_error": "X"}
 
 # In fold mode the curves are the five subsets, not the three components, so the
 # series key changes. Sequential colours rather than categorical ones: the folds
@@ -678,7 +683,8 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
     # descriptor -> its components, in the fixed order, so panels line up
     order = [n for n in PHI_NAMES if any(r["descriptor"] == n for r in scored)]
     by_desc = {n: [r for r in scored if r["descriptor"] == n] for n in order}
-    comp_order = [c for c, _ in COMPONENTS] + ["procedural_within_fold"]
+    comp_order = ([c for c, _ in COMPONENTS]
+                  + ["regen_error", "procedural_within_fold"])
     for n in by_desc:
         by_desc[n].sort(key=lambda r: (comp_order.index(r.get("component", "total"))
                                        if r.get("component") in comp_order else 99,

@@ -887,6 +887,54 @@ prediction); `--prediction fold` pairs each subset's mean with its procedural sp
 alone. Comparing them is the data-exposure claim, which a flat seed-only ensemble
 cannot pose.
 
+#### Cycle error vs ensemble spread — the head-to-head
+
+The paper's central contrast is that the cheap self-consistency proxy fails
+where a task-relevant target works. Cited on one side and measured on the other,
+that is two studies; this makes it one.
+
+```bash
+sbatch --export=ALL,REGEN_ROOTS='/path/regen/model_01 /path/regen/model_02' \
+    scripts/compare_uncertainty_sources.sh
+
+python compare_uncertainty_sources.py \
+    --phi_csv        ./phi_uncertainty/per_region.csv \
+    --reference_csv  ./calibration_phi/reference_phi.csv \
+    --regen_root     /path/regen/model_01 --regen_root /path/regen/model_02 \
+    --tiles_metadata /path/tiles/testA \
+    --outdir         ./compare_sources/
+```
+
+Regen error enters as another **`component`**, so every existing analysis treats
+it as one more curve: the same regions, the same target, the same
+slide-clustered bootstrap, the same μ partial, and both figures. A null for
+either source therefore cannot be blamed on the protocol.
+
+**Prerequisite, and it is the expensive part:** per-member regen maps at
+`REGEN_ROOT/model_NN/wsi{NNN}/error_npy/<tile>.npy`, which is what
+`scripts/compute_ensemble_regen_error.sh` already writes. It needs B→A inference
+per member first. **Two or three members is enough** — cycle error is a property
+of one model's forward/inverse pair, not of the ensemble — so do not queue fifty
+before looking at three.
+
+How the two scales are reconciled: regen error is **per tile and per pixel**,
+φ is **per region and per descriptor**. Tiling is non-overlapping with stride =
+tile size from origin (0,0), so tiles nest exactly — a 2048 px region holds
+sixteen 512 px tiles, none straddling a boundary — and the aggregation is exact
+rather than an approximation. The run prints the tiles-per-region range and warns
+if it is not constant, which is the signal that the region size is not a whole
+multiple of the tile size.
+
+Per-tile means are averaged across members rather than averaging the maps first.
+The two give the same number because the mean is linear, and the second would
+read hundreds of GB. They are cached to `tile_errors.csv`, so re-running with
+different binning or bootstrap settings is seconds.
+
+**`tile_name` is read as a string, deliberately.** Tile names are zero-padded
+numerics, which pandas parses as `int64` — the lookup then asks for `1.npy`,
+every tile reports no error map, and the run fails claiming the directory layout
+is wrong when only the padding was lost.
+
 #### Uncertainty heatmaps
 
 ```bash

@@ -620,3 +620,111 @@ class TestPhiRunProvenance:
         from calibrate_phi import phi_run_provenance
         assert phi_run_provenance(tmp_path / "per_region.csv") == {}
         assert "could not read" in capsys.readouterr().out
+
+
+class TestRegenComparison:
+    """Cycle error and ensemble spread, scored on the same regions.
+
+    The paper's central contrast is currently a citation beside a measurement.
+    This puts both on one footing: same regions, same target, same
+    slide-clustered statistics, same partial on the point prediction — so a null
+    for either cannot be blamed on the protocol.
+    """
+
+    R, T = 2048, 512
+
+    def _cohort(self, tmp_path, n_wsi=3, grid=2):
+        """A tiled cohort with a regen error map per tile."""
+        import json
+        meta = tmp_path / "tiles"
+        regen = tmp_path / "regen" / "m01"
+        regen.mkdir(parents=True)
+        rng = np.random.default_rng(0)
+        rows = []
+        for w in range(n_wsi):
+            folder = f"{w + 1:03d}"
+            (meta / folder).mkdir(parents=True)
+            ed = regen / f"wsi{folder}" / "error_npy"
+            ed.mkdir(parents=True)
+            trows, tid = [], 0
+            for ry in range(grid):
+                for rx in range(grid):
+                    for ty in range(4):
+                        for tx in range(4):
+                            tid += 1
+                            name = f"{tid:07d}"      # zero-padded, as tile.py writes
+                            trows.append({
+                                "tile_name": name, "source_file": f"HE_s{w}.tif",
+                                "x": rx * self.R + tx * self.T,
+                                "y": ry * self.R + ty * self.T,
+                                "tile_size": self.T, "saved_size": 256})
+                            np.save(ed / f"{name}.npy",
+                                    np.full((8, 8), float(ry * grid + rx),
+                                            np.float32))
+                    rows.append({"wsi": f"HE_s{w}.tif",
+                                 "region_index": ry * grid + rx,
+                                 "y0": ry * self.R, "y1": ry * self.R + self.R,
+                                 "x0": rx * self.R, "x1": rx * self.R + self.R})
+            pd.DataFrame(trows).to_csv(meta / folder / "tiles_metadata.csv",
+                                       index=False)
+        return meta, regen, pd.DataFrame(rows)
+
+    def test_tiles_nest_exactly_inside_regions(self, tmp_path):
+        """A 2048 px region holds sixteen 512 px tiles and no tile straddles a
+        boundary — the property that makes the aggregation exact rather than an
+        approximation."""
+        from compare_uncertainty_sources import (assign_tiles_to_regions,
+                                                 tile_table)
+        meta, _, regions = self._cohort(tmp_path)
+        pairs = assign_tiles_to_regions(tile_table(meta), regions)
+        counts = pairs.groupby(["wsi", "region_index"]).size()
+        assert set(counts) == {16}
+        # every tile used exactly once: no double-counting, none dropped
+        assert len(pairs) == len(pairs.drop_duplicates(["folder", "tile_name"]))
+
+    def test_zero_padded_tile_names_survive_the_csv(self, tmp_path):
+        """The bug this closes: pandas reads '0000001' as int 1, the lookup asks
+        for 1.npy, every tile 'has no error map', and the run dies claiming the
+        directory layout is wrong when only the padding was lost."""
+        from compare_uncertainty_sources import tile_table
+        meta, _, _ = self._cohort(tmp_path)
+        names = tile_table(meta)["tile_name"]
+        assert names.map(lambda s: isinstance(s, str)).all()
+        assert "0000001" in set(names)
+
+    def test_region_error_is_the_mean_of_its_tiles(self, tmp_path):
+        """Each region's tiles were written with its own constant value, so the
+        aggregate must come back as exactly that value."""
+        from compare_uncertainty_sources import regen_per_region, tile_table
+        meta, regen, regions = self._cohort(tmp_path, grid=2)
+        got = regen_per_region(regions, tile_table(meta), [regen], None,
+                               cache=tmp_path / "cache.csv")
+        for r in got.itertuples():
+            assert r.regen == pytest.approx(float(r.region_index))
+
+    def test_members_are_averaged(self, tmp_path):
+        from compare_uncertainty_sources import regen_per_region, tile_table
+        meta, r1, regions = self._cohort(tmp_path, grid=2)
+        r2 = tmp_path / "regen" / "m02"
+        for src in sorted(r1.rglob("*.npy")):
+            dst = r2 / src.relative_to(r1)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            np.save(dst, np.load(src) + 10.0)
+        got = regen_per_region(regions, tile_table(meta), [r1, r2], None,
+                               cache=tmp_path / "c2.csv")
+        for r in got.itertuples():
+            assert r.regen == pytest.approx(float(r.region_index) + 5.0)
+
+    def test_the_tile_cache_round_trips(self, tmp_path):
+        """The tile pass is the slow half; a reuse that lost the padding would
+        silently recompute or mismatch."""
+        from compare_uncertainty_sources import regen_per_region, tile_table
+        meta, regen, regions = self._cohort(tmp_path, grid=2)
+        tiles, cache = tile_table(meta), tmp_path / "cache.csv"
+        first = regen_per_region(regions, tiles, [regen], None, cache=cache)
+        assert cache.is_file()
+        # point at an empty root: everything must now come from the cache
+        empty = tmp_path / "nothing"
+        empty.mkdir()
+        second = regen_per_region(regions, tiles, [empty], None, cache=cache)
+        pd.testing.assert_frame_equal(first, second)
