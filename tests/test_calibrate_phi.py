@@ -574,3 +574,49 @@ class TestWithinSlide:
                          rb - A @ np.linalg.lstsq(A, rb, rcond=None)[0]).statistic
         assert got == pytest.approx(want)
         assert got < spearmanr(a, b).statistic      # z drove part of it
+
+
+class TestPhiRunProvenance:
+    """The calibration output must say how its regions were defined.
+
+    --roi_dir, --region_px and --min_tissue_fraction belong to the phi run, not
+    to this one: the grid arrives already built. So without copying them forward
+    a result cannot answer "was the kidney arm restricted to cortex?" — which is
+    unanswerable from the numbers and decides whether the grid mixed two
+    populations.
+    """
+
+    @staticmethod
+    def _run(tmp_path, params):
+        import json
+        (tmp_path / "per_region.csv").write_text("wsi\n")
+        if params is not None:
+            with open(tmp_path / "summary.json", "w") as fh:
+                json.dump({"params": params}, fh)
+        from calibrate_phi import phi_run_provenance
+        return phi_run_provenance(tmp_path / "per_region.csv")
+
+    def test_roi_is_recorded(self, tmp_path):
+        got = self._run(tmp_path, {"region_px": 2048, "roi_dir": "/p/cortex",
+                                   "min_roi_fraction": 0.5,
+                                   "min_tissue_fraction": 0.25})
+        assert got["roi_dir"] == "/p/cortex"
+        assert got["region_px"] == 2048
+        assert got["summary"].endswith("summary.json")
+
+    def test_absence_of_roi_is_also_recorded(self, tmp_path, capsys):
+        """'no ROI key' and 'ROI not applied' must not be the same evidence as
+        'never looked'."""
+        self._run(tmp_path, {"region_px": 2048, "min_tissue_fraction": 0.25})
+        assert "ROI=none" in capsys.readouterr().out
+
+    def test_a_missing_summary_says_so(self, tmp_path, capsys):
+        assert self._run(tmp_path, None) == {}
+        assert "cannot be recorded" in capsys.readouterr().out
+
+    def test_a_corrupt_summary_does_not_kill_the_run(self, tmp_path, capsys):
+        (tmp_path / "per_region.csv").write_text("wsi\n")
+        (tmp_path / "summary.json").write_text("{not json")
+        from calibrate_phi import phi_run_provenance
+        assert phi_run_provenance(tmp_path / "per_region.csv") == {}
+        assert "could not read" in capsys.readouterr().out

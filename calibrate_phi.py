@@ -912,6 +912,47 @@ MOVED = ("--real_psr", "--real_lumen", "--he_masks", "--he_dir", "--strip_prefix
          "--tile_size", "--save_reference", "--reference_only")
 
 
+# Parameters of the phi run that decide WHAT A REGION IS. None of them are
+# arguments here — the grid arrives already built — so without this the
+# calibration output carries no record of, say, whether the kidney arm was
+# restricted to cortex. That is unanswerable from the result months later.
+PHI_RUN_PROVENANCE = ("region_px", "region_mm", "mpp", "min_tissue_fraction",
+                      "roi_dir", "min_roi_fraction", "he_masks", "he_dir",
+                      "lumen_root", "white_thresh", "min_object_px",
+                      "closing_px", "fold", "ensemble")
+
+
+def phi_run_provenance(phi_csv: Path) -> dict:
+    """How the regions were defined, read from the phi run's own summary.json.
+
+    `compute_phi_uncertainty.py` (and `aggregate_phi_uncertainty.py`, which
+    refuses to pool runs that disagree) writes it beside `per_region.csv`.
+    Copying it forward costs nothing and makes the calibration result
+    self-describing.
+    """
+    path = Path(phi_csv).parent / "summary.json"
+    if not path.is_file():
+        print(f"[note] no summary.json beside {Path(phi_csv).name}, so the phi "
+              f"run's region parameters (--roi_dir, --region_px, ...) cannot be "
+              f"recorded. The result will not say how its regions were defined.")
+        return {}
+    try:
+        with open(path) as fh:
+            params = json.load(fh).get("params", {})
+    except (OSError, ValueError) as exc:
+        print(f"[WARN] could not read {path}: {exc}")
+        return {}
+    keep = {k: params[k] for k in PHI_RUN_PROVENANCE if k in params}
+    roi = keep.get("roi_dir")
+    print(f"[phi run] regions: "
+          + (f"region_px={keep['region_px']}" if keep.get("region_px")
+             else f"region_mm={keep.get('region_mm')}")
+          + f"  min_tissue_fraction={keep.get('min_tissue_fraction')}"
+          + (f"  ROI={roi} (min_roi_fraction={keep.get('min_roi_fraction')})"
+             if roi else "  ROI=none — the grid covers the whole slide"))
+    return {"summary": str(path), **keep}
+
+
 def _check_moved_flags() -> None:
     import sys
     used = [f for f in MOVED if any(a == f or a.startswith(f + "=")
@@ -975,6 +1016,7 @@ def main() -> None:
 
     df = pd.read_csv(args.phi_csv)
     print(f"[1/2] {len(df)} regions over {df['wsi'].nunique()} WSI from {args.phi_csv}")
+    phi_prov = phi_run_provenance(args.phi_csv)
     ref, provenance = load_reference(args.reference_csv, df)
 
     t = pair(df, ref, args.prediction, args.n_folds)
@@ -1025,6 +1067,9 @@ def main() -> None:
         # recorded rather than re-derived — otherwise a result carries no trace
         # of the thresholds and mask directories behind its target.
         "reference": {"path": str(args.reference_csv), **provenance},
+        # what a region IS — none of it is an argument here, so it would
+        # otherwise be lost
+        "phi_run": phi_prov,
         "fold_agreement": agreement,
         "risk_coverage": rc,
         "within_slide": ws,

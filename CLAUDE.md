@@ -738,6 +738,21 @@ invisible in the output:
 reference, and `calibrate_phi.py` copies it into `summary.json`, so a result
 carries a trace of how its target was measured.
 
+**It also copies the φ run's own parameters forward**, under `phi_run` — read
+from the `summary.json` beside `--phi_csv`. `--roi_dir`, `--region_px` and
+`--min_tissue_fraction` belong to `compute_phi_uncertainty.py`, not here: the
+grid arrives already built. Without this, a calibration result cannot answer
+*"was the kidney arm restricted to cortex?"*, which is invisible in the numbers
+and decides whether the grid mixed cortex and medulla. The run prints it:
+
+```
+[phi run] regions: region_px=2048  min_tissue_fraction=0.25  ROI=/path/cortex_masks (min_roi_fraction=0.5)
+[phi run] regions: region_px=2048  min_tissue_fraction=0.25  ROI=none — the grid covers the whole slide
+```
+
+For runs that predate this, the φ parameters are in
+`<phi_uncertainty>/agg_phi/summary.json` under `params`.
+
 Outputs `per_region_calibration.csv`, `summary.json`, `calibration_phi.png` (the
 working panel) and, as the figure-quality pair, **`reliability_phi.png` plus
 `reliability_bins.csv`** — the diagram and the exact numbers behind every point,
