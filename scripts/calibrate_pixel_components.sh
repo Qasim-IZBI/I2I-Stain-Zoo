@@ -167,28 +167,26 @@ for COMP in total procedural data_exposure; do
 done
 
 # -----------------------------
-# 3. the three on one reliability figure
+# The reliability figure is NOT built here
 # -----------------------------
-# Per WSI here; pool the slides into one figure afterwards by repeating
-# --components / --error_dirs / --mask_dir, which is what makes the
-# slide-clustered interval mean anything.
-echo
-echo "--- reliability figure ---"
-ERR_CSV=$(IFS=,; echo "${ERROR_DIRS[*]}")
-run_cmd python "${PROJECT_ROOT}/plot_pixel_reliability.py" \
-    --components        "${OUTDIR}" \
-    --error_dirs        "${ERR_CSV}" \
-    --mask_dir          "${MASK_DIR}" \
-    --tiles_metadata    "${TEST_A}" \
-    --min_tissue_pixels "${MIN_TISSUE_PIXELS}" \
-    --outdir            "${OUTDIR}/reliability"
+# It pools every slide, so it is one job over all twenty rather than twenty
+# jobs over one. Built per WSI it would have n_slides = 1, and both of the
+# things that make it defensible fall away: cluster_bootstrap_rho needs three
+# slides to resample and returns NaN below that, and within_slide — the mu
+# partial — needs three and returns nothing. A figure with a rho and neither an
+# interval nor a confound control is not worth twenty copies.
+#
+#   sbatch I2I-Stain-Zoo/scripts/plot_pixel_reliability.sh
 
 echo
-echo "Done. WSI ${WSI_FOLDER} -> ${OUTDIR}/calibration_{total,procedural,data_exposure}/"
+echo "Done. WSI ${WSI_FOLDER} -> ${OUTDIR}/"
+echo "  {total,procedural,data_exposure}/raw_npy/  per-pixel component maps"
+echo "  calibration_{component}/                   per-WSI calibration"
 echo
-echo "Compare the three summary.json files. They share one error target, so a"
-echo "difference in rho is a difference between the SPREADS, not between the"
-echo "errors — which is the question the crossed grid exists to pose."
+echo "Once every WSI is decomposed, the pooled reliability figure — the one with"
+echo "a slide-clustered interval and the mu partial — is a single job:"
+echo "  sbatch ${PROJECT_ROOT}/scripts/plot_pixel_reliability.sh"
+echo
 echo "Check negative_data_fraction in the decomposition summary first: where"
 echo "data_exposure came out negative it is NaN and those pixels drop out, so a"
 echo "large fraction means its rho rests on fewer pixels than the other two."

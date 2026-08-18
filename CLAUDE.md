@@ -924,9 +924,23 @@ calibrations in one job per WSI.
 
 `plot_pixel_reliability.py` then puts all three on **one reliability figure**,
 the pixel counterpart of `calibrate_phi.py`'s — same slide-clustered bootstrap,
-same μ partial, same risk-coverage curve. The wrapper runs it per WSI; pool
-slides into a single figure by repeating `--components` / `--error_dirs` /
-`--mask_dir`, which is what makes the clustered interval mean anything.
+same μ partial, same risk-coverage curve.
+
+**Two jobs, and the split matters.** The decomposition is an array of 20 because
+it is memory-bound per WSI (fifty members live at once). The figure is a single
+job over **every** slide:
+
+```bash
+sbatch scripts/calibrate_pixel_components.sh   # --array=0-19, decompose
+sbatch scripts/plot_pixel_reliability.sh       # one job, all slides
+```
+
+Both statistics that make the figure defensible are *between*-slide: the
+bootstrap resamples slides, and `within_slide` computes ρ inside each and
+summarises over them. Both need at least three slides, so run per WSI they
+return NaN and nothing — twenty one-slide figures would each carry a ρ with no
+interval and no confound control. The wrapper refuses below three slides and
+names any it had to exclude.
 
 **The calibration line is E|e| = 0.461σ, not 0.80σ.** `uncertainty.py`'s σ is
 √(Σ per-channel variance) = √3·σ_c while the regen error is the **mean** over
