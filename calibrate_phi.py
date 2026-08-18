@@ -30,10 +30,13 @@ Outputs
 -------
 per_region_calibration.csv   mu, sd, reference, error and z per region x descriptor
 reliability_bins.csv         the reliability diagram's own data, per bin x component
+risk_coverage.csv            error vs coverage: what discarding the least certain
+                             regions buys, with the oracle ceiling
 summary.json                 Spearman rho, E|z|, ECE, reliability bins, provenance
 calibration_phi.png          working panel: reliability per descriptor + rho summary
 reliability_phi.png          reliability per descriptor, total / procedural /
                              data-exposure sigma overlaid
+risk_coverage.png            the selective-prediction curve — the headline figure
 """
 
 from __future__ import annotations
@@ -383,6 +386,160 @@ def series_style(label: str, idx: int) -> tuple:
     return C_FOLD[idx % len(C_FOLD)], M_FOLD[idx % len(M_FOLD)]
 
 
+def risk_coverage(t: pd.DataFrame, coverages, n_boot: int, seed: int) -> List[dict]:
+    """Selective prediction: keep the most certain regions, measure what remains.
+
+    The question a correlation coefficient invites and does not answer — rho =
+    0.22 is real but a reader is entitled to ask what it buys. This answers in
+    the units of the task: rank regions by sigma, discard the least certain,
+    and report the error over what is left.
+
+    Three reference points, and the figure needs all three:
+
+    * **random** selection has expected MAE equal to the overall MAE, exactly —
+      dropping a random subset changes nothing in expectation. So the curve's
+      departure from flat *is* the effect, and no Monte-Carlo baseline is needed
+      to establish it.
+    * **oracle**, ranking by the true error, is the ceiling. The fraction of it
+      achieved is the honest measure of how far this is from solved, and it
+      belongs beside every headline number.
+    * the **bootstrap CI**, resampling whole slides, decides whether the
+      reduction survives a cohort of twenty cases.
+    """
+    out = []
+    keys = [k for k in ("descriptor", "component", "prediction") if k in t.columns]
+    for key, g in t.groupby(keys, sort=False):
+        key = key if isinstance(key, tuple) else (key,)
+        meta = dict(zip(keys, key))
+        g = g.dropna(subset=["sd", "error"])
+        g = g[np.isfinite(g["sd"]) & np.isfinite(g["error"])]
+        if len(g) < 20:
+            continue
+        sd, err, wsi = (g["sd"].to_numpy(), g["error"].to_numpy(),
+                        g["wsi"].to_numpy())
+        base = float(err.mean())
+        order = np.argsort(sd, kind="stable")
+        by_sd = err[order]
+        by_err = np.sort(err)                      # the oracle ordering
+
+        u = np.unique(wsi)
+        idx = {x: np.where(wsi == x)[0] for x in u}
+        rng = np.random.default_rng(seed)
+        draws = None
+        if n_boot and len(u) >= 3:
+            draws = {c: [] for c in coverages}
+            for _ in range(n_boot):
+                pick = np.concatenate([idx[x] for x in
+                                       rng.choice(u, len(u), replace=True)])
+                s, e = sd[pick], err[pick]
+                b = e.mean()
+                if b <= 0:
+                    continue
+                es = e[np.argsort(s, kind="stable")]
+                for c in coverages:
+                    k = max(1, int(round(len(es) * c)))
+                    draws[c].append(es[:k].mean() / b - 1.0)
+
+        for c in coverages:
+            k = max(1, int(round(len(by_sd) * c)))
+            mae = float(by_sd[:k].mean())
+            omae = float(by_err[:k].mean())
+            rel = mae / base - 1.0 if base > 0 else float("nan")
+            orel = omae / base - 1.0 if base > 0 else float("nan")
+            row = {**meta, "coverage": float(c), "n_kept": int(k), "n": int(len(g)),
+                   "mae": mae,
+                   # random selection is unbiased, so this is exact rather than
+                   # simulated: the departure from it is the whole effect
+                   "mae_random": base,
+                   "mae_oracle": omae,
+                   "rel_change": float(rel),
+                   "rel_change_oracle": float(orel),
+                   # What fraction of the achievable gain the ensemble
+                   # captures. At full coverage both gains are zero and the
+                   # ratio is 0/0, which floating point renders as a confident
+                   # 100% — the one number here a reader must not misread.
+                   "capture_of_oracle": (float(rel / orel) if orel < -1e-9
+                                         else float("nan"))}
+            if draws is not None and len(draws[c]) >= max(20, n_boot // 10):
+                lo, hi = np.percentile(draws[c], [2.5, 97.5])
+                row["rel_ci_lo"], row["rel_ci_hi"] = float(lo), float(hi)
+            out.append(row)
+    return out
+
+
+def make_risk_coverage_figure(rc: List[dict], outpath: Path, title: str) -> None:
+    """Error against coverage, one panel per descriptor."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if not rc:
+        return
+    df = pd.DataFrame(rc)
+    order = [n for n in PHI_NAMES if n in set(df["descriptor"])]
+    if not order:
+        return
+    fig, axes = plt.subplots(1, len(order), figsize=(4.3 * len(order) + 0.6, 4.3),
+                             squeeze=False)
+    for k, name in enumerate(order):
+        ax = axes[0][k]
+        sub = df[df.descriptor == name]
+        series = list(dict.fromkeys(
+            sub["prediction"] if (sub["component"] == "procedural_within_fold").all()
+            else sub["component"]))
+        col = ("prediction" if (sub["component"] == "procedural_within_fold").all()
+               else "component")
+        for gi, s in enumerate(series):
+            gg = sub[sub[col] == s].sort_values("coverage")
+            colour, marker = series_style(s, gi)
+            ax.plot(gg["coverage"] * 100, gg["rel_change"] * 100, color=colour,
+                    marker=marker, markersize=5, linewidth=1.9, zorder=5,
+                    markeredgecolor="white", markeredgewidth=0.7,
+                    label=COMPONENT_LABEL.get(s, s))
+            if {"rel_ci_lo", "rel_ci_hi"} <= set(gg.columns):
+                ax.fill_between(gg["coverage"] * 100, gg["rel_ci_lo"] * 100,
+                                gg["rel_ci_hi"] * 100, color=colour, alpha=0.13,
+                                linewidth=0, zorder=2)
+        first = sub[sub[col] == series[0]].sort_values("coverage")
+        ax.plot(first["coverage"] * 100, first["rel_change_oracle"] * 100,
+                color=C_INK, linestyle=":", linewidth=1.5, zorder=4,
+                label="oracle (rank by true error)")
+        # random selection is unbiased, so its curve is exactly zero — the line
+        # every other curve has to beat
+        ax.axhline(0, color=C_MUTED, linewidth=1.3, linestyle="--", zorder=3,
+                   label="random / keep all")
+        ax.invert_xaxis()
+        ax.set_xlabel("coverage: % of regions kept", color=C_MUTED, fontsize=9)
+        if k == 0:
+            ax.set_ylabel("change in MAE vs keeping all (%)", color=C_MUTED,
+                          fontsize=9)
+        ax.set_title(name, color=C_INK, fontsize=10, loc="left", pad=8)
+        ax.grid(True, color=C_GRID, linewidth=0.8, zorder=0)
+        ax.set_axisbelow(True)
+        for s_ in ("top", "right"):
+            ax.spines[s_].set_visible(False)
+        for s_ in ("left", "bottom"):
+            ax.spines[s_].set_color(C_GRID)
+        ax.tick_params(colors=C_MUTED, labelsize=8.5)
+        if k == 0:
+            leg = ax.legend(frameon=False, fontsize=7, loc="lower left")
+            for txt in leg.get_texts():
+                txt.set_color(C_MUTED)
+
+    fig.suptitle(title, color=C_INK, fontsize=13, x=0.006, ha="left", y=0.985)
+    fig.text(0.006, 0.012,
+             "Discard the least certain regions and measure the error on what "
+             "remains. Below zero is useful. Random selection is unbiased, so its "
+             "curve is exactly the zero line; the gap to the dotted oracle is how "
+             "much of the achievable gain the ensemble captures. Bands are 95% "
+             "bootstrap, resampling slides.",
+             fontsize=7.5, color=C_MUTED)
+    fig.subplots_adjust(left=0.075, right=0.985, top=0.86, bottom=0.20)
+    fig.savefig(outpath, dpi=200, facecolor="white")
+    plt.close(fig)
+    print(f"wrote {outpath}")
+
+
 def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None:
     """Reliability per descriptor, with the variance components overlaid.
 
@@ -703,6 +860,12 @@ def main() -> None:
                          "both this and the shuffled control. [%(default)s]")
     ap.add_argument("--seed", type=int, default=0,
                     help="Seed for the bootstrap and the shuffled control.")
+    ap.add_argument("--coverages", type=float, nargs="*",
+                    default=[1.0, 0.9, 0.8, 0.7, 0.5],
+                    help="Fractions of regions to KEEP, most certain first, for "
+                         "the risk-coverage curve. This is what a correlation "
+                         "coefficient does not answer: what discarding the "
+                         "least certain regions actually buys. [%(default)s]")
 
     args = ap.parse_args()
 
@@ -722,6 +885,8 @@ def main() -> None:
     # restyled for the manuscript without re-running the calibration — and so
     # the numbers behind each point are quotable rather than only plotted.
     agreement = fold_agreement(rows)
+    rc = risk_coverage(t, sorted(args.coverages, reverse=True), args.n_boot,
+                       args.seed)
 
     bin_rows = [{"descriptor": r["descriptor"],
                  "component": r.get("component", "total"),
@@ -735,6 +900,11 @@ def main() -> None:
 
     make_figure(t, rows, args.outdir / "calibration_phi.png",
                 f"φ_struct calibration — {args.prediction} prediction")
+    if rc:
+        pd.DataFrame(rc).to_csv(args.outdir / "risk_coverage.csv", index=False)
+        make_risk_coverage_figure(
+            rc, args.outdir / "risk_coverage.png",
+            f"Selective prediction — {args.prediction} prediction")
     make_reliability_figure(rows, args.outdir / "reliability_phi.png",
                             f"φ_struct reliability — {args.prediction} prediction")
 
@@ -747,6 +917,7 @@ def main() -> None:
         # of the thresholds and mask directories behind its target.
         "reference": {"path": str(args.reference_csv), **provenance},
         "fold_agreement": agreement,
+        "risk_coverage": rc,
         "conventions": {
             "sigma": "predictive SD (spread of members), not the standard error "
                      "of the mean — sigma/sqrt(M) would be tiny and the test "
@@ -796,6 +967,29 @@ def main() -> None:
           "which\ntreats every region as independent. 'shuf' is the negative "
           "control: mean\n|rho| with the pairing broken, which must sit near 0 "
           "for rho to mean anything.")
+    if rc:
+        print("\n--- what does the uncertainty buy? (selective prediction) ---")
+        print("Discard the least certain regions, measure the error on what "
+              "remains. Random\nselection is unbiased, so 0% is exactly what "
+              "chance gives; the oracle column is\nthe ceiling, and the fraction "
+              "of it reached is how far this is from solved.\n")
+        df = pd.DataFrame(rc)
+        for (d, c), g in df.groupby(["descriptor", "component"], sort=False):
+            if c not in ("total", "procedural"):
+                continue
+            print(f"{d}  ({c})")
+            print(f"   {'keep':>6s} {'MAE':>9s} {'vs all':>18s} {'oracle':>8s} "
+                  f"{'captured':>9s}")
+            for r in g.sort_values("coverage", ascending=False).to_dict("records"):
+                ci = (f"[{r['rel_ci_lo']:+.1%},{r['rel_ci_hi']:+.1%}]"
+                      if "rel_ci_lo" in r and np.isfinite(r["rel_ci_lo"]) else "")
+                cap = (f"{r['capture_of_oracle']:>8.0%}"
+                       if np.isfinite(r.get("capture_of_oracle", np.nan)) else "     n/a")
+                print(f"   {r['coverage']:>6.0%} {r['mae']:>9.4f} "
+                      f"{r['rel_change']:>+7.1%} {ci:>18s} "
+                      f"{r['rel_change_oracle']:>+8.1%} {cap}")
+            print()
+
     if agreement:
         print("\n--- do the subsets agree? ---")
         print("Five subsets are five estimates of one quantity, so their SPREAD "

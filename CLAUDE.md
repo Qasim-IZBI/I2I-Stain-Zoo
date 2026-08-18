@@ -803,6 +803,27 @@ Two conventions that must be stated wherever the numbers are:
   whether the ensemble is calibrated, over-confident or useless — do not lead with
   it.
 
+**`risk_coverage.csv` / `risk_coverage.png` are the headline pair.** ρ answers
+whether σ ranks the error; this answers what that buys. Regions are sorted by σ,
+the least certain are discarded, and the error is measured on what remains, at
+each `--coverages` fraction (default 1.0 0.9 0.8 0.7 0.5).
+
+Three reference points, and all three belong in any statement of the result:
+
+- **Random selection is unbiased**, so its curve is *exactly* zero — no
+  Monte-Carlo baseline is needed, and the curve's departure from zero is the
+  effect.
+- **The oracle**, ranking by true error, is the ceiling. `capture_of_oracle` is
+  the fraction reached, and it is the honest measure of how far this is from
+  solved. It is NaN at full coverage, where the ratio is 0/0 and floating point
+  would otherwise render a confident 100%.
+- **The bootstrap CI** resamples whole slides, deciding whether the reduction
+  survives a cohort of twenty cases.
+
+On the UC liver cohort, CPA at 80% coverage: MAE −8.1%, CI [−14.9%, −3.3%],
+against an oracle of −41.2% — about a fifth of the achievable gain. The three
+topological descriptors sit flat on the random line at every coverage.
+
 **Quote the cluster-bootstrap CI, not the naive p.** `--n_boot` (default 2000)
 resamples whole *slides*: regions inside one are spatially correlated, so a p-value
 over ~2850 regions describes a cohort of twenty cases as if it held 2850. A slide

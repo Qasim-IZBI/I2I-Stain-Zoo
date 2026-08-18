@@ -287,6 +287,8 @@ this** — worth saying, since it justifies the 5×10 design over a 50-seed run.
 |---|---|---|
 | `floor_sweep.png` | `plot_floor_sweep.py` | floor ÷ signal against region size, with the evidence behind each point |
 | `floor.png` | `estimate_floor.py` | per-descriptor verdict, and the variogram it rests on |
+| `risk_coverage.png` | `calibrate_phi.py` | **the headline figure** — MAE vs coverage per descriptor, with the oracle ceiling and bootstrap bands |
+| `risk_coverage.csv` | `calibrate_phi.py` | its numbers, incl. `capture_of_oracle` |
 | `reliability_phi.png` | `calibrate_phi.py` | **the reliability diagram** — one panel per descriptor, total / procedural / data-exposure σ overlaid against the same error |
 | `reliability_bins.csv` | `calibrate_phi.py` | the numbers behind that figure, one row per descriptor × bin |
 | `calibration_phi.png` | `calibrate_phi.py` | working panel: reliability per descriptor + a ρ summary |

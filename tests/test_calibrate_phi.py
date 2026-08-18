@@ -390,3 +390,77 @@ class TestPerFoldScoring:
         without = score(t.drop(columns=["prediction"]), 5)
         assert len(with_pred) == len(without) == 1
         assert with_pred[0]["spearman_rho"] == pytest.approx(without[0]["spearman_rho"])
+
+
+class TestRiskCoverage:
+    """Selective prediction: keep the most certain regions, measure what remains.
+
+    The question rho invites and does not answer. rho = 0.22 is real but a reader
+    is entitled to ask what it buys; this answers in the units of the task.
+    """
+
+    @staticmethod
+    def _table(sd, err, n_wsi=6):
+        n = len(sd)
+        return pd.DataFrame({
+            "descriptor": "task_specific_value", "component": "total",
+            "prediction": "grand",
+            "wsi": [f"w{i % n_wsi}" for i in range(n)],
+            "region_index": range(n), "sd": sd, "error": err,
+            "z": np.asarray(err) / np.asarray(sd)})
+
+    def test_full_coverage_is_a_no_op(self):
+        from calibrate_phi import risk_coverage
+        rng = np.random.default_rng(0)
+        sd = np.abs(rng.normal(2, 0.5, 300))
+        r = risk_coverage(self._table(sd, sd * np.abs(rng.normal(0, 1, 300))),
+                          [1.0], 0, 0)[0]
+        assert r["rel_change"] == pytest.approx(0.0, abs=1e-9)
+        assert r["mae"] == pytest.approx(r["mae_random"])
+        # 0/0 renders as a confident 100% in floating point — the one number
+        # here a reader must not misread
+        assert np.isnan(r["capture_of_oracle"])
+
+    def test_a_perfect_uncertainty_matches_the_oracle(self):
+        from calibrate_phi import risk_coverage
+        err = np.linspace(0.1, 5.0, 300)
+        r = risk_coverage(self._table(err.copy(), err), [0.8], 0, 0)[0]
+        assert r["rel_change"] == pytest.approx(r["rel_change_oracle"])
+        assert r["capture_of_oracle"] == pytest.approx(1.0)
+
+    def test_a_useless_uncertainty_buys_nothing(self):
+        from calibrate_phi import risk_coverage
+        rng = np.random.default_rng(1)
+        err = np.abs(rng.normal(1, 0.3, 2000))
+        sd = rng.permutation(err)              # independent of the error
+        r = risk_coverage(self._table(sd, err), [0.8], 0, 0)[0]
+        assert abs(r["rel_change"]) < 0.05
+        assert r["rel_change_oracle"] < -0.1   # the ceiling is still there
+
+    def test_the_oracle_is_never_beaten(self):
+        """Ranking by true error is the ceiling by construction, so no sigma can
+        do better. A violation would mean the selection is not what it claims."""
+        from calibrate_phi import risk_coverage
+        rng = np.random.default_rng(2)
+        sd = np.abs(rng.normal(2, 0.6, 500))
+        err = sd * np.abs(rng.normal(0, 1, 500))
+        for r in risk_coverage(self._table(sd, err), [0.9, 0.8, 0.5], 0, 0):
+            assert r["rel_change"] >= r["rel_change_oracle"] - 1e-12
+
+    def test_random_selection_is_the_overall_mean(self):
+        """Not simulated: dropping a random subset changes nothing in
+        expectation, so the curve's departure from it IS the effect."""
+        from calibrate_phi import risk_coverage
+        rng = np.random.default_rng(3)
+        sd = np.abs(rng.normal(2, 0.5, 400))
+        err = sd * np.abs(rng.normal(0, 1, 400))
+        for r in risk_coverage(self._table(sd, err), [0.9, 0.5], 0, 0):
+            assert r["mae_random"] == pytest.approx(err.mean())
+
+    def test_bootstrap_resamples_slides(self):
+        from calibrate_phi import risk_coverage
+        rng = np.random.default_rng(4)
+        sd = np.abs(rng.normal(2, 0.6, 600))
+        err = sd * np.abs(rng.normal(0, 1, 600))
+        r = risk_coverage(self._table(sd, err, n_wsi=8), [0.8], 500, 0)[0]
+        assert r["rel_ci_lo"] <= r["rel_change"] <= r["rel_ci_hi"]
