@@ -900,6 +900,51 @@ prediction); `--prediction fold` pairs each subset's mean with its procedural sp
 alone. Comparing them is the data-exposure claim, which a flat seed-only ensemble
 cannot pose.
 
+#### Pixel-level procedural vs data-exposure
+
+`uncertainty.py` takes the spread across the members of **one** ensemble, which
+on the crossed grid is one training subset — so it measures procedural
+uncertainty and cannot see the other half. `decompose_pixel_uncertainty.py`
+reads all K subsets at once and splits each pixel by the law of total variance:
+
+```bash
+sbatch scripts/calibrate_pixel_components.sh     # --array=0-19, one per WSI
+
+python decompose_pixel_uncertainty.py \
+    --fold /path/{block}/model_small/inference   # repeat, one per subset \
+    --data_range 1,1 --output ./pixel_components/
+```
+
+Writes `total/`, `procedural/` and `data_exposure/`, each with a `raw_npy/` in
+the same layout and units as `uncertainty.py`, so all three feed
+`uncertainty_calibration.py` unchanged and can be scored against the **same**
+cycle error — a difference in ρ is then a difference between the spreads, not
+between the errors. The SLURM wrapper does the decomposition and all three
+calibrations in one job per WSI.
+
+Three things that will otherwise surprise:
+
+- **The estimator matches `uncertainty_phi/decompose.py` exactly**, including
+  both corrections: `ddof=1` within a subset, and subtracting `σ²_proc / n₀`
+  from the spread of subset means. Without the second, procedural leaks into
+  data — verified on synthetic grids, where the uncorrected estimate is high by
+  precisely `procedural/n₀`.
+- **Additivity holds in VARIANCE, not SD**: σ_total² = σ_proc² + σ_data², so
+  σ_total < σ_proc + σ_data. The maps are √(Σ per-channel variance), the same
+  convention `uncertainty.py` writes.
+- **The data component is negative wherever the true between-subset variance is
+  near zero**, which for an unbiased estimator is about half the time when it is
+  truly zero. It is reported as NaN, not clipped — NaN says "not defined here"
+  where zero would say "no uncertainty here". `uncertainty_calibration.py`
+  excludes non-finite pixels like non-tissue ones and counts them as
+  `n_nonfinite_pixels_dropped`; a large count means that component's ρ rests on
+  fewer pixels than the others.
+
+**One block's regen error is chosen as the target**, not an average across
+blocks. Cycle error is a property of a model's forward/inverse pair and does not
+decompose into these components; averaging it would pair a grand-mean error with
+a within-subset σ. `REGEN_BLOCK` selects which.
+
 #### Cycle error vs ensemble spread — the head-to-head
 
 The paper's central contrast is that the cheap self-consistency proxy fails

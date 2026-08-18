@@ -284,6 +284,7 @@ def main():
     # ---- per-tile pass ----
     rows: list[dict] = []
 
+    n_dropped = 0
     for stem in tqdm(common, desc="Tiles"):
         u_full = np.load(args.uncertainty_dir / f"{stem}.npy").astype(np.float64)
         e_full = load_error_map(args.error_dirs, stem)
@@ -299,6 +300,18 @@ def main():
                 warnings.warn(f"No mask for {stem}; skipping.")
                 continue
             mask = load_tissue_mask(mpath, u_full.shape)
+
+        # A pixel with no finite uncertainty or error cannot enter a rank
+        # correlation, and it is not the same thing as a zero. This is the
+        # normal case for a variance COMPONENT: the ANOVA data-exposure term is
+        # negative wherever the true between-subset variance is near zero, and
+        # decompose_pixel_uncertainty.py stores NaN there rather than clipping.
+        # Without this the whole run dies inside scipy with "array must not
+        # contain infs or NaNs", naming neither the tile nor the reason.
+        finite = np.isfinite(u_full) & np.isfinite(e_full)
+        if not finite.all():
+            n_dropped += int((~finite & mask).sum())
+            mask = mask & finite
 
         n_tissue = int(mask.sum())
         if n_tissue < args.min_tissue_pixels:
@@ -395,6 +408,8 @@ def main():
             "n_bins":            args.n_bins,
             "reliability_granularity": "tile_means",
             "min_tissue_pixels": args.min_tissue_pixels,
+            # tissue pixels excluded for a non-finite u or e — see above
+            "n_nonfinite_pixels_dropped": n_dropped,
         },
     }
 
