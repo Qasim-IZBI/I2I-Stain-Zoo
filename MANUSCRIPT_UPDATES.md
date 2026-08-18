@@ -248,6 +248,48 @@ its uncertainty means anything — and the 50-member ensemble is better calibrat
 than any 10-member subset within it. That is an argument for the full crossed
 grid, and it is the claim a flat seed-only ensemble cannot make.
 
+### Kidney / OOD arm (2026-08-18) — 1725 regions, 20 cases
+
+Run **without** `--roi_dir` (no cortex annotations exist), region_px 2048, same
+reference pipeline as liver with an OOD-specific PSR mask set and tissue mask.
+
+| | liver (in-dist) | kidney (OOD) |
+|---|---|---|
+| mean σ | 0.069 | 0.082 (**×1.18**) |
+| mean \|error\| | 0.040 | 0.130 (**×3.28**) |
+| E\|z\|/0.80 | 0.71 | **2.07** |
+| within-slide ρ, partialled on μ | +0.150, p = 0.006 | **+0.001, p = 0.93** |
+| slides where the model under-predicts | 14/20 | **20/20** |
+| share of mean \|error\| that is a constant offset | 49% | **98%** |
+
+**Three findings, in decreasing robustness.**
+
+1. **The ensemble does not know it is out of distribution.** Error grew 3.3×, σ
+   grew 1.18×. σ is computed from the members alone, so this needs **no
+   reference** and is immune to the segmenter question below. It is the kidney
+   result to report if only one can be.
+2. **There was nothing left to calibrate.** 98% of the mean absolute error is a
+   fixed offset and the model under-predicts on 20/20 slides. No uncertainty
+   measure can rank a constant, so phrase this as *the error became systematic*,
+   not as *uncertainty fails OOD* — the latter over-claims.
+3. **Do not report the pooled ρ = −0.354 "anti-calibration".** It survives
+   neither the within-slide cut nor the μ control, and is the same ecological
+   artefact as the pooled fold result.
+
+**The blocker on findings 2–3.** `Dataset314_SR_light` is liver-trained and
+unvalidated on kidney. One segmenter across both arms cancels anatomy-driven
+error but **not appearance-driven** error, and appearance is exactly where real
+and virtual kidney differ. So the 0.128 CPA offset is either the model failing or
+the measurement failing, and §6.2 has not been run. `stain_sensitivity.py` bounds
+it; eyeball the masks first, it is free.
+
+**Missing cortex restriction does not drive any of this**, tested rather than
+assumed: kidney region CPA shows no two-population signature (CV 0.25, *below*
+liver's 0.36), and restricting to the central 50% of regions by μ within each
+slide leaves the null unchanged (partial ρ −0.016, p = 0.57) and σ/|error|
+identical at 0.66. The proxy is homogeneity, not cortex, so state it as a
+robustness check rather than as equivalent to the annotation.
+
 ### THE CONFOUND, and what the claim must become (2026-08-18)
 
 σ is strongly a proxy for how much collagen a region holds: **ρ(σ, μ_CPA) =
