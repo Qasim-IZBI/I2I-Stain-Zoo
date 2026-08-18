@@ -383,7 +383,20 @@ python aggregate_uncertainty.py \
     --outdir          ./uncertainty_out/cyclegan/per_wsi_csv/
 
 python plot_uncertainty_boxplot.py --base /path/to/ensemble --outdir ./uncertainty_boxplot/
+
+# Any layout without the scaling study's {model}/data_large/{size}/ tree —
+# the UGAC and grid chains group by TRAINING SUBSET, not by model family
+python plot_uncertainty_boxplot.py \
+    --group data_001_007=/path/{block}/model_small/uncertainty/cyclegan/per_wsi_csv \
+    --group data_008_014=... --outdir ./uncertainty_boxplot/
+sbatch scripts/plot_uncertainty_boxplot.sh    # builds the five --group args
 ```
+
+`--group LABEL=PATH` takes the `per_wsi_csv` directory directly and preserves the
+order given, so the script needs to know no layout at all. The wrapper refuses to
+plot when any block is missing: a block silently absent from the figure is worse
+than a failed job, because the plot still renders and reads as a complete
+comparison of whatever survived.
 
 `aggregate_uncertainty.py` writes one CSV per WSI (`tile_name, mean_uncertainty`),
 deriving WSI membership from the `NNN/` component of the npy path so tile IDs

@@ -1,4 +1,8 @@
-"""Boxplot and violin plot of per-tile mean uncertainty for each model family.
+"""Boxplot and violin plot of per-tile mean uncertainty per group.
+
+Groups are the six model families of the scaling study by default, or whatever
+`--group LABEL=/path/to/per_wsi_csv` names — the UGAC and grid chains compare one
+family across five training subsets, and their tree has no `data_large` level.
 
 Produces:
   - One pooled figure (all WSIs combined) for box and violin
@@ -50,6 +54,59 @@ MODEL_SIZES = {
 }
 
 DEFAULT_BASE = Path("/work2/bz66izin-VSproject/ensemble")
+
+
+# ---------------------------------------------------------------------------
+# Explicit groups
+# ---------------------------------------------------------------------------
+
+def parse_groups(specs: list[str]) -> tuple[list[str], dict[str, str],
+                                            dict[str, Path]]:
+    """Parse `LABEL=/path/to/per_wsi_csv` pairs, preserving the order given.
+
+    The default layout above compares the six model FAMILIES of the scaling
+    study, whose paths are fixed. Other studies group the same quantity by
+    something else — the UGAC and grid chains hold one family across five
+    training subsets — and their tree has no `data_large` level. Rather than
+    teach this script every layout, the caller names the groups.
+    """
+    order: list[str] = []
+    display: dict[str, str] = {}
+    dirs: dict[str, Path] = {}
+    for spec in specs:
+        if "=" not in spec:
+            raise SystemExit(
+                f"--group expects LABEL=PATH, got {spec!r}. The path is the "
+                f"per_wsi_csv directory aggregate_uncertainty.py wrote."
+            )
+        label, path = spec.split("=", 1)
+        label = label.strip()
+        if not label or not path.strip():
+            raise SystemExit(f"--group has an empty label or path: {spec!r}")
+        if label in dirs:
+            raise SystemExit(f"--group label {label!r} given twice")
+        order.append(label)
+        display[label] = label
+        dirs[label] = Path(path.strip())
+    return order, display, dirs
+
+
+def load_from_dirs(dirs: dict[str, Path]) -> dict[str, dict[str, np.ndarray]]:
+    """Same as `load_all_data`, but for explicitly named per_wsi_csv dirs."""
+    all_data: dict[str, dict[str, np.ndarray]] = {}
+    for label, csv_dir in dirs.items():
+        wsi_data: dict[str, np.ndarray] = {}
+        if not csv_dir.exists():
+            print(f"  [WARN] Not found: {csv_dir}")
+        else:
+            for csv_path in sorted(csv_dir.glob("*.csv")):
+                vals = (pd.read_csv(csv_path, usecols=["mean_uncertainty"])
+                        ["mean_uncertainty"].dropna().to_numpy())
+                wsi_data[csv_path.stem] = vals
+            n_tiles = sum(len(v) for v in wsi_data.values())
+            print(f"  {label}: {n_tiles:,} tiles from {len(wsi_data)} WSI(s)")
+        all_data[label] = wsi_data
+    return all_data
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +279,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description="Box and violin plots of per-tile uncertainty per model family."
     )
+    ap.add_argument("--group", action="append", default=None, metavar="LABEL=PATH",
+                    help="Compare explicitly named groups instead of the six "
+                         "model families. PATH is a per_wsi_csv directory. "
+                         "Repeat once per group; order is preserved. Use this "
+                         "for any layout without the scaling study's "
+                         "{model}/data_large/{size}/ tree — the UGAC and grid "
+                         "chains group by training subset, not by family.")
     ap.add_argument("--base", type=Path, default=DEFAULT_BASE,
                     help=f"Ensemble root directory (default: {DEFAULT_BASE})")
     ap.add_argument("--outdir", type=Path, default=Path("uncertainty_boxplot"),
@@ -231,7 +295,14 @@ def main() -> None:
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     print("Loading uncertainty CSVs …")
-    all_data = load_all_data(args.base)
+    if args.group:
+        # The group list IS these two constants, so redefining the groups means
+        # rebinding them — every helper below reads them at call time.
+        global MODELS, MODEL_DISPLAY_NAMES
+        MODELS, MODEL_DISPLAY_NAMES, dirs = parse_groups(args.group)
+        all_data = load_from_dirs(dirs)
+    else:
+        all_data = load_all_data(args.base)
 
     pooled = pool_across_wsis(all_data)
     if all(len(v) == 0 for v in pooled.values()):
