@@ -761,8 +761,18 @@ as zero on half the regions is a finding about the ensemble rather than a missin
 measurement.
 
 `--prediction fold` is a different *prediction*, not a fourth component: it pairs
-each subset's mean with that subset's own procedural spread. Both are worth
-running.
+each subset's mean with that subset's own procedural spread. **Each subset is
+scored separately** — five ρ per descriptor, plus an agreement block giving their
+median, range and whether the sign is consistent.
+
+Pooling the five would be worse than merely optimistic. Every region enters five
+times against **one shared target**, so it adds no evidence; and because subsets
+sit at different σ *and* different error levels, pooling induces a between-subset
+trend that exists inside no subset. On the UC liver run the pooled β₀ came out at
+ρ = +0.312 while the five subsets gave +0.015, −0.017, +0.109, +0.123, +0.091 —
+**larger than any of them**. Read the agreement block first: a descriptor whose ρ
+changes sign between subsets has not been shown to calibrate, however tight a
+pooled interval looks.
 
 Three things the reliability figure does that the compact panel does not, each
 because the compact one can mislead:

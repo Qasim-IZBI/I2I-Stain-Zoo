@@ -78,6 +78,7 @@ COMPONENT_LABEL = {
     "procedural": "procedural σ (seed)",
     "data_exposure": "data-exposure σ (subset)",
     "procedural_within_fold": "procedural σ, per subset",
+    **{f"fold{i}": f"subset {i}" for i in range(1, 21)},
 }
 
 
@@ -184,14 +185,23 @@ def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[
     """Per descriptor x variance component: does sd rank error, and is its scale
     right?"""
     rows = []
-    keys = (["descriptor", "component"] if "component" in t.columns
-            else ["descriptor"])
+    # `prediction` joins the keys so each subset is scored on its own. Pooling
+    # the five would enter every region five times against ONE shared target,
+    # which is not five observations of anything: it narrows the interval
+    # without adding evidence. In `grand` mode the column is constant, so
+    # including it changes nothing there.
+    keys = ["descriptor"]
+    if "component" in t.columns:
+        keys.append("component")
+    if "prediction" in t.columns:
+        keys.append("prediction")
     for key, g in t.groupby(keys, sort=False):
         # groupby on a LIST of keys yields a tuple even when the list holds one
         # element, so this cannot unpack a fixed pair.
         key = key if isinstance(key, tuple) else (key,)
         name = key[0]
         component = key[1] if len(key) > 1 else "total"
+        prediction = key[2] if len(key) > 2 else "grand"
         n_raw = int(len(g))
         g = g.dropna(subset=["sd", "error"])
         g = g[np.isfinite(g["sd"]) & np.isfinite(g["error"]) & (g["sd"] > 0)]
@@ -203,6 +213,7 @@ def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[
         dropped = n_raw - int(len(g))
         if len(g) < 3:
             rows.append({"descriptor": name, "component": component,
+                         "prediction": prediction,
                          "n": int(len(g)), "n_dropped": dropped,
                          "note": "too few finite regions to score"})
             continue
@@ -255,6 +266,7 @@ def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[
         rows.append({
             "descriptor": name,
             "component": component,
+            "prediction": prediction,
             "reference_class": (PHI_REFERENCE[PHI_NAMES.index(name)]
                                 if name in PHI_NAMES else None),
             "n": int(len(g)),
@@ -298,8 +310,46 @@ def score(t: pd.DataFrame, n_bins: int, n_boot: int = 0, seed: int = 0) -> List[
         PHI_NAMES.index(r["descriptor"]) if r["descriptor"] in PHI_NAMES else 99,
         comp_order.index(r.get("component", "total"))
         if r.get("component", "total") in comp_order else 99,
+        str(r.get("prediction", "")),
     ))
     return rows
+
+
+def fold_agreement(rows: List[dict]) -> List[dict]:
+    """Do the subsets agree, and what does pooling them cost?
+
+    Five subsets give five estimates of the same quantity, so their SPREAD is
+    the evidence — a descriptor whose rho swings sign between subsets has not
+    been shown to calibrate, however tight the pooled interval looks. Pooling is
+    reported alongside, explicitly labelled, because it is what a reader would
+    otherwise compute and it is anti-conservative here: every region enters five
+    times against one shared target.
+    """
+    out = []
+    per_desc: Dict[str, list] = {}
+    for r in rows:
+        if r.get("component") != "procedural_within_fold" or "spearman_rho" not in r:
+            continue
+        per_desc.setdefault(r["descriptor"], []).append(r)
+    for name, rs in per_desc.items():
+        rhos = np.array([r["spearman_rho"] for r in rs], float)
+        rhos = rhos[np.isfinite(rhos)]
+        if rhos.size == 0:
+            continue
+        signs = set(np.sign(rhos[rhos != 0]).tolist())
+        out.append({
+            "descriptor": name,
+            "n_folds": int(rhos.size),
+            "rho_median": float(np.median(rhos)),
+            "rho_min": float(rhos.min()),
+            "rho_max": float(rhos.max()),
+            "rho_range": float(rhos.max() - rhos.min()),
+            # the readout: subsets disagreeing on the SIGN have not shown
+            # anything, whatever a pooled interval says
+            "consistent_sign": bool(len(signs) <= 1),
+            "folds": {r["prediction"]: float(r["spearman_rho"]) for r in rs},
+        })
+    return out
 
 
 # One colour per variance component, held fixed across every panel and every
@@ -313,6 +363,24 @@ C_COMPONENT = {
 }
 M_COMPONENT = {"total": "o", "procedural": "s", "data_exposure": "^",
                "procedural_within_fold": "D"}
+
+# In fold mode the curves are the five subsets, not the three components, so the
+# series key changes. Sequential colours rather than categorical ones: the folds
+# are five draws of one thing, where the components are three different things.
+C_FOLD = ("#1b4a8f", "#2a78d6", "#5aa0e6", "#8fbfe8", "#b9d7f2")
+M_FOLD = ("o", "s", "^", "D", "v")
+
+
+def series_of(r: dict) -> str:
+    """Which curve a scored row belongs to — component, or subset in fold mode."""
+    comp = r.get("component", "total")
+    return r.get("prediction", "grand") if comp == "procedural_within_fold" else comp
+
+
+def series_style(label: str, idx: int) -> tuple:
+    if label in C_COMPONENT:
+        return C_COMPONENT[label], M_COMPONENT.get(label, "o")
+    return C_FOLD[idx % len(C_FOLD)], M_FOLD[idx % len(M_FOLD)]
 
 
 def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None:
@@ -357,7 +425,8 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
     comp_order = [c for c, _ in COMPONENTS] + ["procedural_within_fold"]
     for n in by_desc:
         by_desc[n].sort(key=lambda r: (comp_order.index(r.get("component", "total"))
-                                       if r.get("component") in comp_order else 99))
+                                       if r.get("component") in comp_order else 99,
+                                       str(r.get("prediction", ""))))
 
     ncol = len(order)
     fig = plt.figure(figsize=(4.6 * ncol + 0.8, 6.8))
@@ -384,14 +453,14 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
         ax.plot([0, xhi], [0, xhi * HALF_NORMAL], color=C_MUTED, linewidth=1.4,
                 linestyle="--", zorder=3, label="calibrated  E|e| = 0.80σ")
 
-        for r in group:
-            comp = r.get("component", "total")
+        for gi, r in enumerate(group):
+            comp = series_of(r)
+            colour, marker = series_style(comp, gi)
             b = r["bins"]
             x = np.array([d["mean_sd"] for d in b])
             y = np.array([d["mean_error"] for d in b])
             se = np.array([d.get("se_error_by_case", np.nan) for d in b], float)
-            ax.errorbar(x, y, yerr=se, color=C_COMPONENT.get(comp, C_MUTED),
-                        linewidth=1.9, marker=M_COMPONENT.get(comp, "o"),
+            ax.errorbar(x, y, yerr=se, color=colour, linewidth=1.9, marker=marker,
                         markersize=5.5, capsize=3, elinewidth=1.1, zorder=5,
                         markeredgecolor="white", markeredgewidth=0.8,
                         label=COMPONENT_LABEL.get(comp, comp))
@@ -409,7 +478,8 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
         ax.set_title(name, color=C_INK, fontsize=10, loc="left",
                      pad=10 + 10.5 * len(group))
         for gi, r in enumerate(group):
-            comp = r.get("component", "total")
+            comp = series_of(r)
+            colour, _ = series_style(comp, gi)
             rho = r["spearman_rho"]
             txt = f"{COMPONENT_LABEL.get(comp, comp).split(' σ')[0]:<14s}"
             if np.isfinite(rho):
@@ -425,7 +495,7 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
                 txt += f"   ({r['n_dropped']} of {r['n'] + r['n_dropped']} no σ)"
             ax.text(0.0, 1.005 + 0.042 * (len(group) - 1 - gi), txt,
                     transform=ax.transAxes, fontsize=6.6,
-                    color=C_COMPONENT.get(comp, C_MUTED), family="monospace")
+                    color=colour, family="monospace")
         ax.grid(True, color=C_GRID, linewidth=0.8, zorder=0)
         ax.set_axisbelow(True)
         for s in ("top", "right"):
@@ -440,10 +510,10 @@ def make_reliability_figure(rows: List[dict], outpath: Path, title: str) -> None
         axb = fig.add_subplot(gs[1, k])
         width = 0.8 / max(1, len(group))
         for gi, r in enumerate(group):
-            comp = r.get("component", "total")
+            colour, _ = series_style(series_of(r), gi)
             n = np.array([d["n"] for d in r["bins"]])
             pos = np.arange(len(n)) + (gi - (len(group) - 1) / 2) * width
-            axb.bar(pos, n, width=width, color=C_COMPONENT.get(comp, C_MUTED),
+            axb.bar(pos, n, width=width, color=colour,
                     alpha=0.42, zorder=3, edgecolor="white", linewidth=0.5)
             if gi == 0:
                 for i, (cnt, cases) in enumerate(
@@ -651,8 +721,11 @@ def main() -> None:
     # The reliability diagram's own data, flat, so the figure can be rebuilt or
     # restyled for the manuscript without re-running the calibration — and so
     # the numbers behind each point are quotable rather than only plotted.
+    agreement = fold_agreement(rows)
+
     bin_rows = [{"descriptor": r["descriptor"],
                  "component": r.get("component", "total"),
+                 "fold": r.get("prediction", "grand"),
                  "reference_class": r["reference_class"],
                  "prediction": args.prediction, **b}
                 for r in rows if r.get("bins") for b in r["bins"]]
@@ -673,6 +746,7 @@ def main() -> None:
         # recorded rather than re-derived — otherwise a result carries no trace
         # of the thresholds and mask directories behind its target.
         "reference": {"path": str(args.reference_csv), **provenance},
+        "fold_agreement": agreement,
         "conventions": {
             "sigma": "predictive SD (spread of members), not the standard error "
                      "of the mean — sigma/sqrt(M) would be tiny and the test "
@@ -687,16 +761,21 @@ def main() -> None:
         json.dump(payload, fh, indent=2)
 
     print("\n=== φ_struct calibration ===")
-    print(f"{'descriptor':24s} {'component':>14s} {'n':>6s} {'rho':>7s} "
+    fold_mode = any(r.get("component") == "procedural_within_fold" for r in rows)
+    col = "subset" if fold_mode else "component"
+    print(f"{'descriptor':24s} {col:>14s} {'n':>6s} {'rho':>7s} "
           f"{'95% CI (by case)':>18s} {'shuf':>6s} {'E|z|/0.80':>10s}")
     last = None
+    last_desc_seen = None
     for r in rows:
-        comp = r.get("component", "total")
-        # group by descriptor so the three components read as one block
+        comp = series_of(r)
+        # group by descriptor so the components/subsets read as one block
         if last is not None and r["descriptor"] != last:
             print()
         last = r["descriptor"]
-        shown = r["descriptor"] if comp in ("total", "procedural_within_fold") else ""
+        first = (last_desc_seen != r["descriptor"])
+        last_desc_seen = r["descriptor"]
+        shown = r["descriptor"] if first else ""
         if "spearman_rho" not in r:
             print(f"{shown:24s} {comp:>14s} {r['n']:>6d}   {r.get('note', '')}")
             continue
@@ -717,6 +796,22 @@ def main() -> None:
           "which\ntreats every region as independent. 'shuf' is the negative "
           "control: mean\n|rho| with the pairing broken, which must sit near 0 "
           "for rho to mean anything.")
+    if agreement:
+        print("\n--- do the subsets agree? ---")
+        print("Five subsets are five estimates of one quantity, so their SPREAD "
+              "is the evidence.\nA descriptor whose rho changes sign between "
+              "subsets has not been shown to calibrate,\nhowever tight a pooled "
+              "interval would look — and pooling is anti-conservative here,\n"
+              "since every region enters five times against one shared target.\n")
+        print(f"{'descriptor':24s} {'median':>8s} {'min':>8s} {'max':>8s} "
+              f"{'range':>8s}  verdict")
+        for a in agreement:
+            verdict = ("consistent sign" if a["consistent_sign"]
+                       else "SIGN FLIPS between subsets")
+            print(f"{a['descriptor']:24s} {a['rho_median']:>+8.3f} "
+                  f"{a['rho_min']:>+8.3f} {a['rho_max']:>+8.3f} "
+                  f"{a['rho_range']:>8.3f}  {verdict}")
+
     if any(r.get("component") in ("procedural", "data_exposure") for r in rows):
         print("\nThe three components share ONE prediction, so the error is "
               "identical across\nthem and only sigma changes. Whichever gives "

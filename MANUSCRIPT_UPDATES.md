@@ -219,9 +219,34 @@ Do **not** quote the naive p (1.3e-31 for CPA). It treats 2850 regions as
 independent when they come from 20 cases. `--n_boot` resamples whole slides;
 quote that CI. The shuffled control must sit near 0.
 
-**The three nulls are the reason to run `--prediction fold` next** — if
-data-exposure spread is what carries the signal, the fold comparison is where it
-shows.
+**Component comparison (2026-08-18).** All three σ are scored against the same
+error, so only σ moves:
+
+| CPA | ρ | 95% CI (by case) | E\|z\|/0.80 |
+|---|---|---|---|
+| total | +0.217 | [+0.107, +0.329] | 0.71 |
+| **procedural** | **+0.274** | **[+0.149, +0.376]** | **1.01** |
+| data-exposure | +0.169 | [+0.037, +0.307] | 1.10 |
+
+All three exclude zero; the shuffled control is 0.015. Two separable claims:
+procedural σ **ranks** best, while data-exposure σ **scales** best — its bin
+ratios are flat across the σ range (1.22, 1.02, 1.08, 1.07, 1.19, 1.01, 0.93,
+0.94, 0.97, 0.93) where procedural drifts 0.66 → 1.22. Data exposure is ~50% of
+region-level CPA variance (median 0.508, IQR 0.44–0.57).
+
+**Subset-level (`--prediction fold`), scored per subset.** Do NOT pool: subsets
+sit at different σ and different error levels, so pooling induces a between-subset
+trend present in none of them. Pooled β₀ read ρ = +0.312 against per-subset
++0.015, −0.017, +0.109, +0.123, +0.091 — larger than any subset. Per subset, CPA
+gives +0.018, −0.055, +0.275, +0.318, −0.029: **the sign flips**, and only two of
+five subsets calibrate.
+
+The scale numbers are the more interesting half: subsets 1, 2 and 5 are
+over-confident by 3.3–4.1×, subsets 3 and 4 are near-calibrated (0.65, 1.48). So
+*which seven slides a member saw* determines not only its prediction but whether
+its uncertainty means anything — and the 50-member ensemble is better calibrated
+than any 10-member subset within it. That is an argument for the full crossed
+grid, and it is the claim a flat seed-only ensemble cannot make.
 
 ### The secondary claim the crossed grid uniquely supports
 

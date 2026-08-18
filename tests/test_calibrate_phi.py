@@ -315,3 +315,78 @@ class TestVarianceComponents:
         assert names == sorted(names, key=names.index)      # contiguous blocks
         assert [r["component"] for r in rows[:3]] == ["total", "procedural",
                                                       "data_exposure"]
+
+
+class TestPerFoldScoring:
+    """Each subset is scored on its own, never pooled into one rho.
+
+    Pooling enters every region five times against ONE shared target, so it adds
+    no evidence — and worse, it can manufacture signal. Subsets sit at different
+    sigma AND different error levels, so pooling induces a between-subset trend
+    that exists inside no subset. On the real liver run the pooled beta0 rho was
+    +0.312 while the five subsets gave +0.015, -0.017, +0.109, +0.123, +0.091 —
+    larger than any of them.
+    """
+
+    @staticmethod
+    def _two_folds_no_within_correlation(n_wsi=8, per=25, seed=0):
+        """Zero correlation inside each fold, different levels between them."""
+        rng = np.random.default_rng(seed)
+        rows = []
+        for fi, (sd_level, err_level) in enumerate([(1.0, 1.0), (3.0, 3.0)], start=1):
+            for w in range(n_wsi):
+                sd = np.abs(rng.normal(sd_level, 0.15, per))
+                err = np.abs(rng.normal(err_level, 0.15, per))   # independent
+                rows.append(pd.DataFrame({
+                    "descriptor": "task_specific_value",
+                    "component": "procedural_within_fold",
+                    "prediction": f"fold{fi}", "wsi": f"w{w}",
+                    "region_index": range(per), "sd": sd, "error": err,
+                    "z": err / sd}))
+        return pd.concat(rows, ignore_index=True)
+
+    def test_each_fold_is_scored_separately(self):
+        from calibrate_phi import score
+        rows = score(self._two_folds_no_within_correlation(), 5)
+        assert {r["prediction"] for r in rows} == {"fold1", "fold2"}
+        for r in rows:
+            assert r["n"] == 8 * 25          # not 2 x that
+
+    def test_pooling_would_manufacture_a_correlation(self):
+        """The reason per-fold is the default. Within each fold sigma and error
+        are independent; pooled they correlate strongly, purely from the level
+        difference between folds."""
+        from calibrate_phi import score
+        t = self._two_folds_no_within_correlation()
+        per_fold = [r["spearman_rho"] for r in score(t, 5)]
+        pooled = score(t.drop(columns=["prediction"]), 5)[0]["spearman_rho"]
+        assert all(abs(r) < 0.15 for r in per_fold)   # nothing inside a fold
+        assert pooled > 0.6                            # everything between them
+        # the shape of the artefact, not a threshold: pooling exceeds every
+        # subset it pools, which is what happened to beta0 on the real run
+        assert pooled > 4 * max(abs(r) for r in per_fold)
+
+    def test_agreement_flags_a_sign_flip(self):
+        from calibrate_phi import fold_agreement, score
+        rows = score(self._two_folds_no_within_correlation(seed=3), 5)
+        a = fold_agreement(rows)
+        assert len(a) == 1 and a[0]["n_folds"] == 2
+        assert a[0]["rho_min"] <= a[0]["rho_median"] <= a[0]["rho_max"]
+        signs = {np.sign(r["spearman_rho"]) for r in rows}
+        assert a[0]["consistent_sign"] == (len(signs) <= 1)
+
+    def test_grand_mode_is_unaffected(self):
+        """`prediction` is constant there, so adding it to the keys changes
+        nothing — the grand result must not move."""
+        from calibrate_phi import score
+        rng = np.random.default_rng(1)
+        sd = np.abs(rng.normal(2, 0.5, 200))
+        t = pd.DataFrame({"descriptor": "task_specific_value", "component": "total",
+                          "prediction": "grand", "wsi": np.repeat(np.arange(10), 20),
+                          "region_index": np.tile(np.arange(20), 10),
+                          "sd": sd, "error": sd * np.abs(rng.normal(0, 1, 200))})
+        t["z"] = t["error"] / t["sd"]
+        with_pred = score(t, 5)
+        without = score(t.drop(columns=["prediction"]), 5)
+        assert len(with_pred) == len(without) == 1
+        assert with_pred[0]["spearman_rho"] == pytest.approx(without[0]["spearman_rho"])
