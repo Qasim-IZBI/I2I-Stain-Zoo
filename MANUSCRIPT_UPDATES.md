@@ -1,13 +1,66 @@
 # What the manuscript needs to say
 
-> Written 2026-08-16, against the code at `8ce9ea4`. A handover from the codebase to
+> Started 2026-08-16, last updated **2026-08-19**. A handover from the codebase to
 > the paper: what changed since the plan, what can be claimed, what cannot, and the
 > conventions a reviewer will otherwise raise. Companion to `CLAUDE.md` (flags) and
 > `PIPELINE_AFTER_INFERENCE.md` (how to run it).
 >
-> **Nothing here is a result yet.** Every number below is either from the floor
-> sweep (real, on the liver cohort) or from synthetic validation of the tooling.
-> The calibration itself has not been run on real data.
+> **The central comparison is now measured and controlled** (§0). Everything in §0,
+> §2, §4 and §4a is real, on the liver and kidney cohorts. Anything still synthetic
+> is labelled as such.
+
+---
+
+## 0. THE RESULT (2026-08-19) — controlled head-to-head
+
+On the **same 2 048 px regions**, against the **same real-tissue target**, with the
+**same slide-clustered statistics** — only the uncertainty source differs. Within
+each slide, partialled on the point prediction, 20 cases:
+
+| uncertainty source | ρ | 95% CI | slides +ve | p |
+|---|---|---|---|---|
+| ensemble **total** σ | **+0.150** | [+0.061, +0.241] | 14/20 | **0.006** |
+| ensemble **data-exposure** σ | **+0.143** | [+0.058, +0.228] | 16/20 | **0.006** |
+| ensemble procedural σ | +0.094 | [+0.008, +0.185] | 12/20 | 0.105 |
+| **cycle-reconstruction error** | **−0.040** | **[−0.150, +0.072]** | **8/20** | **0.55** |
+
+Pooled over regions the same holds: total +0.217 [+0.107, +0.329] against cycle
+error +0.107 [−0.107, +0.291], whose interval covers zero.
+
+**Why this version and not the earlier one.** Until 2026-08-19 the two arms
+differed in *two* ways at once — proxy versus external target, **and** pixel versus
+region. A reviewer could attribute the gap to scale. `compare_uncertainty_sources.py`
+aggregates cycle error into the identical region grid, so the only remaining
+difference is what the uncertainty is scored against. Quote **this** table, not the
+pixel one.
+
+The pixel-level run stands as the direct replication of the BMVC 2026 finding, on
+this cohort and at that scale — 44 106 tiles, 20 slides, every component null:
+total ρ = −0.000, procedural +0.015, data-exposure +0.001, all p > 0.6, 9–12 of 20
+slides positive against a shuffled control of 0.004. Report it as the replication;
+report §0 as the contrast.
+
+### Do NOT report E|z| for the cycle-error row
+
+It comes out 0.03, 91.1, 111.7, 0.04 across the four descriptors, and every one of
+those numbers is meaningless: cycle error is in 0–255 intensity units while CPA
+error is a fraction, so the ratio divides one by the other. **Ranking is comparable
+across sources; scale is not.** Say so explicitly — a reviewer who sees E|z| = 111
+will assume the pipeline is broken. The z-ratio is interpretable only within the
+ensemble columns, where σ and the error share units.
+
+### Two things this table also settles
+
+**Data exposure is the component that carries it.** 16/20 slides at p = 0.006,
+level with total, while procedural alone loses significance (p = 0.105). The
+crossed 5 × 10 design is therefore load-bearing for the *calibration* claim, not
+only for the decomposition — a flat seed-only ensemble could not produce this row.
+
+**The topological descriptors are null for every source, cycle error included.**
+So it is not that ensemble σ fails on β₀/β₁ specifically; nothing predicts their
+error against this reference. That is consistent with the floor diagnosis (§2) and
+supports deferring topology to separate work rather than reporting it as a failure
+of the uncertainty.
 
 ---
 
@@ -26,8 +79,9 @@ So the contribution is now two things:
 1. **A descriptor-space uncertainty decomposition** — procedural (seed) versus
    data-exposure (which slides were seen), separable only because the ensemble is a
    crossed 5 subsets × 10 seeds grid.
-2. **φ_struct as a calibration target.** Regen error's failure to calibrate is the
-   standing BMVC 2026 result and is **cited, not re-measured**.
+2. **φ_struct as a calibration target.** Regen error's failure is **measured here,
+   on the same regions** (§0), with BMVC 2026 as corroboration rather than as the
+   sole evidence. That upgrade is what makes the paper self-contained.
 
 **Narrowed on 2026-08-16:** the calibration is over the **four collagen
 descriptors only**. The three lumen terms cannot be measured on this cohort (§3a),
@@ -359,10 +413,60 @@ this** — worth saying, since it justifies the 5×10 design over a 50-seed run.
 
 ---
 
+## 4b. Paper shape — dataset + evaluation, WACV (decided 2026-08-19)
+
+Framed as a **dataset and evaluation** paper, which is what makes it fit a CVF
+venue: it answers "what is the method?" with "the data and the protocol" rather
+than leaving the question open. Three things ship together:
+
+1. the paired H&E / PSR cohort with collagen and tissue masks,
+2. the **54-configuration scaling benchmark** (6 architectures × 3 generator sizes
+   × 3 data fractions, on Patch-SSIM / LPIPS / FID / CPA MAE) — this is the
+   baseline table a dataset paper is expected to carry, and it already exists,
+3. the 50-member crossed ensemble and its per-region φ.
+
+**Main text:** cycle error does not predict virtual-staining error (§0, measured
+here, BMVC 2026 corroborating); CPA does; the decomposition says ~half of it is
+data exposure.
+
+**Supplementary:** the whole OOD arm, with a few lines in the main text. That
+placement is prudent rather than merely tidy — the kidney arm is blocked by §6.2,
+the liver-trained segmenter being unvalidated on kidney, so a main-text OOD claim
+invites a question that has no answer yet. State the caveat in the supplementary
+anyway; a reviewer who finds it unaided will read the omission badly.
+
+**The one OOD sentence that belongs in the main text** is the reference-free one,
+because it does not depend on the segmenter at all: *under organ shift the error
+grew 3.3× while the ensemble's spread grew 1.18×, and E|z| went from 0.71 to 2.07
+— the ensemble gives no warning that it is out of distribution.* σ is computed
+from the members alone. "It did not calibrate" is the weaker sentence and invites
+the segmenter question; this one does not.
+
+### What a dataset paper needs that does not exist yet
+
+Reviewers of dataset papers check these specifically, and their absence is a
+desk-reject risk rather than an argument:
+
+- a **datasheet**: collection protocol, staining and scanning parameters,
+  annotation protocol for the collagen masks, inter-rater information if any,
+- **licensing and ethics** — approval reference, consent basis, redistribution
+  terms,
+- the **split definition** as released (which cases are train / test, and the
+  001–035 vs test-set numbering),
+- **intended uses and limitations**, including that the collagen segmenter is
+  liver-trained,
+- a **loading example** so the release is usable without reading this repository.
+
+This is writing, not analysis, and it is the part most likely to be underestimated.
+
+---
+
 ## 5. Figures available
 
 | figure | from | shows |
 |---|---|---|
+| `reliability_sources.png` | `compare_uncertainty_sources.py` | **the headline** — cycle error vs the three ensemble components, same regions |
+| `reliability_pixel.png` | `plot_pixel_reliability.py` | the pixel-scale replication: all three components flat against cycle error |
 | `floor_sweep.png` | `plot_floor_sweep.py` | floor ÷ signal against region size, with the evidence behind each point |
 | `floor.png` | `estimate_floor.py` | per-descriptor verdict, and the variogram it rests on |
 | `risk_coverage.png` | `calibrate_phi.py` | **the headline figure** — MAE vs coverage per descriptor, with the oracle ceiling and bootstrap bands |
@@ -390,6 +494,11 @@ kind about it.
       closed, this decides whether there is a region-level calibration (~6000
       points) or only a WSI-level one (n = 20) — for the entire study, not half of
       it. `sbatch scripts/check_frame_alignment.sh` — seconds, header reads only.
+- [x] ~~**Head-to-head against regen error on the same regions.**~~ Done
+      2026-08-19, §0 — this was "Phase 7, if time permits" and turned out to be
+      the difference between a suggestive contrast and a controlled one.
+- [ ] **Datasheet, licensing and split documentation** for the release (§4b).
+      Not started, and the largest remaining item.
 - [ ] **Re-run the floor sweep on current code** before quoting the §2 table. Those
       three runs predate two fixes (the inverted split-half bracket, the NaN-column
       crash). Neither changes the verdicts, but the manuscript should not cite
