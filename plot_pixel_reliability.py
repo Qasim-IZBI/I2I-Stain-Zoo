@@ -70,7 +70,8 @@ COMPONENTS = ("total", "procedural", "data_exposure")
 
 def tile_table(component_roots: List[Path], error_dirs: List[List[Path]],
                mask_dirs: List[Optional[Path]],
-               stem_to_wsi: Dict[str, str], min_tissue_pixels: int) -> pd.DataFrame:
+               stem_to_wsi: Dict[str, str], min_tissue_pixels: int,
+               common_mask: bool = True) -> pd.DataFrame:
     """Per tile: mean sigma per component, mean error, mean predicted intensity.
 
     One row per (tile, component). `mu` is the ensemble-mean intensity, which is
@@ -112,12 +113,27 @@ def tile_table(component_roots: List[Path], error_dirs: List[List[Path]],
             else:
                 mask = np.ones(e_full.shape, bool)
 
+            # One pixel set for ALL components, not one per component. The
+            # ANOVA data term is NaN where it came out negative, and masking
+            # per component would then average the ERROR over a different set
+            # for that curve — on the liver run about 4.7% fewer pixels, which
+            # is small but means the three curves are not scored against a
+            # strictly identical target, which is the whole point of the figure.
+            # Intersecting costs those pixels in every curve and buys an exact
+            # comparison.
+            common = mask & np.isfinite(e_full)
+            if common_mask:
+                for comp in avail:
+                    u_c = np.load(root / comp / "raw_npy" / rel.with_suffix(".npy"))
+                    if u_c.shape == e_full.shape:
+                        common = common & np.isfinite(u_c)
+
             mu = np.nan
             if mean_dir is not None:
                 mpath = mean_dir / rel.with_suffix(".tif")
                 if mpath.is_file():
                     import tifffile
-                    mu = float(tifffile.imread(str(mpath))[mask].mean())
+                    mu = float(tifffile.imread(str(mpath))[common].mean())
 
             for comp in avail:
                 u_full = np.load(
@@ -128,7 +144,7 @@ def tile_table(component_roots: List[Path], error_dirs: List[List[Path]],
                 # A pixel with no finite component cannot enter a mean any more
                 # than it can enter a correlation: the ANOVA data term is NaN
                 # wherever it came out negative.
-                sel = mask & np.isfinite(u_full) & np.isfinite(e_full)
+                sel = common & np.isfinite(u_full)
                 if int(sel.sum()) < min_tissue_pixels:
                     continue
                 rows.append({
@@ -172,6 +188,12 @@ def main() -> None:
                          "--components root is one slide.")
     ap.add_argument("--outdir", type=Path, required=True)
     ap.add_argument("--min_tissue_pixels", type=int, default=256)
+    ap.add_argument("--per_component_mask", action="store_true",
+                    help="Let each component keep its own finite pixels instead "
+                         "of intersecting. Retains ~5%% more pixels for total and "
+                         "procedural, at the cost of averaging the ERROR over a "
+                         "different set per curve — which is exactly what the "
+                         "figure is comparing.")
     ap.add_argument("--n_bins", type=int, default=10)
     ap.add_argument("--n_boot", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=0)
@@ -200,7 +222,7 @@ def main() -> None:
             stem_to_wsi = build_stem_to_wsi(args.tiles_metadata)
 
     t = tile_table(args.components, errs, masks, stem_to_wsi,
-                   args.min_tissue_pixels)
+                   args.min_tissue_pixels, common_mask=not args.per_component_mask)
     # by (slide, tile): stems repeat across slides — every WSI has a 0000001 —
     # so counting stems alone under-reports by the slide count
     n_tiles = int(t.groupby(["wsi", "region_index"]).ngroups)

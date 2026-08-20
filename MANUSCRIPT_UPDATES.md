@@ -40,6 +40,21 @@ total ρ = −0.000, procedural +0.015, data-exposure +0.001, all p > 0.6, 9–1
 slides positive against a shuffled control of 0.004. Report it as the replication;
 report §0 as the contrast.
 
+### The pairing, since a reviewer may ask
+
+Per region the pairing is **exact**: for a given region every source carries the
+same `mu`, the same `real` and the same `error` — only `sd` differs. Verified
+across all 2 844 regions and all four sources, max difference 0.000e+00. The bins
+then differ by source, which is intended: each curve is binned by quantile of its
+OWN σ, which is what a reliability diagram is.
+
+The pixel figure now uses one **common pixel set** across the three components,
+for the same reason. Previously each component kept its own finite pixels, and
+since the ANOVA data term is NaN where it came out negative, that curve averaged
+its error over ~4.7% fewer pixels than the other two — small, but it made the one
+comparison the figure exists for an unequal one. `--per_component_mask` restores
+the old behaviour.
+
 ### Do NOT report E|z| for the cycle-error row
 
 It comes out 0.03, 91.1, 111.7, 0.04 across the four descriptors, and every one of

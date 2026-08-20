@@ -155,3 +155,61 @@ class TestFromUncertainty:
         res = decompose_from_uncertainty(sigmas, means, n0=10.0)
         np.testing.assert_allclose(
             res["total"], res["procedural"] + res["data_exposure"], rtol=1e-10)
+
+
+class TestCommonPixelMask:
+    """All components must be scored against an IDENTICAL error.
+
+    The figure exists to compare spreads, so the target has to be the same for
+    every curve. The ANOVA data term is NaN where it came out negative, and
+    masking per component then averages the error over a different pixel set for
+    that curve alone — on the liver run about 4.7% fewer pixels. Small, but it
+    quietly makes the one comparison the figure is for into an unequal one.
+    """
+
+    @staticmethod
+    def _tile(tmp_path, n_nan=200):
+        """One tile, with data_exposure NaN over part of it."""
+        import tifffile
+        rng = np.random.default_rng(0)
+        H = W = 40
+        root = tmp_path / "comp"
+        for comp in ("total", "procedural", "data_exposure"):
+            d = root / comp / "raw_npy" / "001" / "images"
+            d.mkdir(parents=True)
+            a = np.abs(rng.normal(5, 1, (H, W))).astype(np.float32)
+            if comp == "data_exposure":
+                flat = a.ravel()
+                flat[:n_nan] = np.nan        # the negative-variance pixels
+                a = flat.reshape(H, W)
+            np.save(d / "0000001.npy", a)
+        ed = tmp_path / "err"
+        ed.mkdir()
+        np.save(ed / "0000001.npy", np.abs(rng.normal(3, 1, (H, W))).astype(np.float32))
+        md = tmp_path / "msk"
+        md.mkdir()
+        tifffile.imwrite(str(md / "0000001.tif"), np.ones((H, W), np.uint8) * 255)
+        return root, ed, md
+
+    def test_common_mask_gives_every_component_the_same_error(self, tmp_path):
+        from plot_pixel_reliability import tile_table
+        root, ed, md = self._tile(tmp_path)
+        t = tile_table([root], [[ed]], [md], {}, 64, common_mask=True)
+        assert t["error"].nunique() == 1
+        assert t["n_pixels"].nunique() == 1
+
+    def test_per_component_mask_does_not(self, tmp_path):
+        """The behaviour the default replaces — kept reachable, and pinned so the
+        difference is visible rather than a matter of belief."""
+        from plot_pixel_reliability import tile_table
+        root, ed, md = self._tile(tmp_path)
+        t = tile_table([root], [[ed]], [md], {}, 64, common_mask=False)
+        assert t["error"].nunique() > 1
+        assert t.loc[t.component == "data_exposure", "n_pixels"].iloc[0] < \
+               t.loc[t.component == "total", "n_pixels"].iloc[0]
+
+    def test_the_common_set_is_the_intersection(self, tmp_path):
+        from plot_pixel_reliability import tile_table
+        root, ed, md = self._tile(tmp_path, n_nan=200)
+        t = tile_table([root], [[ed]], [md], {}, 64, common_mask=True)
+        assert int(t["n_pixels"].iloc[0]) == 40 * 40 - 200
