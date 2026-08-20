@@ -9,6 +9,19 @@ for a 3.281 in column so nothing is rescaled after export.
         --pixel     ./reliability \\
         --outdir    ~/Desktop/Manuscript/Qasim/Uncertainty_decomposition/figures/
 
+Writes five column-width PDFs:
+
+    reliability_sources.pdf     ensemble sigma vs CPA error, raw units, 0.80 line
+    within_slide_rho.pdf        per-slide rank correlation, ALL FOUR sources
+    risk_coverage.pdf           error vs coverage, with the point-prediction baseline
+    reliability_pixel.pdf       ensemble sigma vs CYCLE error (supplementary)
+    within_slide_rho_pixel.pdf  the same rank view at pixel scale (optional)
+
+The two reliability figures carry only sources whose sigma shares units with
+their error, because the calibrated line means nothing otherwise. Cycle error
+against CPA error is that case, so it appears in `within_slide_rho.pdf`, where
+the statistic is a dimensionless rank.
+
 Why this is a separate script from the exploratory plotters
 -----------------------------------------------------------
 `calibrate_phi.py` and friends draw every descriptor, bake in a title, size for
@@ -109,41 +122,29 @@ def add_point_baseline(t: pd.DataFrame) -> pd.DataFrame:
 
 def fig_reliability(rows: List[dict], sources, outpath: Path,
                     half_normal: float, xlabel: str, ylabel: str,
-                    per_slide: Dict[str, list], height: float = 3.4,
-                    absolute_only=None) -> None:
-    """Reliability in two panels, because the units forbid one.
+                    height: float = 2.45) -> None:
+    """Reliability in raw units, with the calibrated line.
 
-    (a) **absolute**, raw units, with the 0.80σ line. Only the ensemble sources
-        can appear: σ and the error are both CPA there, which is what makes the
-        line meaningful and what makes E|z| interpretable.
-    (b) **the per-slide partial ρ**, all sources including cycle error. Cycle
-        error is in 0–255 intensity units against a CPA fraction, so it shares
-        no axis with the others — on a common linear x it crushes every ensemble
-        curve into a dot at the origin, which is what "four sources, one panel"
-        produced on the first attempt. What survives the unit mismatch is the
-        RANK statistic, and (b) shows the twenty per-slide values behind it
-        rather than a pooled curve. That choice matters: pooled bins mix within-
-        and between-slide variation, and cycle error's pooled curve rises while
-        its within-slide answer is −0.040.
+    Only sources whose sigma shares units with the error can appear: the line is
+    E|e| = half_normal * sigma, which means nothing when the two axes are
+    different quantities. Cycle error against CPA error is exactly that case —
+    intensity units against a fraction — so it lives in `fig_per_slide_rho`,
+    where the comparison is a rank and survives the mismatch.
     """
     by = {r["component"]: r for r in rows if r.get("bins")}
-    abs_sources = absolute_only if absolute_only is not None else [
-        s for s in sources if s[0] != "regen_error"]
+    fig, ax = plt.subplots(figsize=(COLUMN_IN, height))
 
-    fig, (ax, axr) = plt.subplots(2, 1, figsize=(COLUMN_IN, height),
-                                  gridspec_kw={"hspace": 0.62})
-
-    # ---- (a) absolute, ensemble only ----
-    xs = [d["mean_sd"] for k, *_ in abs_sources if k in by for d in by[k]["bins"]]
-    ys = [d["mean_error"] for k, *_ in abs_sources if k in by for d in by[k]["bins"]]
+    xs = [d["mean_sd"] for k, *_ in sources if k in by for d in by[k]["bins"]]
+    ys = [d["mean_error"] for k, *_ in sources if k in by for d in by[k]["bins"]]
     if not xs:
         raise SystemExit("no binned source to plot")
     xhi = max(xs) * 1.10
     yhi = max(max(ys) * 1.20, xhi * half_normal * 1.05)
+
     ax.plot([0, xhi], [0, xhi * half_normal], color="#52514e", linewidth=0.9,
             linestyle=(0, (4, 2)), zorder=3,
             label=f"calibrated ({half_normal:.2f}$\\sigma$)")
-    for key, label, colour, ls, mk in abs_sources:
+    for key, label, colour, ls, mk in sources:
         if key not in by:
             continue
         b = by[key]["bins"]
@@ -161,45 +162,58 @@ def fig_reliability(rows: List[dict], sources, outpath: Path,
                     borderaxespad=0.15, labelspacing=0.22, handletextpad=0.4)
     for txt in leg.get_texts():
         txt.set_color("#0b0b0b")
-    ax.text(-0.20, 1.04, "(a)", transform=ax.transAxes, fontweight="bold",
-            va="bottom", fontsize=plt.rcParams["font.size"])
+    fig.savefig(outpath, format="pdf", bbox_inches="tight", pad_inches=0.01)
+    plt.close(fig)
+    print(f"wrote {outpath}")
 
-    # ---- (b) the per-slide partial rho, which is the controlled statistic ----
-    # NOT a pooled reliability curve for all four. Pooled bins mix within- and
-    # between-slide variation, and cycle error's apparent trend there comes
-    # entirely from the latter — the pooled curve rises 0.031 to 0.052 while the
-    # within-slide answer is -0.040. This panel shows the twenty per-slide
-    # values behind the claim, so the reader sees n and the spread rather than a
-    # summary that flatters one source.
-    axr.axhline(0, color="#52514e", linewidth=0.8, zorder=3)
-    rng = np.random.default_rng(0)
-    for i, (key, label, colour, ls, mk) in enumerate(sources):
-        v = per_slide.get(key)
-        if v is None:
-            continue
-        v = np.asarray(v, float)
+
+def fig_per_slide_rho(per_slide: Dict[str, list], sources, outpath: Path,
+                      ylabel: str = "within-slide $\\rho$ (partialled on $\\mu$)",
+                      height: float = 2.45, seed: int = 0) -> None:
+    """One dot per slide: does this source rank the error inside that slide?
+
+    The figure the claim actually rests on. Each dot is a slide, so the reader
+    sees n and the spread rather than a summary; the large marker is the mean
+    with its slide-clustered interval, and the count is how many slides came out
+    positive.
+
+    Deliberately NOT a pooled reliability curve for all sources. Pooled bins mix
+    within- and between-slide variation: cycle error's pooled curve rises while
+    its within-slide answer is negative, so a pooled panel would flatter the one
+    source the paper argues against. This shows the controlled statistic.
+
+    It also solves the unit problem. Sigma in CPA and sigma in intensity units
+    cannot share an axis, but a rank correlation is dimensionless, so every
+    source belongs on this one.
+    """
+    fig, ax = plt.subplots(figsize=(COLUMN_IN, height))
+    ax.axhline(0, color="#52514e", linewidth=0.8, zorder=3)
+    rng = np.random.default_rng(seed)
+    present = [s for s in sources if s[0] in per_slide]
+    for i, (key, label, colour, ls, mk) in enumerate(present):
+        v = np.asarray(per_slide[key], float)
         v = v[np.isfinite(v)]
-        jitter = (rng.random(v.size) - 0.5) * 0.26
-        axr.scatter(np.full(v.size, i) + jitter, v, s=5.5, color=colour,
-                    alpha=0.55, linewidths=0, zorder=4)
+        if v.size == 0:
+            continue
+        ax.scatter(np.full(v.size, i) + (rng.random(v.size) - 0.5) * 0.26, v,
+                   s=5.5, color=colour, alpha=0.55, linewidths=0, zorder=4)
         bs = [np.mean(rng.choice(v, v.size, replace=True)) for _ in range(4000)]
         lo, hi = np.percentile(bs, [2.5, 97.5])
-        axr.errorbar([i], [v.mean()], yerr=[[v.mean() - lo], [hi - v.mean()]],
-                     color=colour, marker=mk, markersize=4.2, capsize=2.2,
-                     elinewidth=1.1, zorder=6, markeredgecolor="white",
-                     markeredgewidth=0.5, linestyle="none")
-        axr.text(i, hi + 0.045, f"{int((v > 0).sum())}/{v.size}", ha="center",
-                 fontsize=plt.rcParams["font.size"] - 1.2, color=colour)
-    axr.set_xticks(range(len(sources)))
-    axr.set_xticklabels([s[1].replace(" \u03c3", "").replace(" ", "\n")
-                         for s in sources])
-    axr.set_xlim(-0.55, len(sources) - 0.45)
-    axr.set_ylabel("within-slide $\\rho$\n(partialled on $\\mu$)", color="#52514e")
-    tidy(axr)
-    axr.grid(False, axis="x")
-    axr.text(-0.20, 1.04, "(b)", transform=axr.transAxes, fontweight="bold",
-             va="bottom", fontsize=plt.rcParams["font.size"])
-
+        ax.errorbar([i], [v.mean()], yerr=[[v.mean() - lo], [hi - v.mean()]],
+                    color=colour, marker=mk, markersize=4.2, capsize=2.2,
+                    elinewidth=1.1, zorder=6, markeredgecolor="white",
+                    markeredgewidth=0.5, linestyle="none")
+        ax.annotate(f"{int((v > 0).sum())}/{v.size}", (i, hi), textcoords="offset points",
+                    xytext=(0, 4), ha="center", color=colour,
+                    fontsize=plt.rcParams["font.size"] - 1.0)
+    ax.set_xticks(range(len(present)))
+    ax.set_xticklabels([s[1].replace(" \u03c3", "").replace("-", "-\n")
+                        if len(s[1]) > 11 else s[1].replace(" \u03c3", "")
+                        for s in present])
+    ax.set_xlim(-0.55, len(present) - 0.45)
+    ax.set_ylabel(ylabel, color="#52514e")
+    tidy(ax)
+    ax.grid(False, axis="x")
     fig.savefig(outpath, format="pdf", bbox_inches="tight", pad_inches=0.01)
     plt.close(fig)
     print(f"wrote {outpath}")
@@ -280,9 +294,14 @@ def main() -> None:
     ws = {r["component"]: r["per_slide_partial_mu"]
           for r in json.load(open(args.sources / "summary.json"))["within_slide"]
           if r["descriptor"] == DESCRIPTOR}
-    fig_reliability(rows, SOURCES, args.outdir / "reliability_sources.pdf",
+    # (a) raw units — only the sources whose sigma is in CPA
+    fig_reliability([r for r in rows if r.get("component") != "regen_error"],
+                    [s for s in SOURCES if s[0] != "regen_error"],
+                    args.outdir / "reliability_sources.pdf",
                     HALF_NORMAL, "ensemble $\\sigma$ (CPA)",
-                    "|error| vs real SR (CPA)", per_slide=ws)
+                    "|error| vs real SR (CPA)")
+    # (b) its own figure — a rank is dimensionless, so cycle error belongs here
+    fig_per_slide_rho(ws, SOURCES, args.outdir / "within_slide_rho.pdf")
     fig_risk_coverage(rc, args.outdir / "risk_coverage.pdf")
     report_numbers(rows, "region level (CPA)")
 
@@ -310,7 +329,10 @@ def main() -> None:
         fig_reliability(rp, PIXEL_SOURCES,
                         args.outdir / "reliability_pixel.pdf",
                         HALF_NORMAL_PIXEL, "ensemble $\\sigma$ (intensity)",
-                        "mean |cycle error| per tile", per_slide=wp)
+                        "mean |cycle error| per tile")
+        fig_per_slide_rho(wp, PIXEL_SOURCES,
+                          args.outdir / "within_slide_rho_pixel.pdf",
+                          ylabel="within-slide $\\rho$ vs cycle error")
         report_numbers(rp, "pixel level (cycle error)")
 
     print(f"\nAll figures are {COLUMN_IN} in wide — do not rescale in LaTeX.")
