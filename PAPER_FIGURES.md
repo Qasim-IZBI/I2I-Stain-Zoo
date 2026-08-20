@@ -120,6 +120,88 @@ the caption and wastes vertical space.
 
 ---
 
+## 2a. Axis labels, legends and annotations — use the paper's symbols
+
+The paper defines its quantities symbolically, and the figures must use the same symbols
+rather than paraphrasing them in words. A reader moving between Table 2 and a figure should
+not have to work out that "MAE" and $e$ are the same thing.
+
+**The symbol register**, from the manuscript's §3 and §4:
+
+| Symbol | Meaning | Never write |
+|---|---|---|
+| $\sigma$ | predictive standard deviation across the $M$ members | "uncertainty (SD)", "ensemble std" |
+| $e$ | $\lvert \mu(x) - \varphi(y) \rvert$, the CPA absolute error | **"MAE"**, "MAE-CPA", "residual", "\|error\|" |
+| $\mu$ | the ensemble's point prediction | "mean prediction", "predicted CPA" |
+| $z$ | $e/\sigma$ | — |
+| $\rho$ | Spearman rank correlation | "corr", "r" |
+| $\mathbb{E}\lvert z\rvert/0.80$ | the scale summary | "calibration ratio" |
+
+**"MAE" is the one to watch.** The manuscript deliberately does *not* use it: the per-region
+quantity is a single absolute difference, not a mean, and the author ruled against borrowing
+the earlier benchmark's naming. `make_risk_coverage_figure` currently labels its y-axis
+`"change in MAE vs keeping all (%)"`, which contradicts the register. It must say $e$.
+
+**The four sources, named as the paper names them.** Legend entries, in this order:
+
+```
+total σ            data-exposure σ            procedural σ            cycle-reconstruction residual
+```
+
+Note "residual", not "error" — the register fixes the term and the manuscript's Table 2 was
+corrected to match on 2026-08-20.
+
+### Figure 1 — reliability
+
+| Element | Label |
+|---|---|
+| x axis | `σ` |
+| y axis | `e` |
+| reference line | `E|e| = 0.80σ` |
+| per-curve annotations | `ρ` and `E|z|/0.80`, not spelled out in words |
+
+Current code sets `xlabel = "ensemble σ"` and `ylabel = "|error| vs real tissue"`. Both need
+changing: the first because one of the four curves is not an ensemble σ at all, the second
+because the paper calls that quantity $e$.
+
+### Figure 2 — risk--coverage
+
+| Element | Label |
+|---|---|
+| x axis | `coverage (% of regions kept)` |
+| y axis | `change in mean e (%)` |
+| baselines | `oracle (rank by e)`, `random`, `μ alone` |
+
+"μ alone" is the new baseline described in §1. Naming it with the symbol makes the point
+without a sentence: it ranks on $\mu$, using no $\sigma$ at all.
+
+### One thing that has to be decided before Figure 1 can be drawn
+
+`compare_uncertainty_sources.py` puts the cycle-reconstruction residual on the same x-axis
+as the ensemble components (`b["sd"] = b["regen"]`, then `x = mean_sd` in raw units with a
+shared `set_xlim`). **Those are not the same units.** Ensemble σ is in CPA, a fraction of
+order $10^{-2}$; the residual is in 0–255 intensity. On one raw axis the ensemble curves
+collapse into the left edge.
+
+That also makes a single x-axis label impossible, which is what surfaced this.
+
+The fix that matches what the paper already says — *ranking is comparable across sources,
+scale is not* — is **two panels sharing the y-axis**:
+
+* left panel, the three ensemble components, x in CPA units, with the `E|e| = 0.80σ` line;
+* right panel, the cycle-reconstruction residual, x in intensity units, **no reference
+  line**, because a scale reference is meaningless where the units differ.
+
+The y-axis is genuinely shared: the error is the same quantity for all four sources by
+construction, since only σ moves between them. Do not normalise x to make one panel work —
+raw units on both axes are what makes this comparison strong, and normalising is what the
+ECE already does.
+
+If you would rather solve it another way, say so before plotting; the manuscript caption
+will need to match whatever is chosen.
+
+---
+
 ## 3. Numbers the manuscript is still missing
 
 These are not in `MANUSCRIPT_UPDATES.md` and are currently `\TODO` markers in the paper.

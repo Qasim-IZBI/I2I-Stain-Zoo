@@ -68,18 +68,22 @@ DESCRIPTOR = "task_specific_value"
 
 # Order, label, colour, line style, marker. Style and marker carry the identity
 # in greyscale; colour is redundant encoding, not the only encoding.
+# Labels follow the manuscript's symbol register (PAPER_FIGURES.md 2a): sigma,
+# e, mu, z, rho — never "MAE", "std" or "|error|". The fourth source is the
+# cycle-reconstruction RESIDUAL, which is the term Table 2 uses.
 SOURCES = [
-    ("total",          "total σ",          "#2a78d6", "-",  "o"),
-    ("data_exposure",  "data-exposure σ",  "#1baf7a", "--", "^"),
-    ("procedural",     "procedural σ",     "#eb6834", "-.", "s"),
-    ("regen_error",    "cycle error",      "#e34948", ":",  "X"),
+    ("total",          "total $\\sigma$",         "#2a78d6", "-",  "o"),
+    ("data_exposure",  "data-exposure $\\sigma$", "#1baf7a", "--", "^"),
+    ("procedural",     "procedural $\\sigma$",    "#eb6834", "-.", "s"),
+    ("regen_error",    "cycle-recon. residual",  "#e34948", ":",  "X"),
 ]
 PIXEL_SOURCES = [s for s in SOURCES if s[0] != "regen_error"]
 
 # The baseline the paper's own text volunteers: rank by the point prediction,
 # no uncertainty involved. On this cohort it BEATS sigma, so a risk-coverage
 # figure without it says the opposite of what the manuscript says.
-POINT = ("point_prediction", "predicted CPA (no uncertainty)", "#4a3aa7", (0, (3, 1, 1, 1, 1, 1)), "D")
+POINT = ("point_prediction", "$\\mu$ alone", "#4a3aa7",
+         (0, (3, 1, 1, 1, 1, 1)), "D")
 
 
 def style(fontsize: float = 7.0) -> None:
@@ -120,30 +124,106 @@ def add_point_baseline(t: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([t, base], ignore_index=True)
 
 
+def fig_reliability_two_panel(rows: List[dict], outpath: Path,
+                              half_normal: float = HALF_NORMAL,
+                              height: float = 2.45) -> None:
+    """Reliability, two panels sharing y (PAPER_FIGURES.md 2a).
+
+    Left: the three ensemble components, x in CPA, with the E|e| = 0.80 sigma
+    line. Right: the cycle-reconstruction residual, x in 0-255 intensity, and
+    **no reference line** — a scale reference is meaningless where the units
+    differ, which is the same reason no E|z| is annotated on it.
+
+    The y axis is genuinely shared: `e` is the same quantity for all four
+    sources by construction, since only sigma moves between them.
+
+    Read the right panel with the caveat in mind. Its bins are pooled over
+    slides, and slides with a high average residual also have a high average
+    `e`, so the curve rises (+69% across deciles) while the within-slide answer
+    is -0.040 over 8/20 slides. `fig_per_slide_rho` is the controlled view.
+    """
+    by = {r["component"]: r for r in rows if r.get("bins")}
+    ens = [s for s in SOURCES if s[0] != "regen_error"]
+    fig, (axl, axr) = plt.subplots(
+        1, 2, figsize=(COLUMN_IN, height), sharey=True,
+        gridspec_kw={"width_ratios": [1.55, 1.0], "wspace": 0.08})
+
+    ys = [d["mean_error"] for k, *_ in SOURCES if k in by for d in by[k]["bins"]]
+    yhi = max(ys) * 1.30
+
+    # ---- left: ensemble components, raw CPA, with the calibrated line -------
+    xs = [d["mean_sd"] for k, *_ in ens if k in by for d in by[k]["bins"]]
+    xhi = max(xs) * 1.10
+    axl.plot([0, xhi], [0, xhi * half_normal], color="#52514e", linewidth=0.9,
+             linestyle=(0, (4, 2)), zorder=3,
+             label=f"$\\mathbb{{E}}|e| = {half_normal:.2f}\\sigma$")
+    for i, (key, label, colour, ls, mk) in enumerate(ens):
+        if key not in by:
+            continue
+        b, r = by[key]["bins"], by[key]
+        axl.errorbar([d["mean_sd"] for d in b], [d["mean_error"] for d in b],
+                     yerr=[d.get("se_error_by_case", np.nan) for d in b],
+                     color=colour, linestyle=ls, marker=mk, capsize=1.3,
+                     elinewidth=0.6, zorder=5, label=label,
+                     markeredgecolor="white", markeredgewidth=0.4)
+        axl.text(0.03, 0.97 - 0.085 * i,
+                 f"$\\rho$ {r['spearman_rho']:+.2f}   "
+                 f"$\\mathbb{{E}}|z|/0.80$ {r['calibration_ratio']:.2f}",
+                 transform=axl.transAxes, color=colour, va="top",
+                 fontsize=plt.rcParams["font.size"] - 1.4)
+    axl.set_xlim(0, xhi)
+    axl.set_ylim(0, yhi)
+    axl.set_xlabel("$\\sigma$  (CPA)", color="#52514e", labelpad=1.5)
+    axl.set_ylabel("$e$", color="#52514e")
+    tidy(axl)
+
+    # ---- right: the residual, intensity units, NO reference line ------------
+    key = "regen_error"
+    if key in by:
+        b, r = by[key]["bins"], by[key]
+        colour, ls, mk = SOURCES[3][2], SOURCES[3][3], SOURCES[3][4]
+        axr.errorbar([d["mean_sd"] for d in b], [d["mean_error"] for d in b],
+                     yerr=[d.get("se_error_by_case", np.nan) for d in b],
+                     color=colour, linestyle=ls, marker=mk, capsize=1.3,
+                     elinewidth=0.6, zorder=5, label=SOURCES[3][1],
+                     markeredgecolor="white", markeredgewidth=0.4)
+        # rho only: no scale ratio, the units forbid it
+        axr.text(0.05, 0.97, f"$\\rho$ {r['spearman_rho']:+.2f}",
+                 transform=axr.transAxes, color=colour, va="top",
+                 fontsize=plt.rcParams["font.size"] - 1.4)
+        axr.set_xlim(0, max(d["mean_sd"] for d in b) * 1.12)
+    axr.set_xlabel("residual  (0-255)", color="#52514e", labelpad=1.5)
+    tidy(axr)
+    axr.tick_params(labelleft=False)
+
+    h1, l1 = axl.get_legend_handles_labels()
+    h2, l2 = axr.get_legend_handles_labels()
+    leg = fig.legend(h1 + h2, l1 + l2, frameon=False, ncol=2,
+                     loc="lower center", bbox_to_anchor=(0.54, -0.30),
+                     handlelength=2.0, columnspacing=1.0, handletextpad=0.4,
+                     labelspacing=0.22)
+    for txt in leg.get_texts():
+        txt.set_color("#0b0b0b")
+    fig.savefig(outpath, format="pdf", bbox_inches="tight", pad_inches=0.01)
+    plt.close(fig)
+    print(f"wrote {outpath}")
+
+
 def fig_reliability(rows: List[dict], sources, outpath: Path,
                     half_normal: float, xlabel: str, ylabel: str,
                     height: float = 2.45) -> None:
-    """Reliability in raw units, with the calibrated line.
-
-    Only sources whose sigma shares units with the error can appear: the line is
-    E|e| = half_normal * sigma, which means nothing when the two axes are
-    different quantities. Cycle error against CPA error is exactly that case —
-    intensity units against a fraction — so it lives in `fig_per_slide_rho`,
-    where the comparison is a rank and survives the mismatch.
-    """
+    """Single-panel reliability, for the supplementary pixel figure."""
     by = {r["component"]: r for r in rows if r.get("bins")}
     fig, ax = plt.subplots(figsize=(COLUMN_IN, height))
-
     xs = [d["mean_sd"] for k, *_ in sources if k in by for d in by[k]["bins"]]
     ys = [d["mean_error"] for k, *_ in sources if k in by for d in by[k]["bins"]]
     if not xs:
         raise SystemExit("no binned source to plot")
     xhi = max(xs) * 1.10
     yhi = max(max(ys) * 1.20, xhi * half_normal * 1.05)
-
     ax.plot([0, xhi], [0, xhi * half_normal], color="#52514e", linewidth=0.9,
             linestyle=(0, (4, 2)), zorder=3,
-            label=f"calibrated ({half_normal:.2f}$\\sigma$)")
+            label=f"$\\mathbb{{E}}|e| = {half_normal:.2f}\\sigma$")
     for key, label, colour, ls, mk in sources:
         if key not in by:
             continue
@@ -224,7 +304,7 @@ def fig_risk_coverage(rc: List[dict], outpath: Path,
     df = pd.DataFrame(rc)
     fig, ax = plt.subplots(figsize=(COLUMN_IN, height))
     ax.axhline(0, color="#52514e", linewidth=0.8, linestyle=(0, (4, 2)),
-               zorder=3, label="random / keep all")
+               zorder=3, label="random")
     for key, label, colour, ls, mk in list(SOURCES) + [POINT]:
         g = df[df["component"] == key].sort_values("coverage")
         if g.empty:
@@ -234,10 +314,11 @@ def fig_risk_coverage(rc: List[dict], outpath: Path,
                 markeredgecolor="white", markeredgewidth=0.4)
     g = df[df["component"] == "total"].sort_values("coverage")
     ax.plot(g["coverage"] * 100, g["rel_change_oracle"] * 100, color="#0b0b0b",
-            linestyle=(0, (1, 1.4)), linewidth=0.9, zorder=4, label="oracle")
+            linestyle=(0, (1, 1.4)), linewidth=0.9, zorder=4,
+            label="oracle (rank by $e$)")
     ax.invert_xaxis()
-    ax.set_xlabel("coverage: regions kept (%)", color="#52514e")
-    ax.set_ylabel("change in CPA MAE (%)", color="#52514e")
+    ax.set_xlabel("coverage (% of regions kept)", color="#52514e")
+    ax.set_ylabel("change in mean $e$ (%)", color="#52514e")
     tidy(ax)
     leg = ax.legend(frameon=False, loc="lower left", handlelength=2.4,
                     borderaxespad=0.2, labelspacing=0.24, handletextpad=0.5)
@@ -294,13 +375,9 @@ def main() -> None:
     ws = {r["component"]: r["per_slide_partial_mu"]
           for r in json.load(open(args.sources / "summary.json"))["within_slide"]
           if r["descriptor"] == DESCRIPTOR}
-    # (a) raw units — only the sources whose sigma is in CPA
-    fig_reliability([r for r in rows if r.get("component") != "regen_error"],
-                    [s for s in SOURCES if s[0] != "regen_error"],
-                    args.outdir / "reliability_sources.pdf",
-                    HALF_NORMAL, "ensemble $\\sigma$ (CPA)",
-                    "|error| vs real SR (CPA)")
-    # (b) its own figure — a rank is dimensionless, so cycle error belongs here
+    # Figure 1 as PAPER_FIGURES.md 2a specifies: two panels sharing y.
+    fig_reliability_two_panel(rows, args.outdir / "reliability_sources.pdf")
+    # The controlled view of the same comparison. See the note printed below.
     fig_per_slide_rho(ws, SOURCES, args.outdir / "within_slide_rho.pdf")
     fig_risk_coverage(rc, args.outdir / "risk_coverage.pdf")
     report_numbers(rows, "region level (CPA)")
@@ -328,11 +405,11 @@ def main() -> None:
               for r in json.load(open(args.pixel / "summary.json"))["within_slide"]}
         fig_reliability(rp, PIXEL_SOURCES,
                         args.outdir / "reliability_pixel.pdf",
-                        HALF_NORMAL_PIXEL, "ensemble $\\sigma$ (intensity)",
-                        "mean |cycle error| per tile")
+                        HALF_NORMAL_PIXEL, "$\\sigma$  (0-255)",
+                        "mean residual per tile")
         fig_per_slide_rho(wp, PIXEL_SOURCES,
                           args.outdir / "within_slide_rho_pixel.pdf",
-                          ylabel="within-slide $\\rho$ vs cycle error")
+                          ylabel="within-slide $\\rho$ vs residual")
         report_numbers(rp, "pixel level (cycle error)")
 
     print(f"\nAll figures are {COLUMN_IN} in wide — do not rescale in LaTeX.")
