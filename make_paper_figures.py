@@ -166,17 +166,19 @@ def fig_reliability(rows: List[dict], sources, outpath: Path,
                     elinewidth=0.7, zorder=5, label=label,
                     markeredgecolor="white", markeredgewidth=0.4)
         if annotate:
-            ax.text(0.035, 0.97 - 0.082 * i,
+            # Bottom right, because the legend now occupies the top left. The
+            # curves rise left-to-right, so both corners stay clear of the data.
+            ax.text(0.975, 0.035 + 0.082 * (len(sources) - 1 - i),
                     f"$\\rho$ {r['spearman_rho']:+.2f}   "
                     f"$\\mathbb{{E}}|z|/0.80$ {r['calibration_ratio']:.2f}",
-                    transform=ax.transAxes, color=colour, va="top",
-                    fontsize=plt.rcParams["font.size"] - 1.2)
+                    transform=ax.transAxes, color=colour, va="bottom",
+                    ha="right", fontsize=plt.rcParams["font.size"] - 1.2)
     ax.set_xlim(0, xhi)
     ax.set_ylim(0, yhi)
     ax.set_xlabel(xlabel, color="#52514e", labelpad=1.5)
     ax.set_ylabel(ylabel, color="#52514e")
     tidy(ax)
-    leg = ax.legend(frameon=False, loc="lower right", handlelength=2.2,
+    leg = ax.legend(frameon=False, loc="upper left", handlelength=2.2,
                     borderaxespad=0.2, labelspacing=0.22, handletextpad=0.4)
     for txt in leg.get_texts():
         txt.set_color("#0b0b0b")
