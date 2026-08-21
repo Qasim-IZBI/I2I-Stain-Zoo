@@ -202,6 +202,36 @@ will need to match whatever is chosen.
 
 ---
 
+## 2b. Regeneration requested 2026-08-21 — drop the residual as an uncertainty source
+
+The manuscript no longer treats the cycle-reconstruction residual as an uncertainty. It
+appears only as the *target* the conventional protocol validates against. The residual is a
+single model's error magnitude, not a dispersion across members, so scoring it in the same
+column as σ compared two different kinds of object; the empty scale column it always carried
+was the symptom.
+
+**Two delivered figures still carry a residual curve and need regenerating without it:**
+
+* `within_slide_rho.pdf` — drop the fourth column.
+* `risk_coverage.pdf` — drop the `cycle-recon. residual` curve. Keep `μ alone`, the oracle
+  and the flat random line.
+
+`reliability_residual.pdf` is no longer used at all and needs no successor.
+
+`reliability_pixel.pdf` **moves into the main text**, where it now carries the conventional
+protocol: pixel variance scored against the residual. No change to the figure itself.
+
+### Optional, if a reviewer presses
+
+The paper changes two things at once, the uncertainty and the target, and says so. The
+experiment that would separate them is cheap and the data already exists: score **region σ
+against the residual aggregated to the same regions**, as a target rather than as a source.
+`regen_per_region(...)` in `compare_uncertainty_sources.py` already produces that
+aggregation; it is a scoring change, not new computation. Not needed for the current
+argument.
+
+---
+
 ## 3. Numbers the manuscript is still missing
 
 These are not in `MANUSCRIPT_UPDATES.md` and are currently `\TODO` markers in the paper.

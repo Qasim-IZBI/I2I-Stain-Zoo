@@ -11,17 +11,16 @@ for a 3.281 in column so nothing is rescaled after export.
 
 Writes five column-width PDFs:
 
-    reliability_sources.pdf     the three ensemble components, x in CPA, 0.80 line
-    reliability_residual.pdf    the cycle-recon. residual, x in intensity, no line
-    within_slide_rho.pdf        per-slide rank correlation, ALL FOUR sources
+    reliability_sources.pdf     the three ensemble components vs e, 0.80 line
+    within_slide_rho.pdf        per-slide rank correlation, same three
     risk_coverage.pdf           mean e vs coverage, with the mu-alone baseline
-    reliability_pixel.pdf       ensemble sigma vs the residual (supplementary)
+    reliability_pixel.pdf       pixel sigma vs the RESIDUAL — the conventional
+                                protocol, now main text
     within_slide_rho_pixel.pdf  the same rank view at pixel scale (optional)
 
-The first two are separate files rather than panels of one figure, because
-their x axes are different quantities. They share a y RANGE, set from both
-together, so heights stay comparable when they sit side by side. --half_width
-exports them at half a column each for native-size subfigures.
+The cycle-reconstruction residual is not an uncertainty source in any of them.
+It is one model's error magnitude rather than a dispersion across members, so it
+belongs on the target side, which is what reliability_pixel.pdf shows.
 
 The two reliability figures carry only sources whose sigma shares units with
 their error, because the calibrated line means nothing otherwise. Cycle error
@@ -75,15 +74,20 @@ DESCRIPTOR = "task_specific_value"
 # Order, label, colour, line style, marker. Style and marker carry the identity
 # in greyscale; colour is redundant encoding, not the only encoding.
 # Labels follow the manuscript's symbol register (PAPER_FIGURES.md 2a): sigma,
-# e, mu, z, rho — never "MAE", "std" or "|error|". The fourth source is the
-# cycle-reconstruction RESIDUAL, which is the term Table 2 uses.
+# e, mu, z, rho — never "MAE", "std" or "|error|".
+#
+# The cycle-reconstruction residual is NOT among them (2b, 2026-08-21). It is a
+# single model's error magnitude, not a dispersion across members, so scoring it
+# in the same column as sigma compared two different kinds of object — the empty
+# scale column it always carried was the symptom. It survives in the paper only
+# as the TARGET the conventional protocol validates against, which is what
+# reliability_pixel.pdf shows.
 SOURCES = [
     ("total",          "total $\\sigma$",         "#2a78d6", "-",  "o"),
     ("data_exposure",  "data-exposure $\\sigma$", "#1baf7a", "--", "^"),
     ("procedural",     "procedural $\\sigma$",    "#eb6834", "-.", "s"),
-    ("regen_error",    "cycle-recon. residual",  "#e34948", ":",  "X"),
 ]
-PIXEL_SOURCES = [s for s in SOURCES if s[0] != "regen_error"]
+PIXEL_SOURCES = SOURCES
 
 # The baseline the paper's own text volunteers: rank by the point prediction,
 # no uncertainty involved. On this cohort it BEATS sigma, so a risk-coverage
@@ -130,85 +134,19 @@ def add_point_baseline(t: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([t, base], ignore_index=True)
 
 
-def fig_reliability_split(rows: List[dict], outdir: Path,
-                          half_normal: float = HALF_NORMAL,
-                          width: float = COLUMN_IN,
-                          height: float = 2.45) -> None:
-    """Two SEPARATE files, not two panels of one figure.
-
-        reliability_sources.pdf   the three ensemble components, x in CPA,
-                                  with the E|e| = 0.80 sigma line
-        reliability_residual.pdf  the cycle-reconstruction residual, x in 0-255
-                                  intensity, and NO reference line
-
-    They are separate because the x units are not the same quantity, so no
-    shared axis is honest. What IS shared is **the y range**, set from both
-    together and applied to each: `e` is the same quantity for all four sources
-    by construction, since only sigma moves between them, and a reader placing
-    the two side by side must be able to compare heights directly. Letting each
-    autoscale would silently rescale the comparison.
-
-    The residual gets no scale reference and no E|z| annotation. Both would
-    divide an intensity by a fraction.
-    """
-    by = {r["component"]: r for r in rows if r.get("bins")}
-    ens = [s for s in SOURCES if s[0] != "regen_error"]
-
-    # one y range for both files — the point of splitting is the x axis, not y
-    ys = [d["mean_error"] + (d.get("se_error_by_case") or 0.0)
-          for k, *_ in SOURCES if k in by for d in by[k]["bins"]]
-    yhi = max(ys) * 1.28
-
-    def panel(sources, outpath, xlabel, line: bool, annotate_scale: bool):
-        fig, ax = plt.subplots(figsize=(width, height))
-        xs = [d["mean_sd"] for k, *_ in sources if k in by for d in by[k]["bins"]]
-        if not xs:
-            raise SystemExit(f"nothing to plot for {outpath.name}")
-        xhi = max(xs) * 1.10
-        if line:
-            ax.plot([0, xhi], [0, xhi * half_normal], color="#52514e",
-                    linewidth=0.9, linestyle=(0, (4, 2)), zorder=3,
-                    label=f"$\\mathbb{{E}}|e| = {half_normal:.2f}\\sigma$")
-        for i, (key, label, colour, ls, mk) in enumerate(sources):
-            if key not in by:
-                continue
-            b, r = by[key]["bins"], by[key]
-            ax.errorbar([d["mean_sd"] for d in b], [d["mean_error"] for d in b],
-                        yerr=[d.get("se_error_by_case", np.nan) for d in b],
-                        color=colour, linestyle=ls, marker=mk, capsize=1.3,
-                        elinewidth=0.6, zorder=5, label=label,
-                        markeredgecolor="white", markeredgewidth=0.4)
-            txt = f"$\\rho$ {r['spearman_rho']:+.2f}"
-            if annotate_scale:
-                txt += f"   $\\mathbb{{E}}|z|/0.80$ {r['calibration_ratio']:.2f}"
-            ax.text(0.035, 0.97 - 0.082 * i, txt, transform=ax.transAxes,
-                    color=colour, va="top",
-                    fontsize=plt.rcParams["font.size"] - 1.2)
-        ax.set_xlim(0, xhi)
-        ax.set_ylim(0, yhi)
-        ax.set_xlabel(xlabel, color="#52514e", labelpad=1.5)
-        ax.set_ylabel("$e$", color="#52514e")
-        tidy(ax)
-        leg = ax.legend(frameon=False, loc="lower right", handlelength=2.0,
-                        borderaxespad=0.2, labelspacing=0.22, handletextpad=0.4)
-        for t_ in leg.get_texts():
-            t_.set_color("#0b0b0b")
-        fig.savefig(outpath, format="pdf", bbox_inches="tight", pad_inches=0.01)
-        plt.close(fig)
-        print(f"wrote {outpath}")
-
-    panel(ens, outdir / "reliability_sources.pdf", "$\\sigma$  (CPA)",
-          line=True, annotate_scale=True)
-    panel([SOURCES[3]], outdir / "reliability_residual.pdf",
-          "cycle-recon. residual  (0-255)", line=False, annotate_scale=False)
-
-
 def fig_reliability(rows: List[dict], sources, outpath: Path,
                     half_normal: float, xlabel: str, ylabel: str,
-                    height: float = 2.45) -> None:
-    """Single-panel reliability, for the supplementary pixel figure."""
+                    height: float = 2.45, width: float = COLUMN_IN,
+                    annotate: bool = False) -> None:
+    """Reliability, one curve per source, in raw units.
+
+    Every source here has a sigma in the same units as `e`, which is what makes
+    the E|e| = half_normal * sigma line meaningful and E|z| interpretable. The
+    cycle-reconstruction residual is not one of them and no longer appears as a
+    source at all (PAPER_FIGURES.md 2b).
+    """
     by = {r["component"]: r for r in rows if r.get("bins")}
-    fig, ax = plt.subplots(figsize=(COLUMN_IN, height))
+    fig, ax = plt.subplots(figsize=(width, height))
     xs = [d["mean_sd"] for k, *_ in sources if k in by for d in by[k]["bins"]]
     ys = [d["mean_error"] for k, *_ in sources if k in by for d in by[k]["bins"]]
     if not xs:
@@ -218,22 +156,28 @@ def fig_reliability(rows: List[dict], sources, outpath: Path,
     ax.plot([0, xhi], [0, xhi * half_normal], color="#52514e", linewidth=0.9,
             linestyle=(0, (4, 2)), zorder=3,
             label=f"$\\mathbb{{E}}|e| = {half_normal:.2f}\\sigma$")
-    for key, label, colour, ls, mk in sources:
+    for i, (key, label, colour, ls, mk) in enumerate(sources):
         if key not in by:
             continue
-        b = by[key]["bins"]
+        b, r = by[key]["bins"], by[key]
         ax.errorbar([d["mean_sd"] for d in b], [d["mean_error"] for d in b],
                     yerr=[d.get("se_error_by_case", np.nan) for d in b],
                     color=colour, linestyle=ls, marker=mk, capsize=1.4,
                     elinewidth=0.7, zorder=5, label=label,
                     markeredgecolor="white", markeredgewidth=0.4)
+        if annotate:
+            ax.text(0.035, 0.97 - 0.082 * i,
+                    f"$\\rho$ {r['spearman_rho']:+.2f}   "
+                    f"$\\mathbb{{E}}|z|/0.80$ {r['calibration_ratio']:.2f}",
+                    transform=ax.transAxes, color=colour, va="top",
+                    fontsize=plt.rcParams["font.size"] - 1.2)
     ax.set_xlim(0, xhi)
     ax.set_ylim(0, yhi)
     ax.set_xlabel(xlabel, color="#52514e", labelpad=1.5)
     ax.set_ylabel(ylabel, color="#52514e")
     tidy(ax)
-    leg = ax.legend(frameon=False, loc="upper left", handlelength=2.2,
-                    borderaxespad=0.15, labelspacing=0.22, handletextpad=0.4)
+    leg = ax.legend(frameon=False, loc="lower right", handlelength=2.2,
+                    borderaxespad=0.2, labelspacing=0.22, handletextpad=0.4)
     for txt in leg.get_texts():
         txt.set_color("#0b0b0b")
     fig.savefig(outpath, format="pdf", bbox_inches="tight", pad_inches=0.01)
@@ -299,6 +243,8 @@ def fig_risk_coverage(rc: List[dict], outpath: Path,
     fig, ax = plt.subplots(figsize=(COLUMN_IN, height))
     ax.axhline(0, color="#52514e", linewidth=0.8, linestyle=(0, (4, 2)),
                zorder=3, label="random")
+    # SOURCES no longer holds the residual (2b); mu alone, the oracle and the
+    # flat random line stay, since those are baselines rather than uncertainties.
     for key, label, colour, ls, mk in list(SOURCES) + [POINT]:
         g = df[df["component"] == key].sort_values("coverage")
         if g.empty:
@@ -376,10 +322,10 @@ def main() -> None:
     ws = {r["component"]: r["per_slide_partial_mu"]
           for r in json.load(open(args.sources / "summary.json"))["within_slide"]
           if r["descriptor"] == DESCRIPTOR}
-    # Two separate files, sharing a y range so they stay comparable.
-    fig_reliability_split(rows, args.outdir,
-                          width=COLUMN_IN / 2 - 0.04 if args.half_width
-                          else COLUMN_IN)
+    fig_reliability(rows, SOURCES, args.outdir / "reliability_sources.pdf",
+                    HALF_NORMAL, "$\\sigma$  (CPA)", "$e$",
+                    width=COLUMN_IN / 2 - 0.04 if args.half_width else COLUMN_IN,
+                    annotate=True)
     # The controlled view of the same comparison. See the note printed below.
     fig_per_slide_rho(ws, SOURCES, args.outdir / "within_slide_rho.pdf")
     fig_risk_coverage(rc, args.outdir / "risk_coverage.pdf")
