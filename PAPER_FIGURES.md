@@ -394,6 +394,7 @@ it.
     within_slide_rho.pdf       supplement, Figure 1   <- regenerate, §2c
     risk_coverage.pdf          supplement, Figure 2
     data_exposure_share.pdf    supplement, Figure 3   <- still to produce, §2d
+    reliability_kidney.pdf     supplement, the OOD arm, §2f — number not yet assigned
 ```
 
 One directory serves both documents; which PDF a figure appears in is decided by the
