@@ -23,6 +23,9 @@ Writes the five files the manuscript's floats already reference
                                 mu-alone baseline
     data_exposure_share.pdf     SUPP Fig 3 — how much of the region-level CPA
                                 variance is data exposure (§2d)
+    reliability_kidney.pdf      SUPP — the out-of-distribution arm, built
+                                exactly like reliability_sources.pdf so the two
+                                can be read side by side (§2f)
 
 `within_slide_rho_pixel.pdf` is the same rank view at pixel scale. The
 manuscript does not ask for it, so it is behind `--pixel_rank` rather than
@@ -82,7 +85,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-from calibrate_phi import HALF_NORMAL, HALF_NORMAL_PIXEL, risk_coverage, score
+from calibrate_phi import (HALF_NORMAL, HALF_NORMAL_PIXEL, risk_coverage, score,
+                           within_slide)
 
 COLUMN_IN = 3.281          # WACV two-column text width, one column
 DESCRIPTOR = "task_specific_value"
@@ -441,6 +445,62 @@ def report_numbers(rows: List[dict], label: str,
           "errors exceed the spread.")
 
 
+def report_cohorts(blocks: List[tuple]) -> None:
+    """The two cohorts side by side, in ONE cut of rho, named (2f).
+
+    `blocks` is [(cohort, score_rows, within_slide_rows), ...].
+
+    **The rho column is within-slide and partialled on mu**, with the case as
+    the unit of replication and the interval from resampling cases. That is not
+    a preference: a pooled kidney correlation survives neither the within-slide
+    cut nor the density control, and pooling regions from twenty cases is the
+    same ecological artefact as pooling across training subsets. The pooled
+    values are printed below, separately and labelled, because they are large
+    and negative and someone who recomputes them without this note will think
+    they have found something.
+
+    E|z| and the ECE have no within-slide version here — they are scale
+    statistics over the pooled regions by construction — so they are the same
+    numbers in either cut and are marked as such rather than silently mixed
+    into a within-slide row.
+    """
+    print("\n=== Table 2 counterpart: both cohorts, one cut of rho (2f) ===")
+    print("rho: WITHIN SLIDE, partialled on mu. Case is the unit; the interval")
+    print("resamples cases. E|z|/0.80 and ECE are pooled over regions in both")
+    print("cohorts — a scale has no within-slide form — so they are unchanged")
+    print("by the cut. Say which cut was used wherever these are printed.\n")
+    print(f"{'cohort':8s} {'component':16s} {'rho':>8s} {'95% CI':>18s} "
+          f"{'+ve':>6s} {'E|z|/0.80':>10s} {'ECE':>7s}")
+    for cohort, rows, ws in blocks:
+        by = {r["component"]: r for r in rows}
+        for key, label, *_ in SOURCES:
+            w, s = ws.get(key), by.get(key)
+            if not w or not s:
+                continue
+            ci = (f"[{w['rho_partial_mu_ci_lo']:+.3f},"
+                  f"{w['rho_partial_mu_ci_hi']:+.3f}]")
+            print(f"{cohort:8s} {key:16s} {w['rho_partial_mu_mean']:>+8.3f} "
+                  f"{ci:>18s} "
+                  f"{w['n_positive_partial_mu']:>3d}/{w['n_slides']:<2d} "
+                  f"{s['calibration_ratio']:>10.2f} "
+                  f"{s['ece_normalised']:>7.3f}")
+    print("\n--- the OTHER cut, pooled over regions — DO NOT put this in the "
+          "table ---")
+    print("Every region counts as an observation, so twenty cases read as "
+          "thousands, and\nthe kidney value is dominated by between-slide "
+          "level differences rather than by\nanything measured inside a slide.")
+    for cohort, rows, ws in blocks:
+        by = {r["component"]: r for r in rows}
+        for key, label, *_ in SOURCES:
+            r, w = by.get(key), ws.get(key)
+            if not r:
+                continue
+            raw = (f"  raw within-slide {w['rho_raw_mean']:+.3f} "
+                   f"({w['n_positive_raw']}/{w['n_slides']})" if w else "")
+            print(f"{cohort:8s} {key:16s} pooled {r['spearman_rho']:>+7.3f} "
+                  f"[{r['rho_ci_lo']:+.3f},{r['rho_ci_hi']:+.3f}]{raw}")
+
+
 def report_per_subset(fold_dir: Path) -> None:
     """The five per-subset rows the manuscript is still missing (§3).
 
@@ -490,6 +550,15 @@ def main() -> None:
                     help="compare_uncertainty_sources.py output directory.")
     ap.add_argument("--pixel", type=Path, default=None,
                     help="plot_pixel_reliability.py output, for main Figure 1.")
+    ap.add_argument("--kidney", type=Path, default=None,
+                    help="calibrate_phi.py output for the OUT-OF-DISTRIBUTION "
+                         "cohort (--prediction grand). Writes "
+                         "reliability_kidney.pdf and prints the two cohorts in "
+                         "one named cut of rho (§2f).")
+    ap.add_argument("--min_regions_per_slide", type=int, default=15,
+                    help="Slides with fewer regions drop out of the "
+                         "within-slide statistic, as in calibrate_phi.py. "
+                         "[%(default)s]")
     ap.add_argument("--fold", type=Path, default=None,
                     help="calibrate_phi.py --prediction fold output directory. "
                          "Prints the five per-subset rows §3 still owes the "
@@ -579,6 +648,26 @@ def main() -> None:
                               ylabel="within-slide $\\rho$ vs residual",
                               seed=args.seed)
         report_numbers(rp, "pixel level (residual)", HALF_NORMAL_PIXEL)
+
+    # ---- The out-of-distribution arm, which had no float at all (2f) ----
+    if args.kidney:
+        tk = pd.read_csv(args.kidney / "per_region_calibration.csv")
+        tk = tk[tk["descriptor"] == DESCRIPTOR].copy()
+        if tk.empty:
+            raise SystemExit(f"no {DESCRIPTOR} rows in {args.kidney}")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            rk = score(tk, args.n_bins, args.n_boot, args.seed)
+            wk = within_slide(tk, args.min_regions_per_slide, args.n_boot,
+                              args.seed)
+        fig_reliability(rk, SOURCES, args.outdir / "reliability_kidney.pdf",
+                        HALF_NORMAL, "$\\sigma$  (CPA)", "$e$")
+        report_numbers(rk, "kidney, region level (CPA)")
+        # The liver arm's within-slide rows are already computed, by the same
+        # function, in the run this script read them from — so the two cohorts
+        # are the same statistic and not merely the same name.
+        report_cohorts([("liver", rows, ws),
+                        ("kidney", rk, {r["component"]: r for r in wk})])
 
     # ---- The numbers §3 still owes, as text ----
     if args.fold:

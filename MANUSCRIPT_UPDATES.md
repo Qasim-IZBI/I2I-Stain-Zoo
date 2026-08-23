@@ -35,10 +35,26 @@ difference is what the uncertainty is scored against. Quote **this** table, not 
 pixel one.
 
 The pixel-level run stands as the direct replication of the BMVC 2026 finding, on
-this cohort and at that scale — 44 106 tiles, 20 slides, every component null:
-total ρ = −0.000, procedural +0.015, data-exposure +0.001, all p > 0.6, 9–12 of 20
-slides positive against a shuffled control of 0.004. Report it as the replication;
-report §0 as the contrast.
+this cohort and at that scale — 44 106 tiles, 20 slides, every component null.
+**Two cuts of ρ, and both are from the same common-pixel-set run** (2026-08-23):
+
+| cut | total | procedural | data-exposure | slides +ve |
+|---|---|---|---|---|
+| **within-slide, partialled on μ** — the one to quote | −0.000 | +0.015 | +0.001 | 10, 12, 9 of 20 |
+| pooled across tiles | −0.051 | +0.019 | −0.129 | — |
+
+Shuffled control 0.004 in both (0.0039, 0.0038, 0.0038 per component), and the
+95% CI of every within-slide value covers zero: [−0.076, +0.077], [−0.052,
++0.083], [−0.079, +0.081]. Report it as the replication; report §0 as the
+contrast.
+
+**Neither cut supersedes the other and the pixel set is not the difference.** The
+two were briefly read as one number that had changed when the common pixel set
+landed; they are one run scored two ways, and data exposure's pooled −0.129 is
+the ecological artefact the within-slide cut exists to remove. Whichever is
+printed, name the cut beside it. §0's liver rows are the same within-slide
+partialled cut, so the two arms are directly comparable — which is the reason to
+state the cut rather than leave it to be inferred.
 
 ### The pairing, since a reviewer may ask
 

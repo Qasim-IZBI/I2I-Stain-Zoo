@@ -247,7 +247,23 @@ argument.
 
 ---
 
-## 2e. Annotations come off both reliability figures — requested 2026-08-23
+## 2e. Annotations come off both reliability figures — requested 2026-08-23, **delivered**
+
+> **Delivered 2026-08-23.** Annotations removed from `reliability_sources.pdf`, axes now
+> read `σ (CPA)` and `e`, and the conventional arm's ρ, CI, `E|z|/0.46` and ECE were handed
+> over as text and are now in the manuscript's Table 2.
+>
+> **One consequence for this repository.** The pixel arm's ρ came back as −0.051, +0.019,
+> −0.129 against the −0.000, +0.015, +0.001 that `MANUSCRIPT_UPDATES.md` still prints. Same
+> statistic, different pixel set: the common-pixel-set run scores all three components on
+> identical pixels, where the old per-component masks gave the data-exposure curve about
+> 4.7% fewer. The new values are in the paper. **`MANUSCRIPT_UPDATES.md` needs correcting**,
+> since it is the declared authority on every number and the manuscript checks against it.
+>
+> **Still owed:** the shuffled control for the pixel arm under the common pixel set. The
+> paper carries 0.004 from the superseded run and says so.
+
+
 
 `reliability_sources.pdf` annotates each curve with $\rho$ and $\mathbb{E}|z|/0.80$;
 `reliability_pixel.pdf` annotates nothing. The manuscript first considered adding the same
@@ -288,6 +304,51 @@ axes min-max scaled, so the two arms' ECEs are at least constructed alike.
 The manuscript reports $\rho$ to three decimals, $+0.217$, $+0.169$, $+0.274$, because the
 intervals beside them are quoted to three. Any $\rho$ handed over in text or drawn on a plot
 should carry three, not the two the old annotations used.
+
+## 2f. The out-of-distribution arm has no float at all — requested 2026-08-23
+
+The kidney arm is reported in the supplement as **prose only**: the error grew by a factor of
+$3.3$, the spread by $1.18$, the scale ratio moved from $0.71$ to $2.07$, and the
+within-slide correlation partialled on the prediction is $+0.001$. There is no figure and no
+table, so §7's organ-shift signpost and §8's paragraph both point at a section rather than at
+something a reader can look at. Every other claim in the paper now names a float.
+
+Two artefacts are asked for, in this order of usefulness.
+
+### (a) A kidney counterpart to the manuscript's Table 2
+
+Same five columns, same three components, so the two can be read against each other:
+
+```
+cohort   component        rho [95% CI]     E|z|/0.80    ECE
+liver    total / procedural / data exposure
+kidney   total / procedural / data exposure
+```
+
+**The kidney rows must be within-slide and partialled on the point prediction**, with the
+case as the unit and the interval from resampling cases. This is not a preference. A
+**pooled** kidney correlation survives neither the within-slide cut nor the density control
+and is the same ecological artefact as pooling across training subsets; the manuscript's
+do-not-report list forbids it outright, so a pooled value in this table cannot be used and
+would have to be recomputed.
+
+Note that the liver rows of the manuscript's Table 2 are **pooled**, so if both cohorts go in
+one table the liver rows must be recomputed within-slide as well, or the two cuts must be
+labelled per row block. **Say which was done in the handover text.** Two cuts of $\rho$ under
+one symbol in one table is the trap this repository and the manuscript have each hit once
+already.
+
+### (b) A kidney reliability diagram
+
+`reliability_kidney.pdf`, built exactly like `reliability_sources.pdf`, three components
+against the CPA absolute error with the $\mathbb{E}|e| = 0.80\sigma$ line, no annotations,
+same axis labels. Placed beside the liver one in the supplement it shows the over-confidence
+directly, the curves rising away from the line rather than along it, which is the arm's whole
+finding and is currently a sentence.
+
+If the segmenter caveat makes a reference-dependent kidney figure unwise to produce, say so
+and the manuscript will keep the arm as prose. The caveat is already stated in the supplement
+and is not a reason to withhold the numbers, only to frame them.
 
 ## 3. Numbers the manuscript is still missing
 
