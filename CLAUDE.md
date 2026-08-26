@@ -1029,6 +1029,81 @@ mean of those absolutes and no `real` column. The script exits with that
 explanation rather than scoring something else. The pixel arm needs that line
 changed to save a signed per-channel residual and the regen-error stage re-run.
 
+##### How stable is the data-exposure component at K = 5? — `stability_data_exposure.py` (W-29)
+
+With five disjoint subsets the between-group variance rests on **four degrees of
+freedom**, and the paper shows no sensitivity analysis behind its median share of
+0.508. Retraining at other K is out of scope; a stability estimate on the
+existing grid is affordable, and the disclosure is worth more than the number:
+
+| component | df | relative SE ≈ √(2/ν) |
+|---|---|---|
+| procedural | K(S−1) = **45** | 21% |
+| data exposure | K−1 = **4** | 71% |
+
+Both are confirmed from the grid rather than assumed — K comes from the `fold*`
+columns and S from the φ run's `summary.json`.
+
+```bash
+sbatch scripts/stability_data_exposure.sh
+```
+
+**The gate is the reconstruction check, not the bracketing check.** The script
+rebuilds the decomposition from `fold{f}_mu_*` / `fold{f}_sd_*` and asserts it
+reproduces the stored `sd_procedural_*`, `sd_data_*` and `sd_total_*` columns —
+verified to 1e-16 against `uncertainty_phi.decompose` itself. Both ANOVA
+corrections are reapplied (ddof=1 within fold, and subtracting σ²_proc/n₀ from
+the spread of fold means), so a corrected estimate is never compared against an
+uncorrected one.
+
+**The spec's check that the five leave-one-out values should bracket 0.508 is
+not a valid diagnostic**, and one-sidedness does not mean the recomputation
+drifted. Dropping a subset makes the between term noisier, which does two things
+in opposite directions:
+
+- **selection** — more regions fall at or below zero and drop out, and the
+  survivors are the ones with larger data estimates, so the unmatched median
+  moves **up**;
+- **Jensen** — the share is `1/(1 + proc/data)`, concave in `data`, so on a fixed
+  region set a noisier `data` pulls the median **down**.
+
+Measured on a 400-region synthetic grid: unmatched, all five landed above the
+full grid (0.177–0.185 vs 0.174) with 19–27 more regions dropped; on the 229
+common regions, all five landed below it (0.222–0.230 vs 0.235). Both readings
+are reported — the unmatched one is what a study actually run at K = 4 would
+publish.
+
+**Two corrections to the seed contrast**, without which it says the opposite of
+the truth:
+
+- The K leave-one-out replicates each share K−1 of K folds, so their raw SD is a
+  **correlated** dispersion that under-states the sampling error. The jackknife
+  inflation by (K−1)/√K = 1.79 is what makes it an SE, and only that belongs
+  beside an independent bootstrap SD.
+- Halving the seeds is a bigger perturbation than removing a fifth of the
+  subsets. The default subsample size is therefore the **matched fraction**,
+  S(1 − 1/K), with the spec's S→5 kept beside it.
+
+The seed arm is **parametric** — per-member φ is not on disk, since
+`compute_phi_uncertainty.py` holds the member block in memory and writes only
+fold summaries. It draws subsample means and variances from the stored per-fold
+mean and SD with the finite-population correction; the Gaussian and χ² forms are
+the assumption, the FPC is not. `--member_npz` takes an exact dump if one is ever
+produced (one `[n_seeds, n_regions]` array per fold under keys `fold1`..`foldK`,
+a one-line addition there). **The df figures need neither route.**
+
+The jackknife SE on a **median** is reported because the spec asks, and always
+beside two things that do not share the problem — the assumption-free range, and
+the same jackknife on the **mean** share, where the statistic is smooth. The
+delete-one jackknife is inconsistent for medians; if the three disagree, quote
+the range.
+
+**Coupling to W-20**, which this does not measure: the subsets are balanced, 3
+sham and 4 BDL+vehicle each, so §5's justification that subsets "differ in
+fibrosis composition" is contradicted by the design. Whatever the numbers say,
+that sentence has to be rewritten to attribute data exposure to *which
+individual cases* a member saw. The run prints this as a reminder.
+
 **Quote the cluster-bootstrap CI, not the naive p.** `--n_boot` (default 2000)
 resamples whole *slides*: regions inside one are spatially correlated, so a p-value
 over ~2850 regions describes a cohort of twenty cases as if it held 2850. A slide
