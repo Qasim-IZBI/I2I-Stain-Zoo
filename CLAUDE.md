@@ -888,6 +888,79 @@ On the UC liver cohort, CPA at 80% coverage: MAE −8.1%, CI [−14.9%, −3.3%]
 against an oracle of −41.2% — about a fifth of the achievable gain. The three
 topological descriptors sit flat on the random line at every coverage.
 
+##### Does σ add anything to μ? — `compare_ranking_rules.py` (W-30)
+
+`risk_coverage()` ranks by σ and only by σ, so the paper can say what σ buys but
+not whether it buys anything **beyond** μ — and the μ baseline above already
+beats it. §8 nevertheless claims the two "carry different information and are
+worth reading together" on the strength of a partialled correlation, which is
+indirect evidence for an operational claim. This makes the comparison direct:
+same regions, same coverage grid, same slide-clustered bootstrap, and the only
+thing that changes is the score.
+
+```bash
+sbatch scripts/compare_ranking_rules.sh            # liver, checks the published numbers
+sbatch --export=ALL,TABLE=/path/kidney/per_region_sources.csv,\
+OUTDIR=/path/w30_kidney,CHECK_PUBLISHED=0 scripts/compare_ranking_rules.sh
+
+python compare_ranking_rules.py \
+    --table  ./compare_sources/per_region_sources.csv \
+    --outdir ./w30_ranking_rules/ --check_published
+```
+
+| rule | score | needs an ensemble? |
+|---|---|---|
+| `random` | — | no — exactly flat, so no Monte-Carlo baseline |
+| `mu` | μ | no — the deployment baseline that currently wins |
+| `sd` | σ | yes — the existing curve |
+| `mu_rank` / `sd_rank` | within-slide rank of each | matched baselines, see below |
+| `ranksum` | rank(μ) + rank(σ) | yes — no fitting, nothing to overfit |
+| `fitted` | E[rank e \| μ, σ], leave-one-**case**-out | yes |
+| `oracle` | the true error | — the ceiling |
+
+**The claim is the paired difference, not two point estimates.** Every bootstrap
+replicate evaluates all rules on the *same* resampled cohort and the difference
+is taken inside it, so `rank_rule_deltas.csv` is about the difference — which two
+overlapping marginal intervals are not. Negative delta means the rule beats the
+reference; the §8 claim is demonstrated only where the CI excludes zero.
+
+Four things that would otherwise be got wrong:
+
+- **The fitted rule is cross-validated by case.** Fitting error on (μ, σ) and
+  then ranking the same regions is optimistic and a reviewer will say so. The
+  features are within-slide rank transforms, which touch no target, so a
+  held-out slide's own errors never enter its own score — `test_no_leakage_from
+  _the_held_out_slide` asserts exactly that. Its coefficients are written to
+  `fitted_coefficients.csv`: `ranksum` is the same model with both pinned at 1,
+  so a `b_sd` near zero means the data wanted μ and nothing else.
+- **Matched baselines.** `ranksum` and `fitted` are within-slide-normalised by
+  construction, so scoring them against a `mu` ranked on raw values pooled across
+  slides confounds the combination with the normalisation. `mu_rank`/`sd_rank`
+  are the same rules under the same normalisation.
+- **Two scopes, because the paper reports two.** `pooled` sorts every region
+  together; `within` discards a fixed fraction inside each slide and weights
+  slides equally — the scope matching "the slide is the unit of replication",
+  and one `calibrate_phi.py` never computed at all. Inside a slide `mu` and
+  `mu_rank` are the same ordering, so their delta is identically zero and
+  `frac_better` is NaN rather than 0; that is not a tie the data produced.
+- **`point_prediction` is dropped as a component.** `make_paper_figures.py`
+  injects it as a synthetic source whose `sd` *is* `mu`; here μ is a rule, and
+  leaving it in would duplicate the baseline under another name.
+
+The pooled `sd` curve is asserted to equal `calibrate_phi.risk_coverage()`'s
+exactly (`test_sd_rule_matches_risk_coverage`) — otherwise the comparison against
+μ would rest on a σ number the paper does not report.
+
+**It also settles the 8.1% / 7.8% inconsistency.** `sec/supp_data.tex` reduces
+0.0397 to 0.0366 and calls it 8.1%, then gives 7.8% for the same quantity three
+sentences later; from the printed values it is 7.808%, and against the random
+baseline of 0.0398 it is 8.040%. The reconciliation block prints the reduction at
+full precision so the text can be corrected rather than re-guessed.
+
+`--check_published` compares against the eight published **liver** numbers and
+warns on any that do not reproduce. Turn it off for kidney (`CHECK_PUBLISHED=0`),
+where the comparison is meaningless.
+
 **Quote the cluster-bootstrap CI, not the naive p.** `--n_boot` (default 2000)
 resamples whole *slides*: regions inside one are spatially correlated, so a p-value
 over ~2850 regions describes a cohort of twenty cases as if it held 2850. A slide
