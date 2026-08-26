@@ -961,6 +961,74 @@ full precision so the text can be corrected rather than re-guessed.
 warns on any that do not reproduce. Turn it off for kidney (`CHECK_PUBLISHED=0`),
 where the comparison is meaningless.
 
+##### Is the 0.80σ line justified? — `estimate_shape_factor.py` (W-2)
+
+`4_evaluation.tex:120` derives the calibrated line from the error being
+"symmetric with scale σ", giving E|e| = σ√(2/π) ≈ 0.80σ. **Symmetry does not give
+that factor** — it is Gaussian-specific. Laplace sits at 0.707, Student-*t*(5) at
+0.735, uniform at 0.866. The factor sets both reference lines (0.80 here, 0.46 at
+pixel scale), Table 2's whole E|z| column, `fig:reliability`, `fig:kidney` and
+every supplement scale ratio.
+
+Comparing measured E|e|/σ against 0.80 does not answer it, because that tests the
+product of a **shape** term and a **scale** term and the paper attributes every
+deviation to the scale. So standardise first, then ask only about shape:
+
+```
+r = mu - real        u = r / sd
+kappa_centred = mean|u - mean u| / sd(u, ddof=1)      # per slide, then combined
+```
+
+```bash
+sbatch scripts/estimate_shape_factor.sh                              # liver
+sbatch --export=ALL,TABLE=/path/kidney/per_region_calibration.csv,\
+OUTDIR=/path/w2_kidney,COHORT=kidney scripts/estimate_shape_factor.sh
+```
+
+The signed residual is recoverable because `mu` and `real` survive as separate
+columns even though only `|mu - real|` is stored as `error` — the one fact that
+makes this a re-read rather than a re-run.
+
+**Within slide, then combined over slides.** Pooling mixes cases of different
+fibrosis stage, and a mixture of Gaussians with different variances is
+leptokurtic even when every component is Gaussian. The pooled value is reported
+beside the answer precisely so that gap is visible; it is not the answer.
+
+**The confound the spec does not guard against, and it is large.** Standardising
+buys immunity to a *constant* miscalibration, not to a σ that varies within a
+slide without tracking the local error scale — u is then a scale mixture, which
+is leptokurtic whatever the error's own shape. Measured with Gaussian errors
+throughout: cv 0.2 → κ 0.782, cv 0.4 → 0.742, cv 0.6 → 0.701. That is the whole
+distance from Gaussian to Laplace, manufactured by σ alone. So every estimate
+carries `cv_sd` (within-slide spread of σ) and `kappa_centred_raw` (the same
+statistic on the **un**standardised residual) beside it, and the run prints which
+reading is licensed. **κ(u) is the correct multiplier for the reliability line
+either way** — that line is drawn in exactly those coordinates. The gap decides
+only whether §4 may additionally call the errors non-Gaussian.
+
+**Acceptance check 1 is a statement about the means, not about every slide.**
+Under a pure Gaussian null the per-slide difference `kappa_uncentred −
+kappa_centred` has mean ≈ SD ≈ 0.58/n, so it is negative for about **one slide in
+six at any n** — measured on 4000 draws at n = 50, 150, 500. A tight per-slide
+tolerance therefore fails on correct data; the run judges the component means and
+reports the crossing rate against that ~17% null.
+
+`bias_share = |mean r| / mean|r|` is `tab:ood`'s "share of mean e that is a
+constant offset" (49% liver, 98% kidney). It is a property of the residual alone,
+so it must come out **identical across components** — the run checks that, which
+is a direct test that `mu` and `real` were pulled correctly. Both the pooled and
+the mean-over-slides form are reported, since the table does not say which it is.
+`--cohort` also checks the calibration ratios (0.7135 / 1.0128 / 1.0972 on
+liver), the region count and the 14/20 under-predicting cases — that last one
+pins the sign convention, `r = mu − real`.
+
+**Not runnable on the pixel protocol.** `evaluation.py:633` computes
+`torch.abs(x - x') .mean(dim=1)` before saving, so the sign is destroyed at
+source and the channel mean with it; `plot_pixel_reliability.py` stores a per-tile
+mean of those absolutes and no `real` column. The script exits with that
+explanation rather than scoring something else. The pixel arm needs that line
+changed to save a signed per-channel residual and the regen-error stage re-run.
+
 **Quote the cluster-bootstrap CI, not the naive p.** `--n_boot` (default 2000)
 resamples whole *slides*: regions inside one are spatially correlated, so a p-value
 over ~2850 regions describes a cohort of twenty cases as if it held 2850. A slide
