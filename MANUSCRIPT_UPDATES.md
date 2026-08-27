@@ -380,8 +380,10 @@ robustness check rather than as equivalent to the annotation.
 σ is strongly a proxy for how much collagen a region holds: **ρ(σ, μ_CPA) =
 +0.76**, and absolute error grows with the same thing. Pooled across regions,
 partialling μ out drops ρ from +0.274 to +0.109 with a CI spanning zero. Ranking
-on μ alone — no ensemble at all — **beats** σ for triage (−15.1% vs −7.8% MAE at
-80% coverage; within-slide −15.9% vs −11.5%).
+on μ alone — no ensemble at all — **beats** σ for triage (−15.1% vs −8.1% MAE at
+80% coverage; within-slide −13.2% vs −11.5%). *(Corrected 2026-08-26 against
+`Added_test_from_comments/w30_ranking_rules/`: this line previously said −7.8%
+and −15.9%; the run gives −8.150% and −13.24%.)*
 
 **So do not lead with selective prediction.** The μ baseline is the first thing a
 reader will try, and it wins.
@@ -420,13 +422,16 @@ certain, measure CPA error on what remains:
 | coverage | CPA MAE | vs keeping all | random baseline |
 |---|---|---|---|
 | 100% | 0.0397 | — | 0.0397 |
-| 90% | 0.0381 | −4.2% | 0.0398 |
-| **80%** | **0.0366** | **−7.8%** | 0.0398 |
+| 90% | 0.0381 | −4.2% | 0.0397 |
+| **80%** | **0.0365** | **−8.1%** | 0.0397 |
 | 70% | 0.0346 | −13.0% | 0.0397 |
-| 50% | 0.0298 | **−25.0%** | 0.0398 |
+| 50% | 0.0298 | **−25.0%** | 0.0397 |
 
 At 80% coverage the reduction is **−8.1%, 95% CI [−15.1%, −1.4%]** clustered on
-case. Random discarding is flat at 0.0398 — the control that makes the claim.
+case. Random discarding is flat at 0.0397, equal to the base by construction — the
+control that makes the claim. *(Table corrected 2026-08-26: the −7.8% cell
+contradicted the −8.1% line below it; the run gives −8.150%, MAE 0.036505, random
+0.039744.)*
 The oracle (rank by true error) reaches −41.2%, so the ensemble captures ~20% of
 what a perfect uncertainty would; **report that gap**, it is the honest measure of
 how far this is from solved.

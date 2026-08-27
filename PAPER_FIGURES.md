@@ -253,15 +253,22 @@ argument.
 > read `σ (CPA)` and `e`, and the conventional arm's ρ, CI, `E|z|/0.46` and ECE were handed
 > over as text and are now in the manuscript's Table 2.
 >
-> **One consequence for this repository.** The pixel arm's ρ came back as −0.051, +0.019,
-> −0.129 against the −0.000, +0.015, +0.001 that `MANUSCRIPT_UPDATES.md` still prints. Same
-> statistic, different pixel set: the common-pixel-set run scores all three components on
-> identical pixels, where the old per-component masks gave the data-exposure curve about
-> 4.7% fewer. The new values are in the paper. **`MANUSCRIPT_UPDATES.md` needs correcting**,
-> since it is the declared authority on every number and the manuscript checks against it.
+> **The consequence written here on 2026-08-23 was a misdiagnosis and is withdrawn.** It
+> claimed the handed-over ρ of −0.051, +0.019, −0.129 superseded the −0.000, +0.015, +0.001
+> in `MANUSCRIPT_UPDATES.md`, and blamed the common pixel set. Wrong on both counts. They are
+> **the same run scored two ways**: pooled across tiles versus within-slide and partialled on
+> μ. `MANUSCRIPT_UPDATES.md` was never stale and needs no correction. Thanks for catching it.
 >
-> **Still owed:** the shuffled control for the pixel arm under the common pixel set. The
-> paper carries 0.004 from the superseded run and says so.
+> **The manuscript's Table 2 carries the pooled cut**, because the proposed arm's +0.217 is
+> pooled too and a head-to-head must use one cut on both sides. Its caption now says so
+> explicitly and points at the within-slide partialled cut in the supplement.
+>
+> **This was the §2f trap sprung on §2e**, two cuts of ρ under one symbol, and it nearly
+> overwrote a correct number with a different statistic. The lesson taken: **a handover of ρ
+> states its cut in the same line as the value.** Please keep labelling them as you now do.
+>
+> **The shuffled control is not owed** — 0.004 confirmed unchanged under the common pixel
+> set.
 
 
 
@@ -305,13 +312,25 @@ The manuscript reports $\rho$ to three decimals, $+0.217$, $+0.169$, $+0.274$, b
 intervals beside them are quoted to three. Any $\rho$ handed over in text or drawn on a plot
 should carry three, not the two the old annotations used.
 
-## 2f. The out-of-distribution arm has no float at all — requested 2026-08-23
+## 2f. The out-of-distribution arm has no float at all — requested 2026-08-23, **delivered**
 
-The kidney arm is reported in the supplement as **prose only**: the error grew by a factor of
-$3.3$, the spread by $1.18$, the scale ratio moved from $0.71$ to $2.07$, and the
-within-slide correlation partialled on the prediction is $+0.001$. There is no figure and no
-table, so §7's organ-shift signpost and §8's paragraph both point at a section rather than at
-something a reader can look at. Every other claim in the paper now names a float.
+> **Both delivered 2026-08-23.** `reliability_kidney.pdf` is in the supplement, and the
+> per-component table for both cohorts is now its Table 2. All three kidney curves sit two to
+> three times above the 0.80σ line and slope downward, so the caption states that the slope is
+> the between-slide artefact the paper declines to report as a correlation, rather than
+> omitting a figure that would have looked suppressed.
+>
+> **The cut was labelled, which is what made the table usable.** Every ρ in it is within-slide
+> and partialled on μ in both cohorts, and `E|z|/0.80` is pooled because a scale statistic has
+> no within-slide form. Both are stated in the caption. This is the distinction §2e got wrong
+> a few hours earlier, so the labelling mattered more than usual.
+>
+> **The ECE column was dropped from that table by the manuscript.** On kidney it reads 0.420,
+> 0.463 and 0.125, which orders the three components differently from every other statistic
+> there, and the caption says why rather than printing a number that argues against itself.
+>
+> **The pooled kidney ρ stays out of both documents**, as does the p-value. The do-not-report
+> note in the pipeline is the right place for the former.
 
 Two artefacts are asked for, in this order of usefulness.
 
