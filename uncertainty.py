@@ -434,9 +434,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--data_range", type=str, default=None,
         metavar="START,END",
         help="Limit processing to WSI folders {START:03d}–{END:03d} under each "
-             "member directory (e.g. '1,5'). Enables per-WSI parallel jobs when "
-             "combined with a SLURM array. Without this flag all tiles are "
-             "discovered automatically.",
+             "member directory (e.g. '1,5'). Useful for splitting the work into "
+             "one job per WSI. Without this flag all tiles are discovered "
+             "automatically.",
     )
     parser.add_argument(
         "--mask_dir", type=Path, default=None,

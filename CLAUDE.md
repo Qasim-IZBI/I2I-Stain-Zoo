@@ -2,9 +2,15 @@
 
 Guidance for Claude Code (claude.ai/code) when working in this repository.
 
-For the user-facing walkthrough (install → data → training → inference →
-evaluation → uncertainty), see `README.md`. This file is the complete flag
-reference plus architecture and conventions.
+`README.md` is the reproduction guide: it carries the full CLI walkthrough for
+both paper experiments plus a per-flag reference for every entry point. This file
+covers architecture, conventions, and the study parameters a reproduction needs
+to get right.
+
+There are no cluster job scripts in this repository. Every step is a plain
+`python <script>.py` invocation; where the study ran a job array, `README.md`
+gives the equivalent shell loop. Do not reintroduce scheduler-specific wrappers
+or hardcode absolute cluster paths into the Python entry points.
 
 ## Project Overview
 
@@ -66,6 +72,10 @@ already-released tilings; `reconstruct.py` does not read them.
 Step-based, not epoch-based, so runs are comparable across data fractions with
 different tile counts. Logs print every `--log_steps` with wall time for the
 interval; checkpoints save every `--save_steps`.
+
+The step counts in the examples below are illustrative — see **Study Parameters**
+for what the paper actually ran (1M steps for the scaling study, 750k per
+ensemble member).
 
 ```bash
 # Single-stage models (cyclegan, unit, munit, dclgan, cyclediffusion)
@@ -361,20 +371,23 @@ the source despite a poor forward translation.
 
 ### Aggregate Calibration — Per-Model Summaries
 
-Pools the per-WSI `per_tile.csv` files from `scripts/run_calibration_all.sh` and recomputes
-every metric on the full tile pool per model, so the Spearman distribution,
-across-tile correlations and reliability diagram come from all tiles together rather
-than an average of per-WSI summaries.
+Pools the per-WSI `per_tile.csv` files written by `uncertainty_calibration.py` and
+recomputes every metric on the full tile pool per model, so the Spearman
+distribution, across-tile correlations and reliability diagram come from all tiles
+together rather than an average of per-WSI summaries.
 
 ```bash
 python aggregate_calibration.py --base /path/to/ensemble --outdir ./calibration_combined/
-sbatch scripts/aggregate_calibration.sh
 ```
 
-Outputs `{outdir}/{model}/summary.json`, `{outdir}/{model}/calibration.png`, and
-`{outdir}/all_models.csv`. `--n_bins` sets the quantile bin count (default 10).
-Expects `per_tile.csv` at
-`ensemble/{MODEL}/data_large/{MODEL_SIZE}/calibration/{MODEL}/wsi{NNN}/`.
+`--base` holds one subdirectory per model; **every `per_tile.csv` anywhere beneath
+a model's subdirectory is pooled**, so the per-WSI sub-layout is free. `--models`
+overrides the model list, `--n_bins` the quantile bin count (default 10). Outputs
+`{outdir}/{model}/summary.json`, `{outdir}/{model}/calibration.png`,
+`{outdir}/all_models.csv` and the combined 2×3 panels.
+
+`plot_uncertainty_boxplot.py --base` works the same way, globbing
+`per_wsi_csv/*.csv` beneath each model subdirectory.
 
 ### PSR Positive Area Segmentation
 
@@ -395,14 +408,13 @@ nnUNetv2_predict \
     -npp 1 -nps 1 -device cpu
 ```
 
-Inference tiles must be stitched into whole slides first (`reconstruct.py`, or
-`scripts/recon_all_configs.sh` for the 54-config grid).
+Inference tiles must be stitched into whole slides first with `reconstruct.py`.
 
 Label convention: `0` background, `1` tissue, `2` PSR-positive. `compare_psr.py`
 reads masks with `tifffile` and takes `[..., 0]` for 3-channel TIFs.
 
-`-npp`/`-nps` are nnU-Net worker counts; keep them at 1 on constrained nodes —
-the committed scripts request 256 GB and run CPU-only on the `paula` partition.
+`-npp`/`-nps` are nnU-Net worker counts; keep them at 1 on memory-constrained
+machines. The study ran this step CPU-only with 256 GB.
 
 ### PSR Mask Post-Processing
 
@@ -456,10 +468,14 @@ paper reports paired CPA MAE.
 ### Combined Metric Figures
 
 ```bash
-python plot_combined_metrics.py --eval_indir /path/to/Eval --psr_indir /path/to/psr_comparison \
+python plot_combined_metrics.py --eval_indir /path/to/evaluation --psr_indir /path/to/psr_comparison \
     --outdir ./combined_metrics_plot/
-sbatch scripts/plot_combined_metrics.sh
 ```
+
+Expected input layouts are documented in the module docstring and in README §6:
+`{eval_indir}/{model}/data_{data_size}/model_{model_size}/{metric}.csv` and
+`{psr_indir}/{model}/summary.json`, with `compare_psr.py` labels named
+`{model_size}_model/{data_size}_data`.
 
 Writes `combined_metrics.png` (2×2: Patch-SSIM, LPIPS, FID, CPA MAE) and
 `combined_metrics.csv` (outer join, one row per model × model_size × data_size).
@@ -469,7 +485,6 @@ best config per model.
 ```bash
 python plot_ranking_correlation.py --csv ./combined_metrics_plot/combined_metrics.csv \
     --outdir ./combined_metrics_plot/
-sbatch scripts/plot_ranking_correlation.sh
 ```
 
 Ranks all 54 configurations by each metric independently (rank 1 = best,
@@ -478,70 +493,54 @@ direction-aware) and computes the pairwise Spearman matrix. Writes
 `ranking_correlation_pvalues.csv`. This answers whether image-quality metrics can
 substitute for the CPA pipeline when selecting a model across the whole zoo.
 
-### SLURM Pipelines
+### Study Parameters
 
-All job scripts live in `scripts/`. They resolve Python through
-`PROJECT_ROOT=I2I-Stain-Zoo`, a path relative to the **submit directory**, and never
-`cd` — so submit from the parent of the repository:
+The numbers a reproduction has to get right. `README.md` has the runnable
+commands; this is the reference for what the paper actually ran.
 
-```bash
-sbatch I2I-Stain-Zoo/scripts/infer_small_models.sh
-```
+**Scaling study (54 configs = 6 models × 3 generator sizes × 3 data fractions):**
 
-Every script has a pre-flight skip guard and is safe to re-submit after an
-interruption.
+| Parameter | Value |
+|---|---|
+| Training steps | 1,000,000 (CycleGAN, UNIT, MUNIT, DCLGAN, CycleDiffusion) |
+| UVCGAN steps | 250,000 pretrain + 750,000 finetune |
+| Data fractions | `--data_range 1,7` (25%) / `1,15` (50%) / `1,30` (100%) |
+| Test set | 5 WSIs, `--data_range 1,5` |
+| Eval tissue filter | `--min_tissue_fraction 0.1` |
+| Patch-SSIM | `--patch_size 64 --patches_per_image 16` |
+| CycleDiffusion inference | `--cd_steps 200` |
+| `--path_real` for all three metrics | the real `testB` tiles |
 
-**Scaling study (54 configs):**
+Pipeline order: train → `inference.py --direction A2B` → `evaluation.py`
+(fid, patch_ssim, lpips) → `reconstruct.py` → `nnUNetv2_predict` →
+`apply_he_mask.py` → `fill_tissue_holes.py` → `compare_psr.py` →
+`plot_combined_metrics.py` → `plot_ranking_correlation.py`.
 
-```bash
-sbatch scripts/infer_small_models.sh          # A→B tiles
-sbatch scripts/eval_all_configs.sh            # FID, patch-SSIM, LPIPS
-sbatch scripts/recon_all_configs.sh           # stitch tiles → reconstructed WSIs
-sbatch scripts/segment_psr_nn_light_all_configs.sh  # Dataset314_SR_light → wsi_masks/
-sbatch scripts/apply_he_mask_all_configs.sh   # → psr_masks_wsi_cleaned/
-sbatch scripts/fill_tissue_holes_all_configs.sh  # → psr_masks_wsi_final/
-sbatch scripts/compare_psr_all_configs.sh     # → CPA MAE per model
-```
+The real-SR reference goes through the identical mask pipeline: stitch the real
+`testB` tiles with `reconstruct.py` (no `--tile_dir`), segment, clean, fill. The
+WSI-level H&E tissue masks consumed by `apply_he_mask.py` come from
+`reconstruct.py --metadata <testA> --mode mask`.
 
-Real SR reference: `scripts/recon_real_psr.sh` (stitch real testB tiles) →
-**[no committed segmentation script]** → `scripts/apply_he_mask_real.sh` →
-`scripts/fill_tissue_holes_real.sh` → consumed by `scripts/compare_psr_all_configs.sh`
-as `psr_masks/real/psr_masks_wsi_final/`.
+**Ensemble / uncertainty study:**
 
-The real-SR segmentation step has no script in the repository: run
-`nnUNetv2_predict` with `Dataset314_SR_light` over the output of
-`scripts/recon_real_psr.sh` by hand. Note that `scripts/apply_he_mask_real.sh` currently reads
-`psr_masks/real/psr_masks_wsi/`, so either write the predictions there or adjust
-that path.
+| Parameter | Value |
+|---|---|
+| K | 10 members per family, `--seed 1 … 10`, identical otherwise |
+| Steps per member | 750,000 (UVCGAN: 250,000 + 500,000) |
+| Data | 100% (`--data_range 1,30`) |
+| Best config per family | CycleGAN M, UNIT M, MUNIT M, DCLGAN S, UVCGAN S, CycleDiffusion S |
+| Tissue filter | `--min_tissue_fraction 0.1`, `--min_tissue_pixels 256` |
+| Normalisation bounds | `--lower-percentile 1 --upper-percentile 99` (heatmaps only) |
 
-**Reverse inference and regen error:**
+Pipeline order: train K members into `model_01/ … model_10/` → `inference.py`
+A→B **and** B→A per member → `uncertainty.py` over the A→B outputs (variance
+maps) → `uncertainty.py` over the B→A outputs (this is where the ensemble-mean
+A′ in `mean_rgb/` comes from) → `evaluation.py --metric regen_error
+--path_A_regen <that mean_rgb>` → `uncertainty_calibration.py` per WSI →
+`aggregate_calibration.py`. Ensemble CPA reuses the scaling-study mask pipeline.
 
-```bash
-sbatch scripts/infer_B2A_all.sh        # B'→A' tiles, for regen error without re-inference
-sbatch scripts/eval_regen_B2A_all.sh   # CPU-only MAE pass over tile pairs
-```
-
-**Ensemble / uncertainty:**
-
-```bash
-sbatch scripts/train_ensemble_cyclegan.sh        # one per family; array size sets K
-sbatch scripts/infer_ensemble_cyclegan.sh        # A→B per member
-sbatch scripts/infer_ensemble_cyclegan_B2A.sh    # B→A per member
-sbatch scripts/compute_ensemble_uncertainty.sh   # per-pixel variance
-sbatch scripts/compute_ensemble_regen_error.sh   # per-member error maps
-sbatch scripts/run_calibration_all.sh            # calibration per model per WSI
-sbatch scripts/aggregate_calibration.sh          # pool tiles per model
-sbatch scripts/recon_ensemble_A2B.sh
-```
-
-Ensemble CPA mirrors the same segmentation: `scripts/recon_ensemble_A2B.sh` →
-`scripts/segment_psr_nn_light_ensemble.sh` (Dataset314_SR_light) →
-`scripts/apply_he_mask_ensemble.sh` → `scripts/fill_tissue_holes_ensemble.sh` →
-`scripts/compare_psr_ensemble.sh`.
-
-All six families use **K = 10** ensemble members (`--array=0-9` in the
-`train_ensemble_*` and `infer_ensemble_*` scripts; the CycleDiffusion inference
-scripts use `--array=0-49`, a 2D decomposition of 10 members × 5 test WSIs).
+`uncertainty.py` mirrors the input tile structure, so `raw_npy/001/images/*.npy`
+lines up with `regen_error/wsi001/error_npy/` and `testA/001/masks/`.
 
 ## Architecture
 
@@ -608,6 +607,9 @@ and were moved here when MIUDiff was removed — CycleDiffusion imports them fro
 - **Log format:** `[S00001000 |   12.3s] loss_G:0.4017 …` — step number and wall time
   since the previous log.
 - No external diffusion libraries — DDPM/DDIM sampling is implemented from scratch.
-- No `requirements.txt`. Dependencies: torch, torchvision, numpy, scipy, pandas,
-  matplotlib, pillow, tifffile, tqdm, pytest (plus nnU-Net v2 for CPA only).
+- Dependencies are pinned loosely in `requirements.txt`: torch, torchvision, numpy,
+  scipy, pandas, matplotlib, pillow, tifffile, tqdm, pytest (plus nnU-Net v2 for
+  CPA only). Entry points must stay importable on Python 3.9 — use
+  `from __future__ import annotations` rather than bare PEP 604 (`X | None`)
+  annotations.
 - Test suite: `pytest tests/ -q` — 100 tests, CPU-only, ~2 s.

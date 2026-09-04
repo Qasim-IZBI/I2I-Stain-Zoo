@@ -1,10 +1,14 @@
 """Aggregate per-WSI uncertainty calibration results into per-model summaries.
 
-Reads the per_tile.csv files written by run_calibration_all.sh for each
-model (5 WSIs × 6 models) and re-computes all metrics on the combined
-tile pool. This gives the correct per-model statistics: the Spearman
-distribution, across-tile correlations, and reliability diagram are all
-computed from all tiles together rather than averaged over per-WSI summaries.
+Collects every per_tile.csv written by uncertainty_calibration.py for a model
+and re-computes all metrics on the combined tile pool. This gives the correct
+per-model statistics: the Spearman distribution, across-tile correlations, and
+reliability diagram are all computed from all tiles together rather than
+averaged over per-WSI summaries.
+
+Discovery: for each model, every ``per_tile.csv`` found anywhere beneath
+``{base}/{model}/`` is pooled, so any per-WSI output layout works as long as
+each model has its own top-level directory under ``--base``.
 
 Outputs per model:
   {outdir}/{model}/summary.json    — aggregated calibration metrics
@@ -16,7 +20,7 @@ Outputs overall:
 Usage
 -----
 python aggregate_calibration.py \\
-    --base /work2/bz66izin-VSproject/ensemble \\
+    --base ./ensemble/calibration \\
     --outdir ./calibration_combined/
 """
 
@@ -93,15 +97,6 @@ def _save_across_tile(mean_u_per_tile, mean_e_per_tile, pearson_across, spearman
 
 
 MODELS = ["cyclegan", "unit", "munit", "dclgan", "uvcgan", "cyclediffusion"]
-MODEL_SIZES = {
-    "cyclegan":       "model_medium",
-    "unit":           "model_medium",
-    "munit":          "model_medium",
-    "dclgan":         "model_small",
-    "uvcgan":         "model_small",
-    "cyclediffusion": "model_small",
-}
-N_WSIS = 5
 LAYOUT = [
     ["cyclegan", "unit",   "munit"],
     ["dclgan",   "uvcgan", "cyclediffusion"],
@@ -114,25 +109,22 @@ def aggregate_model(
     outdir: Path,
     n_bins: int = 10,
 ) -> Optional[dict]:
-    model_size = MODEL_SIZES[model]
-    ensemble_root = base / model / "data_large" / model_size
-    calib_root = ensemble_root / "calibration_nolog" / model
+    model_root = base / model
+    if not model_root.is_dir():
+        print(f"  [{model}] No directory {model_root} — skipping.")
+        return None
 
-    # Collect per_tile.csv from all WSIs
-    dfs = []
-    for wsi_num in range(1, N_WSIS + 1):
-        csv_path = calib_root / f"wsi{wsi_num:03d}" / "per_tile.csv"
-        if csv_path.exists():
-            dfs.append(pd.read_csv(csv_path))
-        else:
-            print(f"  [{model}] WARNING: missing {csv_path}")
+    # Pool every per_tile.csv found beneath the model directory, whatever the
+    # per-WSI sub-layout is.
+    csv_paths = sorted(model_root.rglob("per_tile.csv"))
+    dfs = [pd.read_csv(p) for p in csv_paths]
 
     if not dfs:
-        print(f"  [{model}] No per_tile.csv files found — skipping.")
+        print(f"  [{model}] No per_tile.csv found under {model_root} — skipping.")
         return None
 
     df = pd.concat(dfs, ignore_index=True)
-    print(f"  [{model}] {len(df)} tiles from {len(dfs)}/{N_WSIS} WSI(s)")
+    print(f"  [{model}] {len(df)} tiles from {len(dfs)} per-WSI CSV(s)")
 
     # --- within-tile Spearman distribution ---
     rho_w = df["spearman_rho"].values
@@ -161,7 +153,6 @@ def aggregate_model(
 
     summary = {
         "model":      model,
-        "model_size": model_size,
         "n_wsi":      len(dfs),
         "n_tiles":    int(len(df)),
         "n_tiles_finite_rho": int(rho_w_finite.size),
@@ -241,7 +232,7 @@ def make_combined_reliability(all_plot_data: dict, outdir: Path) -> None:
             ax.plot(d["bin_u"], d["bin_e"], "o-", color="C0")
             ax.set_xlim(0, 1)
             ax.set_ylim(0, 1)
-            ax.set_title(f"{DISPLAY_NAMES[model]}   ECE = {d['ece']:.4f}")
+            ax.set_title(f"{DISPLAY_NAMES.get(model, model)}   ECE = {d['ece']:.4f}")
             ax.set_xlabel("Mean uncertainty per tile (bin, normalised)")
             ax.set_ylabel("Mean error per tile (bin, normalised)")
             ax.grid(alpha=0.3)
@@ -281,7 +272,7 @@ def make_combined_spearman_hist(all_plot_data: dict, outdir: Path) -> None:
             ax.axvline(0, color="gray", linewidth=0.7)
             ax.set_xlim(x_lim)
             ax.set_ylim(y_lim)
-            ax.set_title(f"{DISPLAY_NAMES[model]}   N = {len(valid)}   mean $\\rho$ = {d['rho_within_mean']:.3f}")
+            ax.set_title(f"{DISPLAY_NAMES.get(model, model)}   N = {len(valid)}   mean $\\rho$ = {d['rho_within_mean']:.3f}")
             ax.set_xlabel("Within-tile Spearman $\\rho$ (uncertainty vs error)")
             ax.set_ylabel("Tile count")
             ax.grid(alpha=0.3)
@@ -315,7 +306,7 @@ def make_combined_across_tile(all_plot_data: dict, outdir: Path) -> None:
                        edgecolors="black", linewidths=0.3, color="C3")
             ax.set_xlim(u_lim)
             ax.set_ylim(e_lim)
-            ax.set_title(f"{DISPLAY_NAMES[model]}   $\\rho$ = {d['pearson_across']:.3f}   $r_s$ = {d['spearman_across']:.3f}")
+            ax.set_title(f"{DISPLAY_NAMES.get(model, model)}   $\\rho$ = {d['pearson_across']:.3f}   $r_s$ = {d['spearman_across']:.3f}")
             ax.set_xlabel("Mean uncertainty per tile")
             ax.set_ylabel("Mean error per tile")
             ax.grid(alpha=0.3)
@@ -333,7 +324,12 @@ def main() -> None:
     )
     ap.add_argument(
         "--base", type=Path, required=True,
-        help="Ensemble base directory containing cyclegan/, unit/, etc. subdirectories.",
+        help="Directory containing one subdirectory per model (cyclegan/, unit/, …). "
+             "Every per_tile.csv beneath a model's subdirectory is pooled.",
+    )
+    ap.add_argument(
+        "--models", nargs="+", default=MODELS,
+        help=f"Model subdirectories to aggregate (default: {' '.join(MODELS)}).",
     )
     ap.add_argument(
         "--outdir", type=Path, default=Path("calibration_combined"),
@@ -349,7 +345,7 @@ def main() -> None:
 
     all_rows = []
     all_plot_data = {}
-    for model in MODELS:
+    for model in args.models:
         print(f"\n=== {model} ===")
         result = aggregate_model(model, args.base, args.outdir, n_bins=args.n_bins)
         if result is None:
@@ -358,7 +354,6 @@ def main() -> None:
         all_plot_data[model] = plot_data
         all_rows.append({
             "model":           summary["model"],
-            "model_size":      summary["model_size"],
             "n_wsi":           summary["n_wsi"],
             "n_tiles":         summary["n_tiles"],
             "spearman_mean":   summary["within_tile"]["spearman_mean"],

@@ -4,21 +4,30 @@ plot_combined_metrics.py — single figure with four subplots:
 
 Sources
 -------
-  Patch-SSIM / LPIPS / FID : metric CSVs produced by eval_all_configs.sh /
-                              eval_all_54.sh (same layout as plot_eval_metrics.py)
-  PSR-MAE                  : summary.json files produced by compare_psr.py /
-                              compare_psr_all_configs.sh (same layout as
-                              rank_psr_configs.py)
+  Patch-SSIM / LPIPS / FID : metric CSVs written by evaluation.py --save_csv,
+      laid out as
+          {eval_indir}/{model}/results/data_{data_size}/model_{model_size}/
+              patch_ssim.csv | lpips.csv | fid.csv
+      (the intermediate "results/" component is optional).
+  CPA MAE                  : summary.json written by compare_psr.py, laid out as
+          {psr_indir}/{model}/summary.json
+          {psr_indir}/{model}/per_wsi.csv
+      where compare_psr.py was called with one --labels entry per configuration,
+      named "{model_size}_model/{data_size}_data" (e.g. "medium_model/large_data").
+
+Both {model_size} and {data_size} are one of small | medium | large.
 
 Usage
 -----
   python plot_combined_metrics.py \
-      --eval_indir  /work2/bz66izin-VSproject/Eval \
-      --psr_indir   /work2/bz66izin-VSproject/psr_comparison \
+      --eval_indir  ./evaluation/ \
+      --psr_indir   ./psr_comparison/ \
       --outdir      ./combined_metrics_plot/
 
 The legend is placed as a standalone panel to the left of all four subplots.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -428,13 +437,13 @@ def main():
     )
     parser.add_argument(
         "--eval_indir", type=Path, required=True,
-        help="Root evaluation directory with metric CSVs "
-             "(same --indir as plot_eval_metrics.py).",
+        help="Root evaluation directory holding the per-configuration metric "
+             "CSVs (see the layout in this file's module docstring).",
     )
     parser.add_argument(
         "--psr_indir", type=Path, required=True,
-        help="PSR comparison directory with per-model summary.json files "
-             "(same --indir as rank_psr_configs.py).",
+        help="Directory holding one compare_psr.py output subdirectory per "
+             "model, each with summary.json and per_wsi.csv.",
     )
     parser.add_argument(
         "--outdir", type=Path, default=Path("combined_metrics_plot"),

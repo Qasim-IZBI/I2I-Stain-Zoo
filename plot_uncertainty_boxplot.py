@@ -6,13 +6,15 @@ Produces:
 
 Reads the per-WSI CSVs produced by aggregate_uncertainty.py.
 
+Discovery: for each model, every ``*.csv`` inside any ``per_wsi_csv/``
+directory beneath ``{base}/{model}/`` is loaded, so any per-model output
+layout works as long as each model has its own top-level directory.
+
 Example
 -------
 python plot_uncertainty_boxplot.py \
-    --base   /work2/bz66izin-VSproject/ensemble \
+    --base   ./ensemble/uncertainty \
     --outdir ./uncertainty_boxplot/
-
-python plot_uncertainty_boxplot.py   # uses default paths
 """
 
 from __future__ import annotations
@@ -39,47 +41,37 @@ MODEL_DISPLAY_NAMES = {
     "cyclediffusion": "CycleDiffusion",
 }
 
-# Must match aggregate_uncertainty.sh
-MODEL_SIZES = {
-    "cyclegan":       "model_medium",
-    "unit":           "model_medium",
-    "munit":          "model_medium",
-    "dclgan":         "model_small",
-    "uvcgan":         "model_small",
-    "cyclediffusion": "model_small",
-}
-
-DEFAULT_BASE = Path("/work2/bz66izin-VSproject/ensemble")
-
 
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
 
-def load_all_data(base: Path) -> dict[str, dict[str, np.ndarray]]:
+def load_all_data(base: Path, models: list[str]) -> dict[str, dict[str, np.ndarray]]:
     """Load uncertainty values per model and per WSI.
+
+    For each model, every CSV inside a ``per_wsi_csv/`` directory anywhere
+    beneath ``{base}/{model}/`` is loaded.
 
     Returns: {model: {wsi_stem: np.ndarray of per-tile mean_uncertainty}}
     """
     all_data: dict[str, dict[str, np.ndarray]] = {}
 
-    for model in MODELS:
-        model_size = MODEL_SIZES[model]
-        csv_dir = (base / model / "data_large" / model_size
-                   / "uncertainty" / model / "per_wsi_csv")
-
+    for model in models:
+        model_root = base / model
         wsi_data: dict[str, np.ndarray] = {}
-        if not csv_dir.exists():
-            print(f"  [WARN] Not found: {csv_dir}")
+
+        csv_paths = sorted(model_root.rglob("per_wsi_csv/*.csv"))
+        if not csv_paths:
+            print(f"  [WARN] No per_wsi_csv/*.csv found under: {model_root}")
         else:
-            for csv_path in sorted(csv_dir.glob("*.csv")):
+            for csv_path in csv_paths:
                 wsi_stem = csv_path.stem
                 vals = (pd.read_csv(csv_path, usecols=["mean_uncertainty"])
                         ["mean_uncertainty"].dropna().to_numpy())
                 wsi_data[wsi_stem] = vals
 
             n_tiles = sum(len(v) for v in wsi_data.values())
-            print(f"  {MODEL_DISPLAY_NAMES[model]}: {n_tiles:,} tiles "
+            print(f"  {MODEL_DISPLAY_NAMES.get(model, model)}: {n_tiles:,} tiles "
                   f"from {len(wsi_data)} WSI(s)")
 
         all_data[model] = wsi_data
@@ -120,15 +112,14 @@ def _colors(n: int) -> np.ndarray:
 def compute_stats(data: dict[str, np.ndarray], wsi: str) -> list[dict]:
     """Return one row per model with standard boxplot quantile statistics."""
     rows = []
-    for model in MODELS:
-        vals = data[model]
+    for model, vals in data.items():
         if len(vals) == 0:
             continue
         q1, median, q3 = np.percentile(vals, [25, 50, 75])
         iqr = q3 - q1
         rows.append({
             "wsi":           wsi,
-            "model":         MODEL_DISPLAY_NAMES[model],
+            "model":         MODEL_DISPLAY_NAMES.get(model, model),
             "n_tiles":       len(vals),
             "min":           float(vals.min()),
             "whisker_low":   float(max(vals.min(), q1 - 1.5 * iqr)),
@@ -148,10 +139,10 @@ def compute_stats(data: dict[str, np.ndarray], wsi: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def plot_boxplot(data: dict[str, np.ndarray], title: str, out_path: Path) -> None:
-    models_with_data = [m for m in MODELS if len(data[m]) > 0]
+    models_with_data = [m for m in data if len(data[m]) > 0]
     if not models_with_data:
         return
-    labels = [MODEL_DISPLAY_NAMES[m] for m in models_with_data]
+    labels = [MODEL_DISPLAY_NAMES.get(m, m) for m in models_with_data]
     values = [data[m] for m in models_with_data]
 
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -185,10 +176,10 @@ def plot_boxplot(data: dict[str, np.ndarray], title: str, out_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 def plot_violin(data: dict[str, np.ndarray], title: str, out_path: Path) -> None:
-    models_with_data = [m for m in MODELS if len(data[m]) > 0]
+    models_with_data = [m for m in data if len(data[m]) > 0]
     if not models_with_data:
         return
-    labels = [MODEL_DISPLAY_NAMES[m] for m in models_with_data]
+    labels = [MODEL_DISPLAY_NAMES.get(m, m) for m in models_with_data]
     values = [data[m] for m in models_with_data]
 
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -222,8 +213,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description="Box and violin plots of per-tile uncertainty per model family."
     )
-    ap.add_argument("--base", type=Path, default=DEFAULT_BASE,
-                    help=f"Ensemble root directory (default: {DEFAULT_BASE})")
+    ap.add_argument("--base", type=Path, required=True,
+                    help="Directory containing one subdirectory per model "
+                         "(cyclegan/, unit/, …). Every per_wsi_csv/*.csv "
+                         "beneath a model's subdirectory is loaded.")
+    ap.add_argument("--models", nargs="+", default=MODELS,
+                    help=f"Model subdirectories to plot "
+                         f"(default: {' '.join(MODELS)}).")
     ap.add_argument("--outdir", type=Path, default=Path("uncertainty_boxplot"),
                     help="Output directory (default: ./uncertainty_boxplot/)")
     args = ap.parse_args()
@@ -231,7 +227,7 @@ def main() -> None:
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     print("Loading uncertainty CSVs …")
-    all_data = load_all_data(args.base)
+    all_data = load_all_data(args.base, args.models)
 
     pooled = pool_across_wsis(all_data)
     if all(len(v) == 0 for v in pooled.values()):
@@ -252,7 +248,8 @@ def main() -> None:
     per_wsi_dir = args.outdir / "per_wsi"
 
     for wsi in all_wsis:
-        wsi_data = {model: all_data[model].get(wsi, np.array([])) for model in MODELS}
+        wsi_data = {model: all_data[model].get(wsi, np.array([]))
+                    for model in args.models}
         title = f"Epistemic uncertainty — {wsi}"
         plot_boxplot(wsi_data, title, per_wsi_dir / f"{wsi}_boxplot.png")
         plot_violin(wsi_data,  title, per_wsi_dir / f"{wsi}_violin.png")

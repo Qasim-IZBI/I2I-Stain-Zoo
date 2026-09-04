@@ -23,6 +23,8 @@ python apply_he_mask.py \
     --outdir     ./psr_masks_cleaned/
 """
 
+from __future__ import annotations
+
 import argparse
 from pathlib import Path
 
@@ -42,10 +44,16 @@ def load_mask(path: Path) -> np.ndarray:
 
 
 def find_he_mask(he_dir: Path, stem: str) -> Path | None:
-    for ext in (".tif", ".tiff"):
-        p = he_dir / f"{stem}{ext}"
-        if p.exists():
-            return p
+    """Locate the HE tissue mask for a PSR mask stem.
+
+    Accepts both a bare ``{stem}.tif`` and the ``{stem}_mask.tif`` naming that
+    ``reconstruct.py --mode mask`` produces.
+    """
+    for name in (stem, f"{stem}_mask"):
+        for ext in (".tif", ".tiff"):
+            p = he_dir / f"{name}{ext}"
+            if p.exists():
+                return p
     return None
 
 
