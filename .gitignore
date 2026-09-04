@@ -7,3 +7,8 @@ __pycache__/
 
 # Test cache
 .pytest_cache/
+
+# Packaging / editable-install artifacts
+*.egg-info/
+build/
+dist/

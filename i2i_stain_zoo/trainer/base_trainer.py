@@ -13,7 +13,7 @@ from torch import nn, optim
 from torchvision.utils import save_image
 from typing import Dict, Any, List, Optional
 
-from utils import make_serializable
+from i2i_stain_zoo.utils import make_serializable
 
 # matplotlib is optional — only imported when plotting
 try:

@@ -1,6 +1,6 @@
 # reconstruct.py
 import argparse
-from utils import reconstruct_wsi
+from i2i_stain_zoo.utils import reconstruct_wsi
 
 
 def main():

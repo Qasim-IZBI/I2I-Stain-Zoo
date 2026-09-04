@@ -42,7 +42,7 @@ from torchvision import transforms
 from torchvision.models import inception_v3, Inception_V3_Weights
 
 
-from datasets.common import IMG_EXTS, list_images
+from i2i_stain_zoo.datasets.common import IMG_EXTS, list_images
 
 
 class ImageFolderList(Dataset):
@@ -474,11 +474,11 @@ def compute_lpips(
 
 def _load_model_for_regen(model_name: str, ckpt_path: str, device: torch.device, style_dim: int = 8):
     """Load a translation model from checkpoint for cycle reconstruction."""
-    from models.cyclegan import CycleGAN, CycleGANConfig
-    from models.unit import UNIT, UNITConfig
-    from models.munit import MUNIT, MUNITConfig
-    from models.dclgan import DCLGAN, DCLGANConfig
-    from models.uvcgan import UVCGAN, UVCGANConfig
+    from i2i_stain_zoo.models.cyclegan import CycleGAN, CycleGANConfig
+    from i2i_stain_zoo.models.unit import UNIT, UNITConfig
+    from i2i_stain_zoo.models.munit import MUNIT, MUNITConfig
+    from i2i_stain_zoo.models.dclgan import DCLGAN, DCLGANConfig
+    from i2i_stain_zoo.models.uvcgan import UVCGAN, UVCGANConfig
 
     ckpt = torch.load(ckpt_path, map_location=device)
     saved_cfg = ckpt.get("config")

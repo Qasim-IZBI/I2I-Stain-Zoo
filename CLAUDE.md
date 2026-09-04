@@ -8,10 +8,36 @@ complete reference** — every entry point, every flag, plus architecture,
 conventions, and the study parameters behind the paper. When a tool's flags are
 not in README, they are here.
 
-There are no cluster job scripts in this repository. Every step is a plain
-`python <script>.py` invocation; where the study ran a job array, `README.md`
-gives the equivalent shell loop. Do not reintroduce scheduler-specific wrappers
-or hardcode absolute cluster paths into the Python entry points.
+## Layout
+
+The code is an installable package. Install it editable (`pip install -e .`)
+before working on it; the tests and console scripts both assume that.
+
+```
+i2i_stain_zoo/
+  base_models.py  utils.py      library
+  models/  datasets/  trainer/  library
+  cli/                          one module per command, each with a main()
+pyproject.toml                  dependencies + console-script entry points
+tests/
+```
+
+Import rules — there are no implicit top-level modules any more:
+
+- Always absolute, always namespaced: `from i2i_stain_zoo.utils import get_device`,
+  `from i2i_stain_zoo.models.cyclegan import CycleGAN`. A bare
+  `from utils import …` or `from models… import …` will import some *other*
+  project's package, or fail.
+- Watch for function-local imports; they are easy to miss when moving files and
+  `--help` will not catch them.
+- New CLI module: give it a `main()`, put it in `cli/`, and add it to
+  `[project.scripts]` in `pyproject.toml`.
+- New dependency: add it to `pyproject.toml`, not a requirements file.
+
+There are no cluster job scripts in this repository. Every step is a single
+command; where the study ran a job array, run the command in a shell loop. Do
+not reintroduce scheduler-specific wrappers or hardcode absolute cluster paths
+into the entry points.
 
 ## Project Overview
 
@@ -45,11 +71,11 @@ is no longer configurable.
 
 ```bash
 # Study protocol: 512×512 tiles downsampled to 256×256, tissue-filtered
-python tile.py --rgb path/to/wsi --output path/to/tiles --mask path/to/masks \
+i2i-tile --rgb path/to/wsi --output path/to/tiles --mask path/to/masks \
     --tile_size 512 --resize_to 256 --image_type trainA --tissue_threshold 0.5
 
 # Test set — keep all tiles (no tissue filtering)
-python tile.py --rgb path/to/wsi --output path/to/tiles --image_type testA \
+i2i-tile --rgb path/to/wsi --output path/to/tiles --image_type testA \
     --tile_size 512 --resize_to 256 --tissue_threshold 0
 ```
 
@@ -66,7 +92,7 @@ path/to/tiles/
 ```
 
 `tiles_metadata.csv` retains `stride` and `overlap` columns for compatibility with
-already-released tilings; `reconstruct.py` does not read them.
+already-released tilings; `i2i-reconstruct` does not read them.
 
 ### Training
 
@@ -80,34 +106,34 @@ ensemble member).
 
 ```bash
 # Single-stage models (cyclegan, unit, munit, dclgan, cyclediffusion)
-python train.py --model cyclegan --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
+i2i-train --model cyclegan --dataA path/to/tiles/trainA --dataB path/to/tiles/trainB \
     --steps 750000 --amp --output ./results/
 
 # Train on a subset of WSIs (folders 001–007 = 25% data fraction)
-python train.py --model cyclegan --dataA ... --dataB ... \
+i2i-train --model cyclegan --dataA ... --dataB ... \
     --data_range 1,7 --steps 750000 --amp --output ./results/
 
 # Custom log and checkpoint frequency
-python train.py --model cyclegan --dataA ... --dataB ... --steps 750000 --amp \
+i2i-train --model cyclegan --dataA ... --dataB ... --steps 750000 --amp \
     --log_steps 500 --save_steps 100000 --output ./results/
 
 # Initialise from a pretrained checkpoint (any model)
-python train.py --model cyclegan --dataA ... --dataB ... --steps 750000 \
+i2i-train --model cyclegan --dataA ... --dataB ... --steps 750000 \
     --init_ckpt ./prev_run/checkpoints/step_250000.pt --output ./new_run/
 
 # Deterministic run (ensemble members differ only by seed)
-python train.py --model cyclegan --dataA ... --dataB ... --steps 750000 --amp \
+i2i-train --model cyclegan --dataA ... --dataB ... --steps 750000 --amp \
     --seed 1 --output ./ensemble/model_01/
 
 # UVCGAN (2-stage): masked-image pretrain → cycle-consistent finetune
-python train.py --model uvcgan --uvcgan_stage pretrain --dataA ... --dataB ... \
+i2i-train --model uvcgan --uvcgan_stage pretrain --dataA ... --dataB ... \
     --steps 250000 --amp --output ./uvcgan/stage1/
-python train.py --model uvcgan --uvcgan_stage finetune \
+i2i-train --model uvcgan --uvcgan_stage finetune \
     --uvcgan_init_ckpt ./uvcgan/stage1/checkpoints/step_250000.pt \
     --dataA ... --dataB ... --steps 500000 --amp --output ./uvcgan/stage2/
 
 # Report A→B parameter count without training
-python train.py --model cyclegan --cyclegan_ngf 128 --cyclegan_n_blocks 10 --count_params
+i2i-train --model cyclegan --cyclegan_ngf 128 --cyclegan_n_blocks 10 --count_params
 ```
 
 **AMP:** `--amp` is silently disabled for `cyclediffusion` — its UNet runs fp32
@@ -153,35 +179,35 @@ DCLGAN λ_cyc 10, λ_id 0, λ_DCL 1; CycleDiffusion ε-prediction only.
 
 ```bash
 # GAN models — single forward pass per tile
-python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA \
+i2i-inference --model cyclegan --direction A2B --data path/to/tiles/testA \
     --ckpt model.pt --outdir ./output/
 
 # Subset of WSIs (folders 001–003)
-python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA \
+i2i-inference --model cyclegan --direction A2B --data path/to/tiles/testA \
     --data_range 1,3 --ckpt model.pt --outdir ./output/
 
 # CycleDiffusion — DDIM inversion with eps_A, decode with eps_B
-python inference.py --model cyclediffusion --direction A2B --data path/to/tiles/testA \
+i2i-inference --model cyclediffusion --direction A2B --data path/to/tiles/testA \
     --ckpt model.pt --cd_steps 200 --outdir ./output/
 
 # B→A is symmetric for CycleDiffusion (invert with eps_B, decode with eps_A)
-python inference.py --model cyclediffusion --direction B2A --data path/to/tiles/testB \
+i2i-inference --model cyclediffusion --direction B2A --data path/to/tiles/testB \
     --ckpt model.pt --cd_steps 200 --outdir ./output_B2A/
 
 # MUNIT with random style sampling
-python inference.py --model munit --direction A2B --data path/to/tiles/testA \
+i2i-inference --model munit --direction A2B --data path/to/tiles/testA \
     --ckpt model.pt --num_samples 3 --outdir ./output/
 
 # MUNIT with style from a reference image
-python inference.py --model munit --direction A2B --data path/to/tiles/testA \
+i2i-inference --model munit --direction A2B --data path/to/tiles/testA \
     --ckpt model.pt --style_image ref.png --outdir ./output/
 
 # Deterministic output (all models)
-python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA \
+i2i-inference --model cyclegan --direction A2B --data path/to/tiles/testA \
     --ckpt model.pt --seed 42 --outdir ./output/
 
 # Resume an interrupted job — skips written tiles, redoes the most recent one
-python inference.py --model cyclegan --direction A2B --data path/to/tiles/testA \
+i2i-inference --model cyclegan --direction A2B --data path/to/tiles/testA \
     --ckpt model.pt --outdir ./output/ --resume
 ```
 
@@ -192,34 +218,34 @@ way is the study setting.
 
 ```bash
 # FID — InceptionV3 pool3, 2048-d (unpaired, distribution-level)
-python evaluation.py --metric fid --path_real real/ --path_fake generated/ --device cuda
+i2i-evaluate --metric fid --path_real real/ --path_fake generated/ --device cuda
 
 # Patch-based SSIM (paired, matched by filename)
-python evaluation.py --metric patch_ssim --path_real real/ --path_fake generated/ \
+i2i-evaluate --metric patch_ssim --path_real real/ --path_fake generated/ \
     --patch_size 64 --patches_per_image 16
 
 # LPIPS — VGG16 perceptual distance, lower is better (paired)
-python evaluation.py --metric lpips --path_real real/ --path_fake generated/ --device cuda
+i2i-evaluate --metric lpips --path_real real/ --path_fake generated/ --device cuda
 
 # Cycle reconstruction error A→B'→A' (MAE in [0,255])
-python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ckpt model.pt \
+i2i-evaluate --metric regen_error --path_A data/HE --model cyclegan --ckpt model.pt \
     --direction A2B --device cuda
 
 # …with heatmaps, overlays and raw per-pixel maps for calibration
-python evaluation.py --metric regen_error --path_A data/HE --model cyclegan --ckpt model.pt \
+i2i-evaluate --metric regen_error --path_A data/HE --model cyclegan --ckpt model.pt \
     --direction A2B --overlay_dir ./regen/ --save_error_npy --device cuda
 
 # Regen error from precomputed A' tiles — no model inference re-run
-python evaluation.py --metric regen_error \
+i2i-evaluate --metric regen_error \
     --path_A data/HE --path_A_regen ./inference_B2A/ \
     --overlay_dir ./regen/ --save_error_npy
 
 # Save results to CSV (any metric)
-python evaluation.py --metric patch_ssim --path_real real/ --path_fake generated/ \
+i2i-evaluate --metric patch_ssim --path_real real/ --path_fake generated/ \
     --save_csv results.csv
 
 # Tissue-only evaluation — masks auto-detected (images/ → masks/ sibling)
-python evaluation.py --metric patch_ssim --path_real testB/tiles/testB \
+i2i-evaluate --metric patch_ssim --path_real testB/tiles/testB \
     --path_fake ./inference/ --min_tissue_fraction 0.1
 ```
 
@@ -242,18 +268,18 @@ Reconstructed files keep the original WSI filename. Mask outputs are
 
 ```bash
 # Pass the dataset directory — all per-WSI CSVs are found automatically
-python reconstruct.py --metadata path/to/tiles/trainA --output ./reconstructed/
+i2i-reconstruct --metadata path/to/tiles/trainA --output ./reconstructed/
 
 # Reconstruct from translated tiles (inference output)
-python reconstruct.py --metadata path/to/tiles/testA \
+i2i-reconstruct --metadata path/to/tiles/testA \
     --tile_dir ./inference_output/ --output ./reconstructed/
 
 # Or a single per-WSI CSV
-python reconstruct.py --metadata path/to/tiles/trainA/001/tiles_metadata.csv \
+i2i-reconstruct --metadata path/to/tiles/trainA/001/tiles_metadata.csv \
     --output ./reconstructed/
 
 # Both RGB and mask, averaging overlaps
-python reconstruct.py --metadata path/to/tiles_metadata.csv --output ./reconstructed/ \
+i2i-reconstruct --metadata path/to/tiles_metadata.csv --output ./reconstructed/ \
     --mode rgb_and_mask --blend average
 ```
 
@@ -262,11 +288,11 @@ python reconstruct.py --metadata path/to/tiles_metadata.csv --output ./reconstru
 ### Uncertainty Maps
 
 ```bash
-python uncertainty.py --model cyclegan --data /path/to/ensemble_outputs/ \
+i2i-uncertainty --model cyclegan --data /path/to/ensemble_outputs/ \
     --output ./uncertainty_out
 
 # Tissue-masked, custom normalisation bounds, WSI subset
-python uncertainty.py --model cyclegan --data /path/to/ensemble_outputs/ \
+i2i-uncertainty --model cyclegan --data /path/to/ensemble_outputs/ \
     --output ./uncertainty_out --mask_dir path/to/tiles/testA \
     --min_tissue_fraction 0.001 --data_range 1,5 \
     --lower-percentile 1 --upper-percentile 99
@@ -284,17 +310,17 @@ python uncertainty.py --model cyclegan --data /path/to/ensemble_outputs/ \
 Reduce to per-tile σ̄ and plot the per-family distribution:
 
 ```bash
-python aggregate_uncertainty.py \
+i2i-aggregate-uncertainty \
     --uncertainty_dir ./uncertainty_out/cyclegan/raw_npy/ \
     --tiles_metadata  path/to/tiles/testA \
     --mask_dir        path/to/tiles/testA \
     --min_tissue_fraction 0.001 \
     --outdir          ./uncertainty_out/cyclegan/per_wsi_csv/
 
-python plot_uncertainty_boxplot.py --base /path/to/ensemble --outdir ./uncertainty_boxplot/
+i2i-plot-uncertainty --base /path/to/ensemble --outdir ./uncertainty_boxplot/
 ```
 
-`aggregate_uncertainty.py` writes one CSV per WSI (`tile_name, mean_uncertainty`),
+`i2i-aggregate-uncertainty` writes one CSV per WSI (`tile_name, mean_uncertainty`),
 deriving WSI membership from the `NNN/` component of the npy path so tile IDs
 repeating across WSIs do not collide.
 
@@ -311,17 +337,17 @@ double-counted in pooled ECE and across-tile statistics.
 # (a) Train K members with different --seed into model_01/ … model_NN/
 # (b) Run inference per member, mirroring that layout
 # (c) Per-pixel ensemble variance
-python uncertainty.py --model cyclegan --data ./ensemble_outputs/cyclegan/ \
+i2i-uncertainty --model cyclegan --data ./ensemble_outputs/cyclegan/ \
     --output ./uncertainty_out/
 
 # (d) Per-pixel error maps — self-cycle, per member
-python evaluation.py --metric regen_error \
+i2i-evaluate --metric regen_error \
     --path_A path/to/tiles/testA \
     --model cyclegan --ckpt ./ensemble/cyclegan/model_01/checkpoints/step_750000.pt \
     --direction A2B --overlay_dir ./regen_cyclegan_m01/ --save_error_npy --device cuda
 
 # (e) Calibration
-python uncertainty_calibration.py \
+i2i-uncertainty-calibrate \
     --uncertainty_dir ./uncertainty_out/cyclegan/raw_npy/ \
     --error_dirs      ./regen_cyclegan_m01/error_npy/ \
     --mask_dir        ./tissue_masks_flat/ \
@@ -329,7 +355,7 @@ python uncertainty_calibration.py \
     --outdir          ./calibration_cyclegan/
 
 # (e′) Ensemble-mean error — pass every member's error dir; averaged per-pixel
-python uncertainty_calibration.py \
+i2i-uncertainty-calibrate \
     --uncertainty_dir ./uncertainty_out/cyclegan/raw_npy/ \
     --error_dirs      ./regen_cyclegan_m01/error_npy/ ./regen_cyclegan_m02/error_npy/ \
                       ./regen_cyclegan_m03/error_npy/ \
@@ -339,7 +365,7 @@ python uncertainty_calibration.py \
 
 Inputs:
 
-- `--uncertainty_dir` — flat directory of `<stem>.npy` from `uncertainty.py`. Use
+- `--uncertainty_dir` — flat directory of `<stem>.npy` from `i2i-uncertainty`. Use
   `raw_npy/`.
 - `--error_dirs` — one or more flat directories of `<stem>.npy` from
   `evaluation.py --save_error_npy`; multiple are averaged per-pixel first.
@@ -372,13 +398,13 @@ the source despite a poor forward translation.
 
 ### Aggregate Calibration — Per-Model Summaries
 
-Pools the per-WSI `per_tile.csv` files written by `uncertainty_calibration.py` and
+Pools the per-WSI `per_tile.csv` files written by `i2i-uncertainty-calibrate` and
 recomputes every metric on the full tile pool per model, so the Spearman
 distribution, across-tile correlations and reliability diagram come from all tiles
 together rather than an average of per-WSI summaries.
 
 ```bash
-python aggregate_calibration.py --base /path/to/ensemble --outdir ./calibration_combined/
+i2i-aggregate-calibration --base /path/to/ensemble --outdir ./calibration_combined/
 ```
 
 `--base` holds one subdirectory per model; **every `per_tile.csv` anywhere beneath
@@ -409,9 +435,9 @@ nnUNetv2_predict \
     -npp 1 -nps 1 -device cpu
 ```
 
-Inference tiles must be stitched into whole slides first with `reconstruct.py`.
+Inference tiles must be stitched into whole slides first with `i2i-reconstruct`.
 
-Label convention: `0` background, `1` tissue, `2` PSR-positive. `compare_psr.py`
+Label convention: `0` background, `1` tissue, `2` PSR-positive. `i2i-compare-psr`
 reads masks with `tifffile` and takes `[..., 0]` for 3-channel TIFs.
 
 `-npp`/`-nps` are nnU-Net worker counts; keep them at 1 on memory-constrained
@@ -423,20 +449,20 @@ Both steps run between segmentation and comparison and materially affect CPA.
 
 ```bash
 # Zero out PSR predictions outside the H&E tissue boundary
-python apply_he_mask.py --psr_masks ./psr_masks_wsi/ --he_masks ./he_tissue_masks/ \
+i2i-apply-he-mask --psr_masks ./psr_masks_wsi/ --he_masks ./he_tissue_masks/ \
     --outdir ./psr_masks_wsi_cleaned/
 
 # Fill enclosed background inside the tissue footprint (labels 1+2 as foreground)
-python fill_tissue_holes.py --masks ./psr_masks_wsi_cleaned/ \
+i2i-fill-tissue-holes --masks ./psr_masks_wsi_cleaned/ \
     --outdir ./psr_masks_wsi_final/
 ```
 
-`apply_he_mask.py` accepts a directory (matched by stem) or a single TIF pair;
+`i2i-apply-he-mask` accepts a directory (matched by stem) or a single TIF pair;
 multi-channel TIFs use the `[..., 0]` slice, and an HE mask of different spatial size
 is resized nearest-neighbour. PSR files with no matching HE mask are warned and
 skipped.
 
-`fill_tissue_holes.py` treats the **union** of labels 1 and 2 as foreground —
+`i2i-fill-tissue-holes` treats the **union** of labels 1 and 2 as foreground —
 filling only label 1 would mark every PSR-positive pixel as a hole and relabel it.
 
 ### PSR Distribution Comparison
@@ -445,7 +471,7 @@ Compares collagen proportionate area between real SR and one or more generated
 mask sets, matched by WSI stem.
 
 ```bash
-python compare_psr.py --masks_real ./psr_masks_real/ \
+i2i-compare-psr --masks_real ./psr_masks_real/ \
     --masks_generated ./masks_cyclegan/ ./masks_unit/ \
     --labels cyclegan unit --outdir ./psr_comparison/
 ```
@@ -469,13 +495,13 @@ paper reports paired CPA MAE.
 ### Combined Metric Figures
 
 ```bash
-python plot_combined_metrics.py --eval_indir /path/to/evaluation --psr_indir /path/to/psr_comparison \
+i2i-plot-metrics --eval_indir /path/to/evaluation --psr_indir /path/to/psr_comparison \
     --outdir ./combined_metrics_plot/
 ```
 
 Expected input layouts are documented in the module docstring:
 `{eval_indir}/{model}/data_{data_size}/model_{model_size}/{metric}.csv` and
-`{psr_indir}/{model}/summary.json`, with `compare_psr.py` labels named
+`{psr_indir}/{model}/summary.json`, with `i2i-compare-psr` labels named
 `{model_size}_model/{data_size}_data`.
 
 Writes `combined_metrics.png` (2×2: Patch-SSIM, LPIPS, FID, CPA MAE) and
@@ -484,7 +510,7 @@ Colour = data size, marker = model size, error bars = ±1 std across WSIs, star 
 best config per model.
 
 ```bash
-python plot_ranking_correlation.py --csv ./combined_metrics_plot/combined_metrics.csv \
+i2i-plot-ranking --csv ./combined_metrics_plot/combined_metrics.csv \
     --outdir ./combined_metrics_plot/
 ```
 
@@ -512,14 +538,14 @@ commands; this is the reference for what the paper actually ran.
 | CycleDiffusion inference | `--cd_steps 200` |
 | `--path_real` for all three metrics | the real `testB` tiles |
 
-Pipeline order: train → `inference.py --direction A2B` → `evaluation.py`
-(fid, patch_ssim, lpips) → `reconstruct.py` → `nnUNetv2_predict` →
-`apply_he_mask.py` → `fill_tissue_holes.py` → `compare_psr.py` →
-`plot_combined_metrics.py` → `plot_ranking_correlation.py`.
+Pipeline order: train → `inference.py --direction A2B` → `i2i-evaluate`
+(fid, patch_ssim, lpips) → `i2i-reconstruct` → `nnUNetv2_predict` →
+`i2i-apply-he-mask` → `i2i-fill-tissue-holes` → `i2i-compare-psr` →
+`i2i-plot-metrics` → `i2i-plot-ranking`.
 
 The real-SR reference goes through the identical mask pipeline: stitch the real
-`testB` tiles with `reconstruct.py` (no `--tile_dir`), segment, clean, fill. The
-WSI-level H&E tissue masks consumed by `apply_he_mask.py` come from
+`testB` tiles with `i2i-reconstruct` (no `--tile_dir`), segment, clean, fill. The
+WSI-level H&E tissue masks consumed by `i2i-apply-he-mask` come from
 `reconstruct.py --metadata <testA> --mode mask`.
 
 **Ensemble / uncertainty study:**
@@ -533,14 +559,14 @@ WSI-level H&E tissue masks consumed by `apply_he_mask.py` come from
 | Tissue filter | `--min_tissue_fraction 0.1`, `--min_tissue_pixels 256` |
 | Normalisation bounds | `--lower-percentile 1 --upper-percentile 99` (heatmaps only) |
 
-Pipeline order: train K members into `model_01/ … model_10/` → `inference.py`
-A→B **and** B→A per member → `uncertainty.py` over the A→B outputs (variance
-maps) → `uncertainty.py` over the B→A outputs (this is where the ensemble-mean
+Pipeline order: train K members into `model_01/ … model_10/` → `i2i-inference`
+A→B **and** B→A per member → `i2i-uncertainty` over the A→B outputs (variance
+maps) → `i2i-uncertainty` over the B→A outputs (this is where the ensemble-mean
 A′ in `mean_rgb/` comes from) → `evaluation.py --metric regen_error
---path_A_regen <that mean_rgb>` → `uncertainty_calibration.py` per WSI →
-`aggregate_calibration.py`. Ensemble CPA reuses the scaling-study mask pipeline.
+--path_A_regen <that mean_rgb>` → `i2i-uncertainty-calibrate` per WSI →
+`i2i-aggregate-calibration`. Ensemble CPA reuses the scaling-study mask pipeline.
 
-`uncertainty.py` mirrors the input tile structure, so `raw_npy/001/images/*.npy`
+`i2i-uncertainty` mirrors the input tile structure, so `raw_npy/001/images/*.npy`
 lines up with `regen_error/wsi001/error_npy/` and `testA/001/masks/`.
 
 ## Architecture
@@ -548,14 +574,14 @@ lines up with `regen_error/wsi001/error_npy/` and `testA/001/masks/`.
 ### Model Interface
 
 All models implement the interface consumed by `BaseTrainer`
-(`trainer/base_trainer.py`):
+(`i2i_stain_zoo/trainer/base_trainer.py`):
 
 - `generator_parameters()` → params for the generator optimiser
 - `discriminator_parameters()` → params for the discriminator optimiser (may be empty)
 - `compute_generator_loss(batch)` → `(loss, log_dict, visuals_dict)`
 - `compute_discriminator_loss(batch, visuals)` → `(loss, log_dict)`
 
-### Shared Components (`base_models.py`)
+### Shared Components (`i2i_stain_zoo/base_models.py`)
 
 GAN building blocks: `Encoder` → `ResnetBottleneck` → `Decoder` (with `ResnetBlock`),
 `NLayerDiscriminator` (70×70 PatchGAN), `ImagePool`, `GANLoss`, `init_weights`,
@@ -580,11 +606,11 @@ and were moved here when MIUDiff was removed — CycleDiffusion imports them fro
 
 ### Data Pipeline
 
-- `datasets/unpaired_dataset.py` — training (A+B folders, pseudo-random pairing)
-- `datasets/single_domain_dataset.py` — inference (single folder)
-- `datasets/target_only_dataset.py` — domain-B-only loading (retained; no current
+- `i2i_stain_zoo/datasets/unpaired_dataset.py` — training (A+B folders, pseudo-random pairing)
+- `i2i_stain_zoo/datasets/single_domain_dataset.py` — inference (single folder)
+- `i2i_stain_zoo/datasets/target_only_dataset.py` — domain-B-only loading (retained; no current
   model uses it since the pretrain-on-B stages were removed)
-- `datasets/transforms.py` — resize to 256×256, normalise to [-1, 1]
+- `i2i_stain_zoo/datasets/transforms.py` — resize to 256×256, normalise to [-1, 1]
 - Formats: `.png .jpg .jpeg .tif .tiff .bmp .webp`
 - With `data_range=(start, end)` datasets load `root/{i:03d}/images/` for `i` in
   `[start, end]`; without it they walk the whole root
@@ -608,9 +634,11 @@ and were moved here when MIUDiff was removed — CycleDiffusion imports them fro
 - **Log format:** `[S00001000 |   12.3s] loss_G:0.4017 …` — step number and wall time
   since the previous log.
 - No external diffusion libraries — DDPM/DDIM sampling is implemented from scratch.
-- Dependencies are pinned loosely in `requirements.txt`: torch, torchvision, numpy,
-  scipy, pandas, matplotlib, pillow, tifffile, tqdm, pytest (plus nnU-Net v2 for
-  CPA only). Entry points must stay importable on Python 3.9 — use
-  `from __future__ import annotations` rather than bare PEP 604 (`X | None`)
+- Dependencies live in `pyproject.toml`: torch, torchvision, numpy, scipy,
+  pandas, matplotlib, pillow, tifffile, tqdm, with `[cpa]` (nnU-Net v2) and
+  `[dev]` (pytest) as extras. Entry points must stay importable on Python 3.9 —
+  use `from __future__ import annotations` rather than bare PEP 604 (`X | None`)
   annotations.
-- Test suite: `pytest tests/ -q` — 100 tests, CPU-only, ~2 s.
+- Test suite: `pytest tests/ -q` — 100 tests, CPU-only, ~2 s. Requires the
+  editable install; the tests import through `i2i_stain_zoo.*` with no
+  `sys.path` bootstrapping.

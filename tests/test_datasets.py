@@ -9,25 +9,19 @@ Covers:
   - Transform: output dtype, shape, value range
 """
 import os
-import sys
 
 import pytest
 import torch
 from PIL import Image
 import tempfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
-from datasets.transforms import default_train_transform
-from datasets.unpaired_dataset import UnpairedDataset
-from datasets.single_domain_dataset import SingleDomainDataset
-from datasets.target_only_dataset import TargetOnlyDataset
+from i2i_stain_zoo.datasets.transforms import default_train_transform
+from i2i_stain_zoo.datasets.unpaired_dataset import UnpairedDataset
+from i2i_stain_zoo.datasets.single_domain_dataset import SingleDomainDataset
+from i2i_stain_zoo.datasets.target_only_dataset import TargetOnlyDataset
 
 IMAGE_SIZE = 64
 TRANSFORM = default_train_transform(image_size=IMAGE_SIZE)
-
 
 # ------------------------------------------------------------------ #
 #  Helpers                                                             #
@@ -42,7 +36,6 @@ def _make_image_dir(base_dir, n=4, size=IMAGE_SIZE):
         img.save(os.path.join(img_dir, f"{i+1:07d}.tif"))
     return base_dir
 
-
 def _make_numbered_dirs(base_dir, folder_indices, n_images=2):
     """Create base_dir/001/images/, base_dir/002/images/, etc."""
     for idx in folder_indices:
@@ -52,7 +45,6 @@ def _make_numbered_dirs(base_dir, folder_indices, n_images=2):
             img = Image.new("RGB", (IMAGE_SIZE, IMAGE_SIZE), color=(i * 30, 80, 160))
             img.save(os.path.join(sub, f"{i+1:07d}.tif"))
     return base_dir
-
 
 # ------------------------------------------------------------------ #
 #  UnpairedDataset                                                     #
@@ -116,7 +108,6 @@ class TestUnpairedDataset:
                 assert len(ds_range) < len(ds_full)
                 assert len(ds_range) > 0
 
-
 # ------------------------------------------------------------------ #
 #  SingleDomainDataset                                                 #
 # ------------------------------------------------------------------ #
@@ -152,7 +143,6 @@ class TestSingleDomainDataset:
             ds_range = SingleDomainDataset(d, transform=TRANSFORM, data_range=(1, 2))
             assert len(ds_range) < len(ds_full)
             assert len(ds_range) > 0
-
 
 # ------------------------------------------------------------------ #
 #  TargetOnlyDataset                                                   #

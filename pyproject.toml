@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "i2i-stain-zoo"
+version = "1.0.0"
+description = "Unpaired image-to-image translation for virtual histological staining (H&E to Sirius Red)"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Qasim Siddiqui" }]
+keywords = ["virtual-staining", "histopathology", "image-to-image-translation",
+            "cyclegan", "diffusion", "uncertainty-quantification"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Intended Audience :: Science/Research",
+]
+
+# torch/torchvision are deliberately unpinned here: install the build matching
+# your CUDA version from pytorch.org before installing this package.
+dependencies = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+    "pillow>=10.0",
+    "tifffile>=2023.7.10",
+    "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+# Collagen proportionate area (CPA) segmentation only.
+cpa = ["nnunetv2>=2.2"]
+dev = ["pytest>=7.4"]
+
+[project.urls]
+Homepage = "https://github.com/Qasim-IZBI/I2I-Stain-Zoo"
+Paper = "https://arxiv.org/abs/2608.24626"
+
+[project.scripts]
+i2i-train                  = "i2i_stain_zoo.cli.train:main"
+i2i-inference              = "i2i_stain_zoo.cli.inference:main"
+i2i-evaluate               = "i2i_stain_zoo.cli.evaluation:main"
+i2i-tile                   = "i2i_stain_zoo.cli.tile:main"
+i2i-reconstruct            = "i2i_stain_zoo.cli.reconstruct:main"
+i2i-uncertainty            = "i2i_stain_zoo.cli.uncertainty:main"
+i2i-uncertainty-calibrate  = "i2i_stain_zoo.cli.uncertainty_calibration:main"
+i2i-aggregate-uncertainty  = "i2i_stain_zoo.cli.aggregate_uncertainty:main"
+i2i-aggregate-calibration  = "i2i_stain_zoo.cli.aggregate_calibration:main"
+i2i-compare-psr            = "i2i_stain_zoo.cli.compare_psr:main"
+i2i-apply-he-mask          = "i2i_stain_zoo.cli.apply_he_mask:main"
+i2i-fill-tissue-holes      = "i2i_stain_zoo.cli.fill_tissue_holes:main"
+i2i-plot-metrics           = "i2i_stain_zoo.cli.plot_combined_metrics:main"
+i2i-plot-ranking           = "i2i_stain_zoo.cli.plot_ranking_correlation:main"
+i2i-plot-uncertainty       = "i2i_stain_zoo.cli.plot_uncertainty_boxplot:main"
+
+[tool.setuptools.packages.find]
+include = ["i2i_stain_zoo*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

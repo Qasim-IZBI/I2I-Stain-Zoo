@@ -1,6 +1,6 @@
 # tile.py
 import argparse
-from utils import create_tiles
+from i2i_stain_zoo.utils import create_tiles
 
 
 def main():

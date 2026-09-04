@@ -3,20 +3,20 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 
-from utils import get_device
+from i2i_stain_zoo.utils import get_device
 
-from trainer.base_trainer import BaseTrainer
-from datasets.unpaired_dataset import UnpairedDataset
-from datasets.transforms import default_train_transform
+from i2i_stain_zoo.trainer.base_trainer import BaseTrainer
+from i2i_stain_zoo.datasets.unpaired_dataset import UnpairedDataset
+from i2i_stain_zoo.datasets.transforms import default_train_transform
 
 
 # Models
-from models.cyclegan import CycleGAN, CycleGANConfig
-from models.unit import UNIT, UNITConfig
-from models.munit import MUNIT, MUNITConfig
-from models.dclgan import DCLGAN, DCLGANConfig
-from models.uvcgan import UVCGAN, UVCGANConfig
-from models.cyclediffusion import CycleDiffusion, CycleDiffusionConfig
+from i2i_stain_zoo.models.cyclegan import CycleGAN, CycleGANConfig
+from i2i_stain_zoo.models.unit import UNIT, UNITConfig
+from i2i_stain_zoo.models.munit import MUNIT, MUNITConfig
+from i2i_stain_zoo.models.dclgan import DCLGAN, DCLGANConfig
+from i2i_stain_zoo.models.uvcgan import UVCGAN, UVCGANConfig
+from i2i_stain_zoo.models.cyclediffusion import CycleDiffusion, CycleDiffusionConfig
 
 
 _CONFIG_CLS = {

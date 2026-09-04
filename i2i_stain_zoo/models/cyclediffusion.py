@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from base_models import DDPMUNet, UNetConfig, DiffusionSchedule
+from i2i_stain_zoo.base_models import DDPMUNet, UNetConfig, DiffusionSchedule
 
 
 @dataclass

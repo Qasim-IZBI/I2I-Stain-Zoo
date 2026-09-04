@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from uncertainty import _build_mask_lookup, _find_tile_mask
+from i2i_stain_zoo.cli.uncertainty import _build_mask_lookup, _find_tile_mask
 
 
 # ---------------------------------------------------------------------------

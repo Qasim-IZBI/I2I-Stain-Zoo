@@ -8,9 +8,13 @@ inference interface, for virtual histological staining of whole-slide images
 
 ## What this gives you
 
-- **One interface for six families.** The same `train.py` / `inference.py` call
-  drives every architecture — swap `--model` and the size flags. No per-model
-  scripts, config trees or framework glue.
+- **An installable package.** `pip install -e .` gives you
+  `from i2i_stain_zoo.models import CycleGAN` in any project, plus `i2i-train`
+  and friends on your `PATH` — no `PYTHONPATH` juggling, no working-directory
+  assumptions.
+- **One interface for six families.** The same `i2i-train` / `i2i-inference`
+  call drives every architecture — swap `--model` and the size flags. No
+  per-model scripts, config trees or framework glue.
 - **Generator capacity as a dial.** Each family exposes flags that scale its
   generator from ~10 M to ~100 M parameters, so capacity and data volume can be
   varied independently.
@@ -22,11 +26,11 @@ inference interface, for virtual histological staining of whole-slide images
   frozen nnU-Net segmenter) — plus deep-ensemble epistemic uncertainty and the
   tooling to check whether that uncertainty actually tracks error.
 - **From-scratch implementations.** No external GAN or diffusion libraries;
-  DDPM/DDIM sampling included. Shared building blocks live in `base_models.py`,
-  so adding a seventh family means implementing four methods.
+  DDPM/DDIM sampling included. Shared building blocks live in
+  `i2i_stain_zoo/base_models.py`, so adding a seventh family means implementing
+  four methods.
 
-Everything runs as a plain `python <script>.py` call — no scheduler, no cluster
-assumptions.
+Everything runs as a single command — no scheduler, no cluster assumptions.
 
 ## Paper
 
@@ -59,12 +63,46 @@ conda activate i2i-stain-zoo
 # PyTorch first — pick the build matching your CUDA version (see pytorch.org)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
-pip install -r requirements.txt
+# This package, in editable mode — your edits take effect immediately
+pip install -e .
+
 pytest tests/ -q          # 100 tests, ~2 s, CPU only
 ```
 
-`nnunetv2` is an optional extra, needed only for the collagen-segmentation
-metric.
+`pip install -e ".[cpa]"` adds `nnunetv2`, needed only for the
+collagen-segmentation metric; `".[dev]"` adds pytest.
+
+To reuse the code from another project, install it from wherever you cloned it:
+
+```bash
+pip install -e /path/to/I2I-Stain-Zoo
+```
+
+### Two ways to call it
+
+Every command below is a console script installed on your `PATH` and runnable
+from any directory. Each is also available as a module, which is handy when you
+want a specific interpreter:
+
+```bash
+i2i-train --model cyclegan …
+python -m i2i_stain_zoo.cli.train --model cyclegan …    # equivalent
+```
+
+### As a library
+
+```python
+from i2i_stain_zoo.models import CycleGAN, CycleGANConfig
+from i2i_stain_zoo.datasets.unpaired_dataset import UnpairedDataset
+from i2i_stain_zoo.trainer.base_trainer import BaseTrainer
+from i2i_stain_zoo.base_models import Encoder, Decoder, ResnetBottleneck
+
+model = CycleGAN(CycleGANConfig(ngf=128, n_blocks=10))
+```
+
+The `base_models` module is the useful one to build on: the
+encoder/bottleneck/decoder stack, a 70×70 PatchGAN discriminator, `ImagePool`,
+`GANLoss`, InfoNCE and patch sampling, plus the DDPM UNet and noise schedule.
 
 ---
 
@@ -75,7 +113,7 @@ Tile your WSIs into numbered per-slide folders. Domain A is the source stain
 never matched tile-for-tile.
 
 ```bash
-python tile.py --rgb /path/to/wsi/ --mask /path/to/tissue_masks/ \
+i2i-tile --rgb /path/to/wsi/ --mask /path/to/tissue_masks/ \
     --output /path/to/tiles/ --image_type trainA \
     --tile_size 512 --resize_to 256 --tissue_threshold 0.5
 ```
@@ -116,7 +154,7 @@ data without changing anything else.
 ## Training
 
 ```bash
-python train.py \
+i2i-train \
     --model  cyclegan \
     --dataA  /path/to/tiles/trainA \
     --dataB  /path/to/tiles/trainB \
@@ -134,7 +172,7 @@ does the right thing, and exits immediately once `--steps` is reached.
 Check a configuration's size before spending GPU time on it:
 
 ```bash
-python train.py --model cyclegan --cyclegan_ngf 128 --cyclegan_n_blocks 10 --count_params
+i2i-train --model cyclegan --cyclegan_ngf 128 --cyclegan_n_blocks 10 --count_params
 ```
 
 ### Common flags
@@ -213,10 +251,10 @@ Every family scales through two or three flags. The S / M / L columns are the
 UVCGAN needs both stages:
 
 ```bash
-python train.py --model uvcgan --uvcgan_stage pretrain \
+i2i-train --model uvcgan --uvcgan_stage pretrain \
     --dataA … --dataB … --steps 250000 --amp --output ./runs/uvcgan/stage1/
 
-python train.py --model uvcgan --uvcgan_stage finetune \
+i2i-train --model uvcgan --uvcgan_stage finetune \
     --uvcgan_init_ckpt ./runs/uvcgan/stage1/checkpoints/step_250000.pt \
     --dataA … --dataB … --steps 750000 --amp --output ./runs/uvcgan/stage2/
 ```
@@ -240,7 +278,7 @@ shared noise code, then decode with the target UNet.
 ## Inference
 
 ```bash
-python inference.py \
+i2i-inference \
     --model     cyclegan \
     --direction A2B \
     --data      /path/to/tiles/testA \
@@ -273,7 +311,7 @@ tile — and is a good candidate for splitting one job per slide with
 Stitch tiles back into whole slides:
 
 ```bash
-python reconstruct.py --metadata /path/to/tiles/testA \
+i2i-reconstruct --metadata /path/to/tiles/testA \
     --tile_dir ./out/cyclegan/ --output ./wsi/cyclegan/
 ```
 
@@ -289,20 +327,20 @@ they do not predict one another.
 
 ```bash
 # Patch-based SSIM (paired by filename, higher is better)
-python evaluation.py --metric patch_ssim \
+i2i-evaluate --metric patch_ssim \
     --path_real /path/to/tiles/testB --path_fake ./out/cyclegan/ \
     --patch_size 64 --patches_per_image 16 --save_csv patch_ssim.csv
 
 # LPIPS — VGG16 perceptual distance (paired, lower is better)
-python evaluation.py --metric lpips \
+i2i-evaluate --metric lpips \
     --path_real /path/to/tiles/testB --path_fake ./out/cyclegan/ --device cuda
 
 # FID — InceptionV3 pool3 (unpaired, distribution-level, lower is better)
-python evaluation.py --metric fid \
+i2i-evaluate --metric fid \
     --path_real /path/to/tiles/testB --path_fake ./out/cyclegan/ --device cuda
 
 # Cycle-reconstruction error: A→B'→A', per-pixel MAE in [0,255]
-python evaluation.py --metric regen_error \
+i2i-evaluate --metric regen_error \
     --path_A /path/to/tiles/testA \
     --model cyclegan --ckpt ./runs/cyclegan/checkpoints/step_1000000.pt \
     --overlay_dir ./regen/ --save_error_npy --device cuda
@@ -324,12 +362,12 @@ inflates both.
 
 The biologically grounded metric. A frozen nnU-Net collagen segmenter is applied
 identically to real and virtual Sirius Red **whole slides**, and the collagen
-fraction is compared per specimen. Stitch with `reconstruct.py`, segment with
-`nnUNetv2_predict -d Dataset314_SR_light`, clean up with `apply_he_mask.py` and
-`fill_tissue_holes.py`, then:
+fraction is compared per specimen. Stitch with `i2i-reconstruct`, segment with
+`nnUNetv2_predict -d Dataset314_SR_light`, clean up with `i2i-apply-he-mask` and
+`i2i-fill-tissue-holes`, then:
 
 ```bash
-python compare_psr.py --masks_real ./psr/real/ \
+i2i-compare-psr --masks_real ./psr/real/ \
     --masks_generated ./psr/cyclegan/ ./psr/unit/ \
     --labels cyclegan unit --outdir ./psr_comparison/
 ```
@@ -348,7 +386,7 @@ with different `--seed` values into `model_01/ … model_NN/`, run inference per
 member, then
 
 ```bash
-python uncertainty.py --model cyclegan --data ./ensemble_out/cyclegan/ \
+i2i-uncertainty --model cyclegan --data ./ensemble_out/cyclegan/ \
     --output ./uncertainty/ --mask_dir /path/to/tiles/testA --min_tissue_fraction 0.1
 ```
 
@@ -359,13 +397,13 @@ intensity units. Outputs: `raw_npy/` (the input to everything downstream),
 stain to report), `summary.json`.
 
 Variance measures *disagreement*, not correctness — a model can be confidently
-wrong. `uncertainty_calibration.py` tests how far the two coincide, pairing the
+wrong. `i2i-uncertainty-calibrate` tests how far the two coincide, pairing the
 uncertainty maps with cycle-reconstruction error and reporting within-tile
 Spearman ρ (are the uncertain pixels the wrong pixels?), across-tile correlation
 (are the uncertain tiles the wrong tiles?) and a reliability diagram with ECE.
 
 ```bash
-python uncertainty_calibration.py \
+i2i-uncertainty-calibrate \
     --uncertainty_dir ./uncertainty/cyclegan/raw_npy/ \
     --error_dirs      ./regen/error_npy/ \
     --mask_dir        /path/to/tiles/testA/001/masks/ \
@@ -376,32 +414,34 @@ Cycle error is a **proxy**, not ground truth: when the forward and inverse
 generators share a bias, both may ignore the same feature and the round trip
 still reconstructs the source despite a poor forward translation.
 
-`aggregate_uncertainty.py` reduces maps to a per-tile scalar,
-`aggregate_calibration.py` pools tiles per model, and
-`plot_uncertainty_boxplot.py` compares the distributions across families.
+`i2i-aggregate-uncertainty` reduces maps to a per-tile scalar,
+`i2i-aggregate-calibration` pools tiles per model, and
+`i2i-plot-uncertainty` compares the distributions across families.
 
 ---
 
 ## Repository layout
 
 ```
-train.py                     training, all six models
-inference.py                 inference, all six models
-evaluation.py                FID, patch-SSIM, LPIPS, cycle error
-tile.py  reconstruct.py      WSI ↔ tile conversion
-base_models.py  utils.py     shared blocks (ResNet, PatchGAN, DDPM UNet)
+i2i_stain_zoo/
+  base_models.py             shared blocks (ResNet, PatchGAN, DDPM UNet)
+  utils.py                   tiling, reconstruction, device helpers
+  models/                    the six architectures
+  datasets/                  unpaired / single-domain loaders, transforms
+  trainer/                   step-based loop with auto-resume
+  cli/                       one module per command, each with a main()
+    train.py                 i2i-train
+    inference.py             i2i-inference
+    evaluation.py            i2i-evaluate    FID, patch-SSIM, LPIPS, cycle error
+    tile.py  reconstruct.py  i2i-tile, i2i-reconstruct
+    uncertainty*.py          ensemble variance, calibration, aggregation
+    compare_psr.py           i2i-compare-psr    collagen area vs. real SR
+    apply_he_mask.py         i2i-apply-he-mask
+    fill_tissue_holes.py     i2i-fill-tissue-holes
+    plot_*.py                metric overview, rank agreement, distributions
 
-models/                      the six architectures
-datasets/                    unpaired / single-domain loaders, transforms
-trainer/                     step-based loop with auto-resume
+pyproject.toml               dependencies and console-script entry points
 tests/                       pytest suite (100 tests, CPU-only)
-
-uncertainty*.py              ensemble variance, calibration, aggregation
-compare_psr.py               collagen proportionate area vs. real SR
-apply_he_mask.py             CPA mask cleanup
-fill_tissue_holes.py         CPA hole filling
-plot_*.py                    metric overview, rank agreement, σ̄ distributions
-
 CLAUDE.md                    conventions, study parameters, full flag reference
 ```
 
@@ -417,10 +457,14 @@ compute_generator_loss(batch)                 -> (loss, log_dict, visuals)
 compute_discriminator_loss(batch, visuals)    -> (loss, log_dict)
 ```
 
+Drop the module in `i2i_stain_zoo/models/`, export it from that package's
+`__init__.py`, and register it in the `--model` choices in
+`i2i_stain_zoo/cli/train.py` and `inference.py`.
+
 `BaseTrainer` handles stepping, logging, AMP, checkpointing, auto-resume and
-timing. `base_models.py` already provides the encoder/bottleneck/decoder stack,
-a 70×70 PatchGAN discriminator, `ImagePool`, `GANLoss`, InfoNCE and patch
-sampling, plus the DDPM UNet and noise schedule.
+timing. `i2i_stain_zoo/base_models.py` already provides the
+encoder/bottleneck/decoder stack, a 70×70 PatchGAN discriminator, `ImagePool`,
+`GANLoss`, InfoNCE and patch sampling, plus the DDPM UNet and noise schedule.
 
 ---
 

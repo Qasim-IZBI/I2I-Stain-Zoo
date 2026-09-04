@@ -7,7 +7,7 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
-from datasets.common import list_images, list_images_from_range
+from i2i_stain_zoo.datasets.common import list_images, list_images_from_range
 
 
 class TargetOnlyDataset(Dataset):

@@ -7,9 +7,9 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from base_models import GANLoss, NLayerDiscriminator, ImagePool
-from base_models import Encoder, Decoder, ResnetBottleneck
-from base_models import discriminator_loss, identity_loss
+from i2i_stain_zoo.base_models import GANLoss, NLayerDiscriminator, ImagePool
+from i2i_stain_zoo.base_models import Encoder, Decoder, ResnetBottleneck
+from i2i_stain_zoo.base_models import discriminator_loss, identity_loss
 
 
 @dataclass

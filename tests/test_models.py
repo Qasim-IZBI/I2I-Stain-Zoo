@@ -9,20 +9,12 @@ Covers:
   - Checkpoint save/restore round-trip: model output is identical after reload
 """
 import io
-import sys
-import os
 
 import pytest
 import torch
 from dataclasses import asdict
 
-# conftest adds ROOT to sys.path; this import is redundant but harmless
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
 from tests.conftest import MODEL_REGISTRY
-
 
 # ------------------------------------------------------------------ #
 #  Helpers                                                             #
@@ -31,10 +23,8 @@ from tests.conftest import MODEL_REGISTRY
 def _make_model(model_cls, cfg):
     return model_cls(cfg).eval()
 
-
 def _model_ids():
     return [name for name, _, _ in MODEL_REGISTRY]
-
 
 # ------------------------------------------------------------------ #
 #  Parametrized fixtures — one instance per registry entry            #
@@ -44,7 +34,6 @@ def _model_ids():
 def model_and_cfg(request):
     name, model_cls, cfg = request.param
     return name, _make_model(model_cls, cfg), cfg
-
 
 # ------------------------------------------------------------------ #
 #  Interface tests                                                     #
@@ -62,7 +51,6 @@ class TestGeneratorParameters:
         for p in model.generator_parameters():
             assert isinstance(p, torch.Tensor)
 
-
 class TestDiscriminatorParameters:
     def test_returns_list(self, model_and_cfg):
         name, model, _ = model_and_cfg
@@ -73,7 +61,6 @@ class TestDiscriminatorParameters:
         name, model, _ = model_and_cfg
         params = model.discriminator_parameters()
         assert len(params) > 0
-
 
 class TestGeneratorLoss:
 
@@ -113,7 +100,6 @@ class TestGeneratorLoss:
         for k, v in visuals.items():
             assert isinstance(v, torch.Tensor), f"visual '{k}' is not a Tensor"
 
-
 class TestDiscriminatorLoss:
     def test_returns_pair(self, model_and_cfg, real_batch):
         _, model, _ = model_and_cfg
@@ -143,7 +129,6 @@ class TestDiscriminatorLoss:
         with torch.no_grad():
             _, logs = model.compute_discriminator_loss(real_batch, visuals)
         assert isinstance(logs, dict)
-
 
 # ------------------------------------------------------------------ #
 #  Checkpoint round-trip                                              #
@@ -179,7 +164,6 @@ class TestCheckpointRoundTrip:
             f"{out_before.item():.6f} vs {out_after.item():.6f}"
         )
 
-
 # ------------------------------------------------------------------ #
 #  Output shape tests                                                  #
 # ------------------------------------------------------------------ #
@@ -193,7 +177,7 @@ class TestForwardOutputShape:
         return (1, 3, self.IMAGE_SIZE, self.IMAGE_SIZE)
 
     def test_cyclegan_A2B(self, real_batch):
-        from models.cyclegan import CycleGAN
+        from i2i_stain_zoo.models.cyclegan import CycleGAN
         from tests.conftest import TINY_CYCLEGAN_CFG
         model = CycleGAN(TINY_CYCLEGAN_CFG).eval()
         with torch.no_grad():
@@ -201,7 +185,7 @@ class TestForwardOutputShape:
         assert y.shape == self._expected_shape()
 
     def test_cyclegan_B2A(self, real_batch):
-        from models.cyclegan import CycleGAN
+        from i2i_stain_zoo.models.cyclegan import CycleGAN
         from tests.conftest import TINY_CYCLEGAN_CFG
         model = CycleGAN(TINY_CYCLEGAN_CFG).eval()
         with torch.no_grad():
@@ -209,7 +193,7 @@ class TestForwardOutputShape:
         assert y.shape == self._expected_shape()
 
     def test_unit_A2B(self, real_batch):
-        from models.unit import UNIT
+        from i2i_stain_zoo.models.unit import UNIT
         from tests.conftest import TINY_UNIT_CFG
         model = UNIT(TINY_UNIT_CFG).eval()
         with torch.no_grad():
@@ -217,7 +201,7 @@ class TestForwardOutputShape:
         assert y.shape == self._expected_shape()
 
     def test_munit_A2B_random_style(self, real_batch):
-        from models.munit import MUNIT
+        from i2i_stain_zoo.models.munit import MUNIT
         from tests.conftest import TINY_MUNIT_CFG
         model = MUNIT(TINY_MUNIT_CFG).eval()
         with torch.no_grad():
@@ -227,7 +211,7 @@ class TestForwardOutputShape:
         assert y.shape == self._expected_shape()
 
     def test_dclgan_A2B(self, real_batch):
-        from models.dclgan import DCLGAN
+        from i2i_stain_zoo.models.dclgan import DCLGAN
         from tests.conftest import TINY_DCLGAN_CFG
         model = DCLGAN(TINY_DCLGAN_CFG).eval()
         with torch.no_grad():
@@ -235,7 +219,7 @@ class TestForwardOutputShape:
         assert y.shape == self._expected_shape()
 
     def test_uvcgan_A2B(self, real_batch):
-        from models.uvcgan import UVCGAN
+        from i2i_stain_zoo.models.uvcgan import UVCGAN
         from tests.conftest import TINY_UVCGAN_CFG
         model = UVCGAN(TINY_UVCGAN_CFG).eval()
         with torch.no_grad():

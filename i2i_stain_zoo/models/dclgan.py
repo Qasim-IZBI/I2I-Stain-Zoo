@@ -8,10 +8,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from base_models import GANLoss, NLayerDiscriminator, ImagePool
-from base_models import Encoder, Decoder, ResnetBottleneck
-from base_models import info_nce, PatchSampler
-from base_models import discriminator_loss, identity_loss
+from i2i_stain_zoo.base_models import GANLoss, NLayerDiscriminator, ImagePool
+from i2i_stain_zoo.base_models import Encoder, Decoder, ResnetBottleneck
+from i2i_stain_zoo.base_models import info_nce, PatchSampler
+from i2i_stain_zoo.base_models import discriminator_loss, identity_loss
 
 
 # ============================================================

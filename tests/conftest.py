@@ -4,25 +4,18 @@ Shared fixtures and model registry for the I2I-Stain-Zoo test suite.
 All models are built with tiny configs designed for CPU-only unit tests.
 Images are 64x64 so the UVCGAN bottleneck (n_down=4) produces 4x4=16 ViT tokens.
 """
-import sys
 import os
-
-# Ensure repo root is on sys.path so model imports work from any working directory
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
 
 import pytest
 import torch
 from PIL import Image
 import tempfile
 
-from models.cyclegan import CycleGAN, CycleGANConfig
-from models.unit import UNIT, UNITConfig
-from models.munit import MUNIT, MUNITConfig
-from models.dclgan import DCLGAN, DCLGANConfig
-from models.uvcgan import UVCGAN, UVCGANConfig
-
+from i2i_stain_zoo.models.cyclegan import CycleGAN, CycleGANConfig
+from i2i_stain_zoo.models.unit import UNIT, UNITConfig
+from i2i_stain_zoo.models.munit import MUNIT, MUNITConfig
+from i2i_stain_zoo.models.dclgan import DCLGAN, DCLGANConfig
+from i2i_stain_zoo.models.uvcgan import UVCGAN, UVCGANConfig
 
 # ------------------------------------------------------------------ #
 #  Tiny configs — fast on CPU, architecturally valid                  #
@@ -82,13 +75,11 @@ MODEL_REGISTRY = [
     ("uvcgan",          UVCGAN,    TINY_UVCGAN_CFG),
 ]
 
-
 # ------------------------------------------------------------------ #
 #  Shared fixtures                                                     #
 # ------------------------------------------------------------------ #
 
 IMAGE_SIZE = 64  # 64×64 keeps UVCGAN bottleneck valid and tests fast
-
 
 @pytest.fixture
 def real_batch():
@@ -96,7 +87,6 @@ def real_batch():
     A = torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE)
     B = torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE)
     return {"A": A, "B": B}
-
 
 @pytest.fixture
 def tmp_image_dir():
@@ -108,7 +98,6 @@ def tmp_image_dir():
             img = Image.new("RGB", (IMAGE_SIZE, IMAGE_SIZE), color=(i * 40, 100, 200))
             img.save(os.path.join(img_dir, f"{i+1:07d}.tif"))
         yield d  # yield the root (parent of images/)
-
 
 @pytest.fixture
 def tmp_unpaired_dirs():
