@@ -37,7 +37,7 @@ from scipy.stats import pearsonr, spearmanr
 
 import matplotlib.pyplot as plt
 
-from i2i_stain_zoo.cli.uncertainty_calibration import reliability_bins, expected_calibration_error
+from i2i_stain_zoo.uncertainty_calibration import reliability_bins, expected_calibration_error
 
 
 DISPLAY_NAMES = {

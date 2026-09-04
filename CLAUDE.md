@@ -17,9 +17,13 @@ before working on it; the tests and console scripts both assume that.
 i2i_stain_zoo/
   base_models.py  utils.py      library
   models/  datasets/  trainer/  library
-  cli/                          one module per command, each with a main()
+  train.py  inference.py  …     one module per command, each with a main()
 pyproject.toml                  dependencies + console-script entry points
 tests/
+
+Command modules sit at the package root alongside the library, so their
+analysis functions import directly (`from i2i_stain_zoo.evaluation import
+frechet_distance`) rather than through a `cli.` prefix.
 ```
 
 Import rules — there are no implicit top-level modules any more:
@@ -30,8 +34,8 @@ Import rules — there are no implicit top-level modules any more:
   project's package, or fail.
 - Watch for function-local imports; they are easy to miss when moving files and
   `--help` will not catch them.
-- New CLI module: give it a `main()`, put it in `cli/`, and add it to
-  `[project.scripts]` in `pyproject.toml`.
+- New CLI module: give it a `main()`, put it in `i2i_stain_zoo/`, and add it
+  to `[project.scripts]` in `pyproject.toml`.
 - New dependency: add it to `pyproject.toml`, not a requirements file.
 
 There are no cluster job scripts in this repository. Every step is a single

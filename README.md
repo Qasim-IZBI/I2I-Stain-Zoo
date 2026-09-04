@@ -86,7 +86,7 @@ want a specific interpreter:
 
 ```bash
 i2i-train --model cyclegan …
-python -m i2i_stain_zoo.cli.train --model cyclegan …    # equivalent
+python -m i2i_stain_zoo.train --model cyclegan …    # equivalent
 ```
 
 ### As a library
@@ -429,16 +429,16 @@ i2i_stain_zoo/
   models/                    the six architectures
   datasets/                  unpaired / single-domain loaders, transforms
   trainer/                   step-based loop with auto-resume
-  cli/                       one module per command, each with a main()
-    train.py                 i2i-train
-    inference.py             i2i-inference
-    evaluation.py            i2i-evaluate    FID, patch-SSIM, LPIPS, cycle error
-    tile.py  reconstruct.py  i2i-tile, i2i-reconstruct
-    uncertainty*.py          ensemble variance, calibration, aggregation
-    compare_psr.py           i2i-compare-psr    collagen area vs. real SR
-    apply_he_mask.py         i2i-apply-he-mask
-    fill_tissue_holes.py     i2i-fill-tissue-holes
-    plot_*.py                metric overview, rank agreement, distributions
+
+  train.py                   i2i-train
+  inference.py               i2i-inference
+  evaluation.py              i2i-evaluate    FID, patch-SSIM, LPIPS, cycle error
+  tile.py  reconstruct.py    i2i-tile, i2i-reconstruct
+  uncertainty*.py            ensemble variance, calibration, aggregation
+  compare_psr.py             i2i-compare-psr    collagen area vs. real SR
+  apply_he_mask.py           i2i-apply-he-mask
+  fill_tissue_holes.py       i2i-fill-tissue-holes
+  plot_*.py                  metric overview, rank agreement, distributions
 
 pyproject.toml               dependencies and console-script entry points
 tests/                       pytest suite (100 tests, CPU-only)
@@ -459,7 +459,7 @@ compute_discriminator_loss(batch, visuals)    -> (loss, log_dict)
 
 Drop the module in `i2i_stain_zoo/models/`, export it from that package's
 `__init__.py`, and register it in the `--model` choices in
-`i2i_stain_zoo/cli/train.py` and `inference.py`.
+`i2i_stain_zoo/train.py` and `i2i_stain_zoo/inference.py`.
 
 `BaseTrainer` handles stepping, logging, AMP, checkpointing, auto-resume and
 timing. `i2i_stain_zoo/base_models.py` already provides the

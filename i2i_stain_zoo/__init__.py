@@ -10,8 +10,13 @@ Library entry points::
     from i2i_stain_zoo.datasets.unpaired_dataset import UnpairedDataset
     from i2i_stain_zoo.trainer.base_trainer import BaseTrainer
 
-Command-line entry points live in ``i2i_stain_zoo.cli`` and are installed as
-``i2i-train``, ``i2i-inference``, ``i2i-evaluate``, and so on.
+Each command-line entry point is a module with a ``main()`` — ``train``,
+``inference``, ``evaluation``, ``tile`` and so on — installed as ``i2i-train``,
+``i2i-inference``, ``i2i-evaluate``. Their analysis functions are importable
+directly::
+
+    from i2i_stain_zoo.evaluation import compute_ssim_map, frechet_distance
+    from i2i_stain_zoo.uncertainty_calibration import reliability_bins
 
 Submodules are imported lazily so that ``import i2i_stain_zoo`` stays cheap and
 does not pull in torch until something is actually used.
@@ -19,7 +24,14 @@ does not pull in torch until something is actually used.
 
 __version__ = "1.0.0"
 
-__all__ = ["base_models", "datasets", "models", "trainer", "utils", "cli"]
+__all__ = [
+    "base_models", "utils", "datasets", "models", "trainer",
+    "train", "inference", "evaluation", "tile", "reconstruct",
+    "uncertainty", "uncertainty_calibration",
+    "aggregate_uncertainty", "aggregate_calibration",
+    "compare_psr", "apply_he_mask", "fill_tissue_holes",
+    "plot_combined_metrics", "plot_ranking_correlation", "plot_uncertainty_boxplot",
+]
 
 
 def __getattr__(name):
