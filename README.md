@@ -402,7 +402,6 @@ apply_he_mask.py             CPA mask cleanup
 fill_tissue_holes.py         CPA hole filling
 plot_*.py                    metric overview, rank agreement, σ̄ distributions
 
-MODEL_DIAGRAMS.md            architecture diagrams
 CLAUDE.md                    conventions, study parameters, full flag reference
 ```
 
