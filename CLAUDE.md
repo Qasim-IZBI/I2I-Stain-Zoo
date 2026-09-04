@@ -2,10 +2,11 @@
 
 Guidance for Claude Code (claude.ai/code) when working in this repository.
 
-`README.md` is the reproduction guide: it carries the full CLI walkthrough for
-both paper experiments plus a per-flag reference for every entry point. This file
-covers architecture, conventions, and the study parameters a reproduction needs
-to get right.
+`README.md` is the user-facing overview: what the repository does, install, and
+the basic train / inference commands with the per-model flags. **This file is the
+complete reference** — every entry point, every flag, plus architecture,
+conventions, and the study parameters behind the paper. When a tool's flags are
+not in README, they are here.
 
 There are no cluster job scripts in this repository. Every step is a plain
 `python <script>.py` invocation; where the study ran a job array, `README.md`
@@ -19,7 +20,7 @@ staining of histopathology images (H&E → Sirius Red). It implements **six**
 unpaired architectures behind one training/inference interface: CycleGAN, UNIT,
 MUNIT, DCLGAN, UVCGAN, and CycleDiffusion (the only diffusion-based family).
 
-The repository backs a paper with two experiments:
+The repository backs a BMVC 2026 paper (arXiv:2608.24626) with two experiments:
 
 - **Scaling study** — 54 configurations (6 models × 3 generator sizes × 3 training
   data fractions), each evaluated on Patch-SSIM, LPIPS, FID and CPA MAE.
@@ -472,7 +473,7 @@ python plot_combined_metrics.py --eval_indir /path/to/evaluation --psr_indir /pa
     --outdir ./combined_metrics_plot/
 ```
 
-Expected input layouts are documented in the module docstring and in README §6:
+Expected input layouts are documented in the module docstring:
 `{eval_indir}/{model}/data_{data_size}/model_{model_size}/{metric}.csv` and
 `{psr_indir}/{model}/summary.json`, with `compare_psr.py` labels named
 `{model_size}_model/{data_size}_data`.
